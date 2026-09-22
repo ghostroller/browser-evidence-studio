@@ -1,6 +1,16 @@
 # 实际验证记录
 
-日期：2026-09-22，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
+更新日期：2026-09-23，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
+
+## writer 所有权与异常恢复（2026-09-23）
+
+在 `10f8f5d` 之后补齐 writer 锁。`npm.cmd run typecheck` 通过；`node --import tsx --test test/unit/writer-lock.test.ts test/unit/evidence.test.ts` **21/21 通过，0 失败、0 跳过**。运行组合仍为 Node 24.21.0 / npm 11.19.0，Node 内置 libuv 1.52.1；未修改依赖和锁文件。
+
+- 真实进程并发回收同一已强杀 writer，仅一个能持有 guard；旧锁原样保存在 `recovery/`，另一进程被拒绝。目录别名共用同一内核 guard。Windows 系统启动 FILETIME 区分同 PID 的不同进程；无法查询、存活的旧格式近似身份或损坏锁均不授权回收。PID 重用分类用可控 OS 查询结果测试，未声称实际促使 Windows 重用了某个 PID。
+- `writer.lock` 以完整、已 sync 的临时文件经不覆盖的硬链接发布。真实子进程分别在发布前/后被强杀，重开只看到无标记或完整标记；发布时外来标记冲突保留外来内容。迟到 release 只认自己的 owner token，不能删除新 writer 的锁。
+- 已确认保存的 checkpoint 经强杀后仍可按原 ID/hash 读取。普通中断和已报告损坏尾部重复重开不重复追加恢复 gap，不改变原件字节；坏尾后不再追加新记录。原件尾部有新损坏时仍重新保留并报告。
+
+Windows 进程身份通过系统自带 Windows PowerShell 的 `Process.StartTime` 查询，与 Node 的安装/版本管理工具无关。权限不足或系统组件不可用时明确拒绝写入或恢复，不推断死亡；本批没有验证其他桌面平台。
 
 ## 审查后的首批实现与复验（2026-09-22）
 

@@ -280,7 +280,12 @@ test('a checkpoint acknowledged by a forcibly terminated writer remains readable
       assert.equal(((await reader.checkpoints()).items[0] as { id: string }).id, acknowledged.checkpointId);
       assert.equal((await reader.artifact(acknowledged.artifactId)).text, '<p>acknowledged before termination</p>');
       assert.equal(recovered.manifest.status, 'interrupted');
-      assert.equal((await reader.gaps()).items.length, 1);
+      const gaps = (await reader.gaps()).items as { data: { reason: string; writerLockRecovery?: { preservedLockPath: string; diagnosticPath: string } } }[];
+      assert.equal(gaps.length, 1);
+      assert.equal(gaps[0].data.reason, 'previous-capture-no-longer-live');
+      const recovery = gaps[0].data.writerLockRecovery;
+      assert.ok(recovery?.preservedLockPath && recovery.diagnosticPath);
+      assert.ok(await fs.stat(path.join(directory, recovery.preservedLockPath)));
     } finally { await recovered.close(); }
   } finally { child.kill('SIGKILL'); await exited; await fs.rm(directory, { recursive: true, force: true }); }
 });
