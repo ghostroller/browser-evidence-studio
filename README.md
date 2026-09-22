@@ -1,48 +1,74 @@
 # Browser Evidence Studio
 
-面向人工示范、agent 开发和逐项验收的本地 Electron 浏览器工作台。
+面向人工示范、agent 开发和逐项验收的本地 Electron 浏览器工作台，Windows 桌面优先。
 
-产品名：Browser Evidence Studio（浏览器证据工作台）。项目目录：D:/workspace/browser-evidence-studio。
+人工操作网页并描述 checkpoint → 保存动作、网络、DOM 和截图证据 → agent 定向读取材料并编写普通 Puppeteer 代码 → 在客户端复跑并按需交还人工 → 按需求、数据契约和代码版本验收。
 
-**当前状态：设计与实施准备完成，客户端功能尚未实现。** 本轮只创建独立项目、Git 和设计文档，并准备现代 Node 环境；没有启动录制、修改旧项目或实现客户端。文档中的接口、目录和命令若标为目标设计，不能当作现成功能。
+**当前为可运行的开发版本。** 客户端、证据存储、本机 HTTP API、受管 Puppeteer worker 和合成示例均已实现。M0 关键路径及订单示例的 5 个变体已实际验证；完整桌面回归、20 分钟持续运行和 Windows 发行包验收仍在进行。具体命令、证据与限制见 [验证记录](docs/verification.md)，不能把功能实现视为验收通过。
 
-## 产品闭环
+## 开发启动
 
-人工操作网页并描述 checkpoint → 保存动作、网络、DOM 和截图证据 → agent 定向读取材料并编写普通 Puppeteer 代码 → 在客户端复跑并按需交还人工 → 按 checkpoint、数据契约和代码版本验收。
+在仓库根目录、已配置 fnm 的 PowerShell 中运行：
 
-工具负责证据、浏览器协作与验收，不承包站点业务逻辑，不维护旧 Node/Puppeteer 兼容层，也不承担业务插件向宿主的迁移和装配。
-
-## 阅读顺序
-
-1. [产品设计与范围](docs/design.md)：场景、交互、MVP 与非目标。
-2. [技术架构与协议](docs/architecture.md)：进程、浏览器、证据、控制权、HTTP API 和执行契约。
-3. [具体实现路径](docs/implementation-plan.md)：代码位置、里程碑、依赖顺序、验收和首个任务。
-4. [调研与决策依据](docs/research.md)：开源源码结论、功能借鉴、已知边界。
-5. [环境与依赖策略](docs/environment.md)：已验证环境、稳定版本选取、安装与升级规则。
-
-实现任务先读前 3 份；讨论依赖或技术选型时再按需读后 2 份。不要每轮将全部原始材料放进模型上下文。
-
-## 已确定的方向
-
-- Windows 桌面优先，Electron WebContentsView 内嵌浏览器。
-- 人主要使用客户端，agent 首版使用本机 HTTP API；不用 PowerShell 手工管理录制守护进程。
-- checkpoint 是核心组织方式；不要求手工建立业务阶段，不内置拼多多站点模板。
-- 原始证据、需求契约、执行代码、验收记录分开；JSON 负责记录和契约，代码负责执行逻辑。
-- Puppeteer 为首个业务执行框架；采用当代稳定环境，不适配 Node 14 或旧版自动化库。
-- 现代框架与 Electron Chromium 的互通仍须实际验证，不能用“都是最新版”代替验证。
-- 普通交付脚本不依赖 Electron 客户端或运行时 LLM；扫码等已声明人工协助可以保留。
-- agent/人工控制权唯一；暂停业务、暂停记录、结束录制含义分别明确。
-- 浏览器观测不自动覆盖 Node HTTP/Axios、手机端或其他进程网络。
-- 仅将 D:/workspace/agent-browser-evidence 作为参考；不依赖其代码、daemon、格式或安装路径。
-
-## 当前环境
-
-新项目固定 Node 24.21.0 LTS，使用其捆绑 npm 11.19.0。本机已安装并核对版本。进入目录后可执行：
-
-~~~powershell
-fnm use
+```powershell
+fnm install 24.21.0
+fnm use 24.21.0
 node --version
 npm.cmd --version
-~~~
+npm.cmd ci
+npm.cmd start
+```
 
-功能实现阶段才生成 package.json、package-lock.json 和客户端源码。本仓库现在没有 npm start 等可运行的客户端命令。详细技术栈及首日锁定规则见环境文档。
+预期 Node 为 `v24.21.0`、npm 为 `11.19.0`。已经安装该 Node 版本时可跳过 `fnm install`；没有配置终端自动切换时，用 `fnm exec --using 24.21.0 npm.cmd start` 显式选择运行时。项目已提供依赖清单与锁文件，不需要全局安装 Electron 或 Puppeteer。
+
+构建使用 Electron Forge + Vite + React，类型检查独立执行。安装遇到代理或 Electron 下载问题时，见 [环境与依赖](docs/environment.md)。
+
+## 第一次操作
+
+1. 新建项目，填写目标，选择或创建命名登录环境。
+2. 点击“合成站点”取得本机测试地址，开始录制；操作页面并保存带说明和需求 ID 的 checkpoint。
+3. 打开“证据时间线”或“DOM 回放”检查材料，查看后关闭面板。可以“结束并封存”，也可以保留当前示范进入下一步。
+4. 在“执行 / 验收”登记本仓库 `examples/orders` 的绝对路径。点击“合成站点”时已填入 `baseUrl`，可在输入 JSON 中追加 `"variant":"normal"`；点击“运行脚本并验收”。客户端按所选项目和登录环境建立独立的验收 run；若当前示范仍打开，会先自动封存，并沿用该示范的项目和环境。
+5. 等待执行与报告保存结束，点击“查看需求、数据与验收”，检查需求覆盖、数据规则和版本指纹。启用人工协助输入时，在等待提示出现后完成页面操作，再点击“交还控制”。
+6. 检查完成后点击“结束并封存”，从左侧存档重新打开材料。后续修改脚本或输入时，重新执行验收。
+
+已有脚本时可以跳过人工示范：选择项目和命名登录环境、登记目录及填写输入后，直接点击“运行脚本并验收”。封存后或重新打开客户端也可这样复跑，无需先创建准备录制。当前执行、人工交接、报告保存或停止过程结束前，不能启动下一次验收。
+
+合成站点的订单、账号和二维码都是假数据。订单示例包含分页、去重、详情关联和分页终止；`normal`、`duplicate` 应通过，`missing`、`wrong-image`、`empty-middle` 应产生验收失败。普通脚本也可由 Node + 独立 Chrome 执行，无需启动 Electron；环境、输入及独立测试命令见 [示例说明](examples/orders/README.md)。
+
+## 常用命令
+
+| 命令 | 用途 |
+| --- | --- |
+| `npm.cmd start` | 启动开发客户端 |
+| `npm.cmd run build` | 构建 main、preload、renderer 和 runner worker |
+| `npm.cmd run typecheck` | TypeScript 类型检查 |
+| `npm.cmd test` | 单元测试与合成站点测试 |
+| `npm.cmd run test:integration` | 构建后执行真实 Electron 场景及第二进程 profile 重启验证 |
+| `npm.cmd run test:desktop` | `test:integration` 的别名 |
+| `npm.cmd run test:soak` | 在桌面场景中加入 20 分钟持续录制检查 |
+| `npm.cmd run test:example` | 独立 Chrome 中执行普通 Puppeteer 示例；需设置 `BROWSER_EXECUTABLE_PATH`，未设置时跳过 |
+| `npm.cmd run package` | 生成未签名的应用目录 |
+| `npm.cmd run make` | 生成 Windows ZIP 分发包 |
+
+桌面测试使用独立的 `output/desktop-<时间戳>/` 数据目录，保存日志、证据及 `desktop-summary.json`。仅当主进程场景与新 Electron 进程中的 profile 验证都成功时，总结果才通过。打包输出在 `out/`；命令存在不代表发行验收已完成。
+
+## 数据与协作边界
+
+- 开发数据默认保存在 `%APPDATA%\BrowserEvidenceStudio-dev`，打包应用使用 `%APPDATA%\BrowserEvidenceStudio`；开发和测试可用 `BES_DATA` 指定独立目录。项目/profile 隔离登录状态，每次录制和验证分别保存 run。
+- “连接与环境”显示本机 HTTP 地址与 `connection/agent-connection.json` 路径。agent 按 [HTTP 协议](docs/api.md) 使用该连接文件；访问令牌每次启动生成，不写入仓库。
+- 人工持有控制权时，受管执行连接阻断新操作；停止、超时和未回复都不会被当作人工处理成功。checkpoint 输入蒙版只阻止输入，不冻结站点脚本或网络。
+- 原始证据追加保存；缺失、截断和真实空值分别记录。默认读取摘要，再按 ID 获取有界正文。页面和保存的数据均作为不可信输入。
+- 普通业务脚本使用 Puppeteer，分支和循环保留在代码中，manifest 只声明契约。客户端不提供运行时 AI 自愈；修改后需要重新验收。
+- 浏览器采集不覆盖独立 Node HTTP/Axios、手机端或其他进程的网络；profile 首版不承诺跨机器迁移或完整浏览器状态快照。
+
+录制、profile、导出和测试输出均由 Git 忽略；不要提交真实 Cookie、账号或录制内容。
+
+## 文档
+
+- [产品设计](docs/design.md)、[技术架构](docs/architecture.md)、[实施计划](docs/implementation-plan.md)：范围、协议和里程碑。
+- [环境与依赖](docs/environment.md)、[验证记录](docs/verification.md)：复现环境、实际结果和未完成项。
+- [HTTP API](docs/api.md)、[订单示例](examples/orders/README.md)：agent 接入与普通脚本交付。
+- [调研依据](docs/research.md)：技术决策和已知边界。
+
+这是独立客户端，不依赖旧 agent-browser-evidence 仓库、daemon、录制格式或安装路径。

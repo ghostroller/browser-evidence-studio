@@ -1,0 +1,55 @@
+import assert from 'node:assert/strict';
+import { setTimeout as delay } from 'node:timers/promises';
+import { net } from 'electron';
+import { startFixture } from '../fixtures/site';
+import type { Studio } from '../../src/main/services/studio';
+import { EvidenceReader } from '../../src/evidence/reader';
+import { runRunnerScenarios } from './runner-scenarios';
+import { runSoak } from './soak';
+import { runUiScenarios } from './ui-scenarios';
+import { runLifecycleScenarios } from './lifecycle';
+import { runApiScenarios } from './api-scenarios';
+export async function runDesktopTests(studio:Studio){
+  const site=await startFixture();
+  try{
+    const project=await studio.createProject({name:'合成验收',objective:'浏览器证据闭环'}),profile=await studio.createProfile({projectId:project.id,name:'合成账号'});
+    await studio.startRun({projectId:project.id,profileId:profile.id,url:site.url+'/orders'});
+    console.log('M0 capture-ready and synthetic page loaded');
+    const p=studio.current(),r=studio.required();assert.notEqual(p.webContentsId,studio.window.window.webContents.id);assert.ok(p.targetId);
+    await p.page.waitForSelector('#api-state');await p.page.waitForFunction(()=>document.querySelector('#api-state')?.textContent==='已就绪');
+    await studio.control('agent');await studio.action({type:'click',pageId:p.pageId,leaseEpoch:r.leaseEpoch,selector:'#increment'});
+    console.log('M0 managed click completed');
+    assert.equal(await p.page.$eval('#action-count',el=>el.textContent),'1');
+    await studio.action({type:'navigate',url:site.url+'/orders?again=1',pageId:p.pageId,leaseEpoch:r.leaseEpoch});
+    await p.page.waitForFunction(()=>document.querySelector('#api-state')?.textContent==='已就绪');
+    const gate=r.operation!.gate;await gate.quiesce();
+    const attempts=await Promise.allSettled([r.operation!.page.click('#increment'),delay(10).then(()=>r.operation!.page.evaluate(()=>document.body.setAttribute('illegal','yes')))]);
+    assert.ok(attempts.every(x=>x.status==='rejected'));assert.equal(await p.page.$eval('body',el=>el.getAttribute('illegal')),null);
+    const tick=await p.page.$eval('#tick',el=>Number(el.textContent));await delay(220);assert.ok(await p.page.$eval('#tick',el=>Number(el.textContent))>tick);gate.resume();
+    const cp=await studio.checkpoint({key:'orders',title:'订单已就绪',requirementIds:['orders-complete']});assert.equal(cp.artifactRefs.length,2);
+    const checkpointReader=new EvidenceReader(r.store.runDir);
+    const capturedArtifacts=await Promise.all(cp.artifactRefs.map((id:string)=>checkpointReader.artifactMetadata(id)));
+    const screenshot=capturedArtifacts.find(artifact=>artifact.kind==='screenshot'),dom=capturedArtifacts.find(artifact=>artifact.kind==='dom');
+    assert.ok(screenshot);assert.ok(dom);assert.equal(screenshot.captureStatus,'complete');assert.equal(dom.mediaType,'text/html');assert.equal(dom.captureStatus,'complete');
+    const imageResponse=await net.fetch(`bes-artifact://${r.id}/${screenshot.id}`);
+    assert.equal(imageResponse.status,200);assert.equal(imageResponse.headers.get('content-type'),'image/png');assert.equal(imageResponse.headers.get('x-content-type-options'),'nosniff');assert.equal(imageResponse.headers.get('cache-control'),'no-store');
+    const imagePolicy=imageResponse.headers.get('content-security-policy')||'';
+    for(const directive of ["default-src 'none'",'sandbox',"frame-ancestors 'none'"])assert.ok(imagePolicy.split(';').map(value=>value.trim()).includes(directive),`Screenshot response must include CSP ${directive}`);
+    const imageBytes=Buffer.from(await imageResponse.arrayBuffer());assert.equal(imageBytes.length,screenshot.capturedBytes);assert.deepEqual(imageBytes.subarray(0,8),Buffer.from([137,80,78,71,13,10,26,10]));
+    const domResponse=await net.fetch(`bes-artifact://${r.id}/${dom.id}`);
+    assert.equal(domResponse.status,403,'Captured HTML must not be served as an inline protocol document');assert.doesNotMatch(await domResponse.text(),/<(?:!doctype|html)\b/i);
+    console.log('M1 artifact protocol PASS: verified PNG preview and captured HTML refused');
+    await studio.control('human');await studio.pauseOperations(true);assert.equal(r.locked,true);await studio.pauseOperations(false);
+    if(!process.env.BES_SKIP_UI)await runUiScenarios(studio);
+    await p.page.evaluate(async()=>{await fetch('/api/large?bytes=1048576');await fetch('/empty');await fetch('/binary');});
+    p.view.webContents.openDevTools({mode:'detach',activate:false});await delay(150);p.view.webContents.closeDevTools();
+    await p.capture.flush();const reader=new EvidenceReader(r.store.runDir);const summary=await reader.summary();assert.ok(summary);
+    await studio.saveProfile();await studio.seal();
+    const readback=await reader.checkpoints({limit:20});assert.ok(readback.items.some((x:any)=>x.id===cp.id));
+    console.log('M0/M1 PASS: exact target, navigation, concurrent gate, independent capture, checkpoint, seal/reopen');
+    await runRunnerScenarios(studio,site.url);
+    await runLifecycleScenarios(studio,site.url);
+    await runApiScenarios(studio,site.url);
+    if(Number(process.env.BES_SOAK_MINUTES)>0)await runSoak(studio,site.url,Number(process.env.BES_SOAK_MINUTES));
+  }finally{await site.close();}
+}

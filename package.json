@@ -1,0 +1,50 @@
+{
+  "name": "browser-evidence-studio",
+  "productName": "Browser Evidence Studio",
+  "version": "0.1.0",
+  "description": "Local browser demonstration, evidence and validation workbench",
+  "private": true,
+  "main": ".vite/build/index.js",
+  "author": "Browser Evidence Studio contributors",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "packageManager": "npm@11.19.0",
+  "scripts": {
+    "start": "electron-forge start",
+    "build": "vite build --config vite.main.config.mjs && vite build --config vite.preload.config.mjs && vite build --config vite.renderer.config.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/unit/*.test.ts test/fixtures/site/site.test.ts",
+    "test:integration": "npm run build && node test/desktop/launch.cjs",
+    "test:desktop": "npm run test:integration",
+    "test:soak": "npm run build && node test/desktop/launch.cjs --soak=20",
+    "test:example": "node --import tsx --test examples/orders/standalone.test.mjs",
+    "package": "electron-forge package",
+    "make": "electron-forge make"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "puppeteer-core": "25.11.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "rrweb": "2.1.6",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@electron-forge/cli": "7.11.2",
+    "@electron-forge/maker-zip": "7.11.2",
+    "@types/node": "24.12.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/ws": "8.18.1",
+    "electron": "44.4.3",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.0",
+    "@electron-forge/plugin-vite": "7.11.2"
+  },
+  "config": {
+    "forge": "./forge.config.cjs"
+  }
+}

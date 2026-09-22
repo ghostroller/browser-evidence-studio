@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["orders", "details", "pagination", "duplicateIds"],
+  "additionalProperties": false,
+  "properties": {
+    "orders": { "type": "array", "items": { "type": "object", "required": ["id", "title", "amountCents", "imageOrderId"], "properties": { "id": { "type": "string" }, "title": { "type": "string" }, "amountCents": { "type": "integer" }, "imageOrderId": { "type": "string" } } } },
+    "details": { "type": "array", "items": { "type": "object", "required": ["id", "imageOrderId", "trackingId"], "properties": { "id": { "type": "string" }, "imageOrderId": { "type": "string" }, "trackingId": { "type": ["string", "null"] } } } },
+    "pagination": { "type": "object", "required": ["pages", "complete", "expectedTotal"], "properties": { "pages": { "type": "integer", "minimum": 1 }, "complete": { "type": "boolean" }, "expectedTotal": { "type": "integer", "minimum": 0 } } },
+    "duplicateIds": { "type": "array", "items": { "type": "string" } }
+  }
+}

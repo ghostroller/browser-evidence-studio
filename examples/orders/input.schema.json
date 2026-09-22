@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["baseUrl"],
+  "additionalProperties": false,
+  "properties": {
+    "baseUrl": { "type": "string", "pattern": "^http://127\\.0\\.0\\.1:[0-9]+/?$" },
+    "variant": { "enum": ["normal", "duplicate", "missing", "wrong-image", "empty-middle"] },
+    "requireLogin": { "type": "boolean", "default": false },
+    "requireHumanReview": { "type": "boolean", "default": false }
+  }
+}

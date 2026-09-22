@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "workflowId": "synthetic-orders",
+  "entry": "./run.mjs",
+  "exportName": "run",
+  "driver": "puppeteer",
+  "inputSchema": "./input.schema.json",
+  "outputSchema": "./output.schema.json",
+  "requirements": [
+    {
+      "id": "orders-complete",
+      "checkpointKey": "orders-complete",
+      "description": "Collect all synthetic orders, deduplicate IDs, preserve fields, and observe the real pagination end.",
+      "dataset": "orders",
+      "rules": [
+        { "type": "min-rows", "count": 7 },
+        { "type": "required", "field": "id" },
+        { "type": "unique", "field": "id" },
+        { "type": "required", "field": "title" },
+        { "type": "field-type", "field": "title", "valueType": "string" },
+        { "type": "field-type", "field": "amountCents", "valueType": "number" },
+        { "type": "same-entity", "field": "id", "equalsField": "imageOrderId" },
+        { "type": "pagination-complete", "minPages": 3 }
+      ]
+    },
+    {
+      "id": "details-linked",
+      "checkpointKey": "details-complete",
+      "description": "Detail rows and images belong to their list order; shipped orders have tracking, paid orders have explicit null.",
+      "dataset": "details",
+      "rules": [
+        { "type": "min-rows", "count": 7 },
+        { "type": "unique", "field": "id" },
+        { "type": "required", "field": "recipient" },
+        { "type": "required", "field": "trackingId", "allowNull": true },
+        { "type": "same-entity", "field": "id", "equalsField": "imageOrderId" },
+        { "type": "reference", "field": "id", "dataset": "orders", "targetField": "id" }
+      ]
+    }
+  ],
+  "humanPoints": [
+    { "id": "login", "description": "Optional explicit fake QR confirmation; timeout never means success." },
+    { "id": "confirm-scope", "description": "Optional human review of the synthetic collection scope." }
+  ]
+}

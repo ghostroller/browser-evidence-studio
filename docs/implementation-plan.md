@@ -1,6 +1,6 @@
 # 具体实现路径
 
-状态：待实现。当前只有设计文档和环境配置；下面所有里程碑均未验收。日期：2026-09-22。
+状态：实现进行中。以下是里程碑目标；实际命令、通过结果及待验证范围见 verification.md。日期：2026-09-22。
 
 ## 1. 推进方式
 
@@ -34,7 +34,7 @@
 目标：证明本地 Electron 内嵌页面可由人操作、可被 Puppeteer 控制、可被持续观察，并且不会连错宿主 UI。
 
 实现：
-1. 以 Forge 官方 TypeScript/Webpack 模板整合最小工程，保留已有文档和 .git；加入 React。锁定非预发布依赖、package-lock.json、engines 和 packageManager。
+1. 以 Forge + Vite + TypeScript 整合最小工程，保留已有文档和 .git；加入 React。用户已明确改用 Vite。锁定非预发布依赖、package-lock.json、engines 和 packageManager。
 2. src/main/app.ts、window.ts 建立可信 UI 和一个 WebContentsView；实现 BrowserRegistry。
 3. 建立内部 CDP 连接，puppeteer-core 连接指定 target；在合成页执行导航、点击和读取。
 4. 实测 CDP 捕获与控制同时工作；验证新窗口、iframe、刷新、DevTools/detach。
@@ -172,7 +172,7 @@
 
 ## 10. 统一测试和性能目标
 
-建议 package.json 最终只保留常用入口：start、build、typecheck、test、test:integration、test:desktop、package、make。配置按实际模板落实；现在不存在这些命令。
+package.json 已提供常用入口：start、build、typecheck、test、test:integration、test:desktop、test:soak、test:example、package、make。命令实际运行结果见 verification.md。
 
 初始性能目标（在指定 Windows 测试机、固定夹具和 30 分钟 run 上测量，尚未达成）：
 - 保存 checkpoint 100 ms 内显示反馈；持久化图/DOM 的 P95 目标不超过 2 s。
@@ -187,6 +187,6 @@
 
 ## 11. 首个实现任务的交接文本
 
-> 在 Browser Evidence Studio 中按 docs/design.md、docs/architecture.md 和本实施计划实现客户端。先核实 docs/environment.md 的当代稳定环境，建立 Forge TypeScript/Webpack + React 工程，完成 M0 的 WebContentsView、Puppeteer/CDP、rrweb、原生输入锁和生命周期验证。通过后沿 M1–M6 逐步形成“人工示范→证据→原生脚本→逐 checkpoint 验收”闭环。所有功能使用新项目；agent-browser-evidence 只读参考。不要兼容 Node14/旧 Puppeteer，不做完整 DSL、站点模板或插件装配，不启动真实账号流程来代替工具回归。每阶段更新实际命令、版本、验收结果和限制；遇到关键技术失败先修订设计并给出证据。
+> 在 Browser Evidence Studio 中按 docs/design.md、docs/architecture.md 和本实施计划推进客户端。先读 docs/verification.md 确认当前已通过范围，使用 Forge + Vite + TypeScript + React 工程继续 M0–M6 的未完成验收，形成“人工示范→证据→原生脚本→逐 checkpoint 验收”闭环。所有功能使用新项目；agent-browser-evidence 只读参考。不要兼容 Node14/旧 Puppeteer，不做完整 DSL、站点模板或插件装配，不启动真实账号流程来代替工具回归。每阶段更新实际命令、版本、验收结果和限制；遇到关键技术失败先修订设计并给出证据。
 
-这是一段可用于后续会话的任务说明，本轮尚未创建或启动实现会话。
+这是一段可用于后续会话的任务说明；设计目标和已验证实现必须结合 verification.md 区分。

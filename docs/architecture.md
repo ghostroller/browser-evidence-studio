@@ -1,11 +1,11 @@
 # 技术架构与协议
 
-状态：目标设计，尚未实现。日期：2026-09-22。类型名称用于说明契约；M0/M1 实测后由 TypeScript schema 固化，不应现在声称接口可用。
+状态：首版实现进行中。日期：2026-09-22。本文保留目标与边界；实际已验证范围以 verification.md 为准，不能将所有目标当作已通过。
 
 ## 1. 技术决策
 
 - 开发及独立交付脚本：当前 Node LTS + 捆绑 npm，初始 24.21.0 / 11.19.0。
-- 桌面：Electron stable、TypeScript、React、Electron Forge 官方 TypeScript/Webpack 模板。
+- 桌面：Electron stable、TypeScript、React、Electron Forge + Vite。用户已明确将原 TypeScript/Webpack 选型改为 Vite；构建不再使用 Webpack。
 - 嵌入网页：WebContentsView；宿主 UI 与业务网页分离，不使用已弃用的 BrowserView。
 - 业务执行：puppeteer-core stable 连接客户端受管理的 Chromium target；独立交付脚本可用 puppeteer 管理受支持浏览器。
 - 录制：CDP 网络/导航/错误 + rrweb 稳定版 DOM 过程 + 显式 checkpoint 截图/DOM。rrweb 不是执行器或网络正文记录器。
