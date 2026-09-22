@@ -4,6 +4,8 @@
 
 这是独立 Electron 客户端 Browser Evidence Studio。旧 agent-browser-evidence 仅供经验和协议参考，不修改旧仓库、业务插件或宿主。不复制真实录制、Cookie、账号信息或登录 profile 到 Git。
 
+2026-09-22 已将实现 worktree 合并到 `D:\workspace\browser-evidence-studio` 的 `main`。后续开发、测试与文档维护固定在该目录，不再在旧 Codex worktree 修改；当前进度和接续事项见 docs/progress.md。
+
 当前仓库已有客户端实现与合成验证，实际通过范围见 docs/verification.md。后续实现按 docs/implementation-plan.md 推进；仅要求评估或文档时不要自行实施功能。
 
 先读 docs/design.md、docs/architecture.md、docs/implementation-plan.md；其余资料按需查阅。新的已验证发现应同步修订文档，不能将设计目标写成已完成。

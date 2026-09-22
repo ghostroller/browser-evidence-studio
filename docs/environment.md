@@ -24,9 +24,10 @@
 
 ## 安装和启动
 
-在仓库根目录、已经配置 fnm 的 PowerShell 中执行：
+固定开发目录为 `D:\workspace\browser-evidence-studio`。在已经配置 fnm 的 PowerShell 中执行：
 
 ```powershell
+Set-Location D:\workspace\browser-evidence-studio
 fnm install 24.21.0
 fnm use 24.21.0
 node --version
@@ -92,7 +93,7 @@ HTTP 服务只供本机访问，地址和连接文件路径可在客户端“连
 | `npm.cmd run package` | Forge 生成应用目录 |
 | `npm.cmd run make` | Forge 生成 Windows ZIP |
 
-桌面测试自动使用 `output/desktop-<时间戳>/` 保存日志、run 和报告。`desktop-summary.json` 汇总两个 Electron 进程的结果；首阶段失败时不会把未执行的重启检查算作通过。20 分钟检查和打包命令已提供入口，目前不能据此宣称持续运行或发行包验收通过。
+桌面测试自动使用 `output/desktop-<时间戳>/` 保存日志、run 和报告。`desktop-summary.json` 汇总两个 Electron 进程的结果；首阶段失败时不会把未执行的重启检查算作通过。Windows ZIP 与打包 EXE 的两进程回归已有实测通过；20 分钟结果及最近源码与产物的对应关系见 [验证记录](verification.md)，不能仅凭命令存在判定通过。
 
 ## 升级要求
 

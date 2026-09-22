@@ -59,7 +59,7 @@ test/
   desktop/
 ~~~
 
-这是实现路径，不要求开工时一次创建所有空目录。
+以上是职责规划，不是当前目录清单。首版将部分服务集中在 `src/main/services/studio.ts`、`src/main/services/dispatch.ts`，界面集中在 `src/renderer/app.tsx`；实际模块与进度见 [progress.md](progress.md)。
 
 Electron main 管生命周期、页面和控制权；可信 renderer 只管界面。捕获/索引重活和脚本执行放到独立 worker/utility process，防止堵塞主线程。写文件仅由 evidence store 负责，避免 CLI 多进程抢锁模型。
 

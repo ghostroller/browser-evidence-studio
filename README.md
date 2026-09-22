@@ -4,13 +4,14 @@
 
 人工操作网页并描述 checkpoint → 保存动作、网络、DOM 和截图证据 → agent 定向读取材料并编写普通 Puppeteer 代码 → 在客户端复跑并按需交还人工 → 按需求、数据契约和代码版本验收。
 
-**当前为可运行的开发版本。** 客户端、证据存储、本机 HTTP API、受管 Puppeteer worker 和合成示例均已实现。M0 关键路径及订单示例的 5 个变体已实际验证；完整桌面回归、20 分钟持续运行和 Windows 发行包验收仍在进行。具体命令、证据与限制见 [验证记录](docs/verification.md)，不能把功能实现视为验收通过。
+**当前为可运行的开发版本。** M0–M5 核心流程已实现并通过合成回归，Windows ZIP 与打包 EXE 的两进程验证已有通过结果；M6 的技能接续、性能目标和真实业务验收仍有未完成项。当前进度、代码与产物的验证边界见 [进度与接续](docs/progress.md)，详细命令和证据见 [验证记录](docs/verification.md)。
 
 ## 开发启动
 
-在仓库根目录、已配置 fnm 的 PowerShell 中运行：
+后续开发固定使用 `D:\workspace\browser-evidence-studio`。在已配置 fnm 的 PowerShell 中运行：
 
 ```powershell
+Set-Location D:\workspace\browser-evidence-studio
 fnm install 24.21.0
 fnm use 24.21.0
 node --version
@@ -66,6 +67,7 @@ npm.cmd start
 
 ## 文档
 
+- [进度与接续](docs/progress.md)：当前完成范围、主目录、验证状态与下一步。
 - [产品设计](docs/design.md)、[技术架构](docs/architecture.md)、[实施计划](docs/implementation-plan.md)：范围、协议和里程碑。
 - [环境与依赖](docs/environment.md)、[验证记录](docs/verification.md)：复现环境、实际结果和未完成项。
 - [HTTP API](docs/api.md)、[订单示例](examples/orders/README.md)：agent 接入与普通脚本交付。

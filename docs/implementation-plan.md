@@ -4,6 +4,8 @@
 
 ## 1. 推进方式
 
+当前 M0–M5 核心已实现并有合成通过证据，M6 仍有待验收项；逐项状态与后续工作见 [progress.md](progress.md)。本文各节路径表示职责规划，不要求与当前文件拆分一一对应。
+
 按 M0 → M1 → M2 → M3 → M4 → M5 → M6 连续推进。每阶段都有可运行的纵向切片，不先搭建所有接口或空模块。测试、夹具、启动入口统一进 package.json；不增加大量外围辅助脚本。
 
 技术验证代码优先留在最终模块和 test/integration，避免另建一套随后丢弃的原型工程。所有测试用合成页面和假数据；真实拼多多仅在工具闭环完成且用户方便时验收。
@@ -185,8 +187,8 @@ package.json 已提供常用入口：start、build、typecheck、test、test:int
 
 先记录实际基线和瓶颈，再优化；不得靠减少所需证据或静默截断达标。离线字段回归应独立于真人扫码，减少人机等待和成本。
 
-## 11. 首个实现任务的交接文本
+## 11. 后续任务的交接文本
 
-> 在 Browser Evidence Studio 中按 docs/design.md、docs/architecture.md 和本实施计划推进客户端。先读 docs/verification.md 确认当前已通过范围，使用 Forge + Vite + TypeScript + React 工程继续 M0–M6 的未完成验收，形成“人工示范→证据→原生脚本→逐 checkpoint 验收”闭环。所有功能使用新项目；agent-browser-evidence 只读参考。不要兼容 Node14/旧 Puppeteer，不做完整 DSL、站点模板或插件装配，不启动真实账号流程来代替工具回归。每阶段更新实际命令、版本、验收结果和限制；遇到关键技术失败先修订设计并给出证据。
+> 在 `D:\workspace\browser-evidence-studio` 中按 docs/design.md、docs/architecture.md 和本实施计划推进客户端。先读 docs/progress.md 与 docs/verification.md 确认当前已通过范围和代码/产物差异，不再在旧 Codex worktree 开发，使用 Forge + Vite + TypeScript + React 工程继续 M0–M6 的未完成验收，形成“人工示范→证据→原生脚本→逐 checkpoint 验收”闭环。所有功能使用新项目；agent-browser-evidence 只读参考。不要兼容 Node14/旧 Puppeteer，不做完整 DSL、站点模板或插件装配，不启动真实账号流程来代替工具回归。每阶段更新实际命令、版本、验收结果和限制；遇到关键技术失败先修订设计并给出证据。
 
 这是一段可用于后续会话的任务说明；设计目标和已验证实现必须结合 verification.md 区分。
