@@ -52,6 +52,8 @@ npm.cmd run build
 
 2026-09-23 将根包定为 `"type": "module"`，项目源码、配置和直接执行的 Node 脚本统一使用 ESM 写法。`forge.config.ts` 使用带类型的默认导出，三个 Vite 配置使用 `defineConfig`。Forge 从 7.8.1 起内置通过 jiti 加载 TS 配置；Vite 8 支持 TS 配置并默认先用 Rolldown 打包加载，无需另加 `ts-node`，本项目不要求切换 `--configLoader native`。配置依据见 [Forge TypeScript 配置](https://www.electronforge.io/config/typescript-configuration) 和 [Vite 8 配置](https://v8.vite.dev/config/)。
 
+开发服务器只监听 `127.0.0.1`，使用 `server.port: 0` 让系统分配可用端口；Forge 将实际地址注入 Electron，无需固定为 `5173`。Windows 的 TCP 排除范围可能覆盖默认端口，此时即使没有进程占用也会报 `listen EACCES`。可用 `netsh interface ipv4 show excludedportrange protocol=tcp` 检查；使用本配置后直接重新执行 `npm.cmd start`，无需修改系统端口排除项。
+
 - `vite.main.config.ts` 构建 ESM 的 `.vite/build/index.js` 和 `runner-worker.js`。
 - `vite.preload.config.ts` 将 TS ESM 源码打包为单文件 `.vite/build/preload.cjs`。
 - `vite.renderer.config.ts` 构建浏览器 ESM 到 `.vite/renderer/main_window/`。

@@ -21,6 +21,19 @@
 
 验证期间同目录另一项前端重构开始加入依赖、界面和测试改动。94 项及 19 进程结果对应前一实际 ESM 构建；随后共享树类型检查曾因尚未生成的 UI 组件及未就绪依赖失败，不能把当前前端中间状态算作全量通过。开发/打包专项只验收当次产物的模块加载与恢复，未验收新界面；后续前端任务负责最终源码/依赖/产物一致性及全量复验。未复跑长测与真实业务。Forge 上游 `inlineDynamicImports` 与 `codeSplitting:false` 同时存在时有忽略旧选项的提示，产物仍为单文件 preload；未修改 node_modules。
 
+## 开发启动端口修复（2026-09-23）
+
+用户执行 `npm run start` 在 Vite renderer 启动时报 `listen EACCES: permission denied 127.0.0.1:5173`。本机 `netsh interface ipv4 show excludedportrange protocol=tcp` 输出包含 **5141–5240**；Node `net.createServer().listen(5173, '127.0.0.1')` 实测同样返回 EACCES，改用端口 0 成功取得系统分配端口。未确认是哪项系统服务创建了排除范围。
+
+当时的 `vite.renderer.config.mjs`（ESM 迁移后为 `vite.renderer.config.ts`）保留 loopback 监听，并设置 `server.port: 0`。本地锁定版本的 Vite 保留 0，Forge 在监听成功后使用实际端口生成 renderer URL；无需修改系统排除范围或防火墙，该次修复未改变依赖及锁文件。
+
+- 实际 Node/npm 为 **24.21.0 / 11.19.0**；`npm.cmd run typecheck` 与 `git diff --check` 通过。
+- `BES_DATA` 设置为独立合成目录 `output/forge-start-1790099842887`、`BES_TEST=1`，清除 `ELECTRON_RUN_AS_NODE` 后执行 **`npm.cmd run start`**。Forge 完成 main/preload 构建，真实 Electron PID **32420** 完成主阶段场景，`test-result.json` 为 `passed: true`；进程退出 0，`diagnostics/latest.json` 为 `shutdown-complete` / `test-completed`。
+- Forge 注入的实际地址为 `http://localhost:11529`；HTML 和 `/@vite/client` 均返回 200，使用该客户端令牌连接同端口 WebSocket 收到 HMR `connected`。结果保存于同目录 `dev-server-check.json`，日志为 `forge-start.log`；没有将令牌写入报告。
+- 主阶段包括真实 React/IPC、回放、受控 runner、人工交接、HTTP、checkpoint、请求正文与恢复界面。此次只验证开发启动主阶段，未运行第二进程 profile 重启、19 进程强杀矩阵、长测或重新打包。
+
+此前沙箱尝试 `output/forge-start-1790099803196` 已越过端口错误并完成构建，但 Electron GPU 子进程以 `-1073741515` 崩溃，缺少完成报告；即使 Forge 外层返回 0，也不计为通过。随后在正常桌面执行环境完成上述成功复验，未修改 GPU 或 Chromium 安全配置。
+
 ## 退出诊断与最终强杀重开矩阵（2026-09-23）
 
 在 `7a6ef3f` / `9946a4b` 上完成退出诊断、连续退出保护、验收目录保存与控制交还的时序修复，以及统一桌面强杀回归。最终 `npm.cmd run typecheck`、`npm.cmd test` **94/94**、`npm.cmd run test:integration` 均通过；后者包含 Vite 构建和 **19 个真实 Electron 进程**，报告 `output/desktop-1790095701394/desktop-summary.json`。`git diff --check` 通过。Node 24.21.0 / npm 11.19.0、Electron 44.4.3 及锁文件 SHA-256 未变。
