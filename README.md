@@ -4,7 +4,7 @@
 
 人工操作网页并描述 checkpoint → 保存动作、网络、DOM 和截图证据 → agent 定向读取材料并编写普通 Puppeteer 代码 → 在客户端复跑并按需交还人工 → 按需求、数据契约和代码版本验收。
 
-**当前为可运行的开发版本。** M0–M5 核心流程已实现并通过合成回归，Windows ZIP 与打包 EXE 的两进程验证已有通过结果；M6 的技能接续、性能目标和真实业务验收仍有未完成项。当前进度、代码与产物的验证边界见 [进度与接续](docs/progress.md)，详细命令和证据见 [验证记录](docs/verification.md)。
+**当前为可运行的开发版本。** M0–M5 核心流程已实现并有合成通过记录，Windows ZIP 与打包 EXE 的两进程通过结果属于历史版本；M6 的技能接续、性能目标、当前源码重新打包和真实业务验收仍有未完成项。当前进度、代码与产物的验证边界见 [进度与接续](docs/progress.md)，详细命令和证据见 [验证记录](docs/verification.md)。
 
 ## 开发启动
 
@@ -33,6 +33,8 @@ npm.cmd start
 
 已有脚本时可以跳过人工示范：选择项目和命名登录环境、登记目录及填写输入后，直接点击“运行脚本并验收”。封存后或重新打开客户端也可这样复跑，无需先创建准备录制。当前执行、人工交接、报告保存或停止过程结束前，不能启动下一次验收。
 
+异常退出后，客户端从保存的证据重建验收记录。未提交完整终态的执行显示为中断，仍可查看已保存的 checkpoint，并准备新 run 重新验收。无法打开的存档可在恢复区域检查原因；只有确认旧 writer 已退出或 PID 已重用时才安全回收，身份未知或锁损坏时保留原件并说明原因。
+
 合成站点的订单、账号和二维码都是假数据。订单示例包含分页、去重、详情关联和分页终止；`normal`、`duplicate` 应通过，`missing`、`wrong-image`、`empty-middle` 应产生验收失败。普通脚本也可由 Node + 独立 Chrome 执行，无需启动 Electron；环境、输入及独立测试命令见 [示例说明](examples/orders/README.md)。
 
 ## 常用命令
@@ -43,14 +45,14 @@ npm.cmd start
 | `npm.cmd run build` | 构建 main、preload、renderer 和 runner worker |
 | `npm.cmd run typecheck` | TypeScript 类型检查 |
 | `npm.cmd test` | 单元测试与合成站点测试 |
-| `npm.cmd run test:integration` | 构建后执行真实 Electron 场景及第二进程 profile 重启验证 |
+| `npm.cmd run test:integration` | 构建后执行真实 Electron 场景、profile 重启、五种强杀恢复与再次重开，以及退出诊断 |
 | `npm.cmd run test:desktop` | `test:integration` 的别名 |
 | `npm.cmd run test:soak` | 在桌面场景中加入 20 分钟持续录制检查 |
 | `npm.cmd run test:example` | 独立 Chrome 中执行普通 Puppeteer 示例；需设置 `BROWSER_EXECUTABLE_PATH`，未设置时跳过 |
 | `npm.cmd run package` | 生成未签名的应用目录 |
 | `npm.cmd run make` | 生成 Windows ZIP 分发包 |
 
-桌面测试使用独立的 `output/desktop-<时间戳>/` 数据目录，保存日志、证据及 `desktop-summary.json`。仅当主进程场景与新 Electron 进程中的 profile 验证都成功时，总结果才通过。打包输出在 `out/`；命令存在不代表发行验收已完成。
+桌面测试使用独立的 `output/desktop-<时间戳>/` 数据目录，保存日志、证据及 `desktop-summary.json`。默认覆盖 19 个 Electron 进程；只有主场景、profile 重启、各恢复和退出诊断断言全部成功，总结果才通过。强杀进程和无完成报告的正常关窗本身不计测试通过。打包输出在 `out/`；命令存在不代表发行验收已完成。
 
 ## 数据与协作边界
 

@@ -180,6 +180,10 @@ query outputTruncated 与原件 captureStatus 独立；字段不存在与真实 
 - 应用重启提供恢复界面，核对实例/PID 启动身份/真实采集状态；不让用户手工移动锁文件。
 - 已显示“已保存”的 checkpoint 是耐久边界；尚未提交的数据窗口必须可测量并公开。
 
+当前 writer 实现把操作系统独占句柄与磁盘身份标记分开：以 run 目录的设备/文件身份确定 guard，Windows 使用独占 named pipe，进程退出由内核释放；`writer.lock` 保存 PID、操作系统启动身份与随机 owner token。新标记先写入并 sync 临时文件，再以不覆盖目标的硬链接原子发布。Windows 通过系统自带 Windows PowerShell 查询 `Process.StartTime` 的 FILETIME，不依赖开发者使用哪种 Node 版本管理器；查询失败是 unknown，不推断进程已死。当前 Windows 是实际验证平台。
+
+回收锁必须先取得 guard，再复核标记指纹和进程身份；只处理已退出进程或可证实的 PID 重用。旧格式仅有近似启动时间且 PID 仍活着、损坏标记、权限或查询错误均保留并显示原因。被回收的原锁和诊断保存到 run 内 `recovery/`，release 只删除匹配自身 token 的标记。界面的“检查恢复条件”提供检查和安全重开；此入口只供可信 UI 使用，没有强制清锁 HTTP 接口。界面检查是快照，实际重开仍须再次取得独占所有权。
+
 ## 6. 工作流描述与脚本契约
 
 使用薄 manifest，不开发通用 DSL：
@@ -221,6 +225,14 @@ runner 接受已登记目录内的入口、锁定依赖和内容指纹；不提�
 - job：queued / running / waiting-human / succeeded / failed / cancelled。
 
 状态持久化不等于进程仍活着。恢复时重新检查页面、profile、采集和任务。不能因为倒计时结束从 waiting-human 自动变为 succeeded。
+
+当前验收在创建 worker 前追加 `validation-started`，登记 validation/run/project/profile、输入摘要、执行版本和时间。结束时先保存带身份封套的完整 `validation-report` artifact，再追加引用其 ID/hash 的 `validation-complete` 终态；`validations.json` 仅为可重建目录。启动从各 run 原件重建记录，核对身份、顺序、报告 hash、输入和版本，并核验新协议所引用 checkpoint 的完整性与材料。仅完整且相符的终态可以恢复原结论；只有开始记录或孤立报告时标为 interrupted，不产生 pass。旧终态沿用原报告契约核验，明确标为 legacy-verified；旧目录里的 pass 本身不是证据。
+
+保存目录投影期间，对外状态保持 `finalizing` 和输入锁；控制清理完成后同步发布终态并交还人工，避免界面已显示完成却仍不能复跑。目录写入失败单独报告，不抹除已经完整提交的 run 终态。重复关窗或 app.quit 复用同一次退出清理，所有普通退出请求在清理完成前保持拦截，最后由 app.exit 退出。
+
+恢复不会恢复页面操作连接、旧 lease、worker 栈或人工等待；保留已保存的 checkpoint，复跑建立新 run。重复启动重建索引和目录，不重复登记同一次验收或追加相同恢复缺口。当前扫描仍在主进程，长历史成本和进程拆分另行评估。
+
+应用生命周期写入 `diagnostics/lifecycle-<实例 ID>.jsonl`，`diagnostics/latest.json` 保存最近阶段，含 PID、启动时间、关窗/app.quit/测试完成或失败原因及清理阶段。主进程强杀可能来不及写结束记录，因此缺失终态只能视为未知；测试启动器结合实际退出码、完整测试报告、生命周期末态与旧 soak 快照判定结果，不能把退出 0 或陈旧 running 状态当作通过。
 
 HTTP 写操作携带 leaseEpoch，旧控制权请求返回冲突；原生 Puppeteer 由第 3.3 节操作传输闸门实施同一控制权，不要求其协议凭空新增字段。幂等请求带 idempotencyKey，超时重试不重复创建 run/checkpoint。创建 job 后快速返回 202，查询和界面显示可取消状态。取消 worker 不强制关闭录制页面，便于排查；最终关闭由 run 生命周期统一处理。
 

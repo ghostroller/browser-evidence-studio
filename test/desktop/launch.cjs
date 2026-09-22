@@ -1,6 +1,7 @@
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const assert = require('node:assert/strict');
 
 const root = path.resolve('output/desktop-' + Date.now());
 fs.mkdirSync(root, { recursive: true });
@@ -15,18 +16,29 @@ if (soakArgument) {
 const executableArgument = process.argv.find(argument => argument.startsWith('--executable='));
 const executable = executableArgument ? path.resolve(executableArgument.slice('--executable='.length)) : require('electron');
 
-function launchPhase(phase, timeoutMs) {
+function launchPhase(phase, timeoutMs, { dataRoot = root, extraEnv = {}, terminateAtReady = false } = {}) {
   return new Promise(resolve => {
-    const resultName = phase === 'main' ? 'test-result.json' : 'profile-restart-result.json';
-    const logName = phase === 'main' ? 'desktop.log' : 'profile-restart.log';
-    const log = fs.createWriteStream(path.join(root, logName), { flags: 'wx' });
+    fs.mkdirSync(dataRoot, { recursive: true });
+    const resultName = phase === 'main' ? 'test-result.json' : `${phase}-result.json`;
+    const logName = phase === 'main' ? 'desktop.log' : `${phase}.log`;
+    const log = fs.createWriteStream(path.join(dataRoot, logName), { flags: 'wx' });
     const child = spawn(executable, executableArgument ? [] : ['.'], {
-      env: { ...baseEnv, BES_TEST_PHASE: phase, ...(phase === 'profile-restart' ? { BES_SOAK_MINUTES: '0' } : {}) },
+      env: { ...baseEnv, BES_DATA: dataRoot, BES_TEST_PHASE: phase, ...(phase !== 'main' ? { BES_SOAK_MINUTES: '0' } : {}), ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
-    let timedOut = false, spawnError, settled = false;
+    let timedOut = false, spawnError, settled = false, forcedAtBoundary = false, markerBuffer = '';
     const consume = (chunk, destination) => { log.write(chunk); destination.write(chunk); };
-    child.stdout.on('data', chunk => consume(chunk, process.stdout));
+    child.stdout.on('data', chunk => {
+      consume(chunk, process.stdout);
+      if (!terminateAtReady || forcedAtBoundary) return;
+      markerBuffer = (markerBuffer + chunk.toString()).slice(-8192);
+      if (!markerBuffer.split(/\r?\n/).includes('BES_RECOVERY_READY')) return;
+      try {
+        const cut = JSON.parse(fs.readFileSync(path.join(dataRoot, 'recovery-cut.json'), 'utf8'));
+        assert.equal(cut.processId, child.pid); assert.equal(cut.stage, extraEnv.BES_RECOVERY_STAGE);
+        forcedAtBoundary = true; child.kill('SIGKILL');
+      } catch (error) { spawnError = 'Invalid crash boundary: ' + String(error); child.kill('SIGKILL'); }
+    });
     child.stderr.on('data', chunk => consume(chunk, process.stderr));
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -38,11 +50,19 @@ function launchPhase(phase, timeoutMs) {
       settled = true;
       clearTimeout(timeout);
       log.end();
-      let result, reportError;
-      try { result = JSON.parse(fs.readFileSync(path.join(root, resultName), 'utf8')); }
+      let result, reportError, lifecycle, lastSoakProgress;
+      try { result = JSON.parse(fs.readFileSync(path.join(dataRoot, resultName), 'utf8')); }
       catch (error) { reportError = `No complete ${phase} report: ${String(error)}`; }
+      try {
+        const latest = JSON.parse(fs.readFileSync(path.join(dataRoot, 'diagnostics/latest.json'), 'utf8'));
+        if (latest.processId === child.pid) lifecycle = latest;
+      } catch { /* Missing diagnostics remain unknown, never evidence of success. */ }
+      try {
+        const saved = JSON.parse(fs.readFileSync(path.join(dataRoot, 'soak-progress.json'), 'utf8'));
+        lastSoakProgress = { recordedStatus: saved.status, elapsedMs: saved.elapsedMs, cycles: saved.cycles, minutes: saved.minutes };
+      } catch { /* A short phase has no soak progress. */ }
       const passed = !timedOut && !spawnError && code === 0 && result?.passed === true && result.phase === phase && result.processId === child.pid;
-      resolve({ phase, pid: child.pid, exitCode: code, signal, timedOut, passed, result, error: spawnError || reportError });
+      resolve({ phase, pid: child.pid, exitCode: code, signal, timedOut, passed, forcedAtBoundary, result, lifecycle, lastSoakProgress, error: spawnError || reportError });
     };
     child.once('error', error => { spawnError = String(error); finish(null, null); });
     // `close` follows process exit AND stream closure. A second Electron cannot
@@ -52,8 +72,9 @@ function launchPhase(phase, timeoutMs) {
 }
 
 async function main() {
-  const summary = { passed: false, output: root, main: null, profileRestart: { passed: false, status: 'not-run' } };
+  const summary = { passed: false, output: root, main: null, profileRestart: { passed: false, status: 'not-run' }, recovery: [], exitDiagnostics: [] };
   try {
+    if (!process.argv.includes('--recovery-only')) {
     const soakMinutes = Math.max(0, Number(baseEnv.BES_SOAK_MINUTES) || 0);
     summary.main = await launchPhase('main', 300000 + soakMinutes * 60000);
     if (!summary.main.passed) throw new Error('The initial desktop process failed; profile restart was not attempted.');
@@ -75,13 +96,48 @@ async function main() {
         after.siteOrigin !== before.siteOrigin || !after.restartVerifiedAt) {
       throw new Error('Restart result identity, fixture origin, or persisted verification state does not match both actual Electron processes.');
     }
+    }
+    // Keep each crash case in its own synthetic workspace. The main program is
+    // forcibly ended at a durable boundary, then reopened twice with fresh PIDs.
+    for (const stage of ['registered-before-worker', 'running', 'waiting-human', 'report-before-terminal', 'terminal-before-catalog']) {
+      const dataRoot = path.join(root, 'recovery-' + stage);
+      const crash = await launchPhase('recovery-crash', 90000, { dataRoot, extraEnv: { BES_RECOVERY_STAGE: stage }, terminateAtReady: true });
+      const entry = { stage, passed: false, crash }; summary.recovery.push(entry);
+      assert.equal(crash.forcedAtBoundary, true, `The ${stage} writer must reach its acknowledged boundary before termination`);
+      assert.equal(crash.timedOut, false); assert.equal(crash.passed, false);
+      assert.equal(crash.lifecycle?.stage, 'recovery-test-cut');
+      // A missing or corrupt convenience catalog cannot hide authoritative run evidence.
+      if (stage === 'terminal-before-catalog') fs.writeFileSync(path.join(dataRoot, 'validations.json'), '{incomplete-catalog');
+      else if (fs.existsSync(path.join(dataRoot, 'validations.json'))) fs.unlinkSync(path.join(dataRoot, 'validations.json'));
+      entry.reopened = await launchPhase('recovery-verify', 90000, { dataRoot });
+      assert.equal(entry.reopened.passed, true, `First reopen failed after ${stage}: ${entry.reopened.error || entry.reopened.result?.error}`);
+      entry.repeated = await launchPhase('recovery-repeat', 90000, { dataRoot });
+      assert.equal(entry.repeated.passed, true, `Repeated reopen failed after ${stage}: ${entry.repeated.error || entry.repeated.result?.error}`);
+      assert.notEqual(entry.reopened.pid, crash.pid); assert.notEqual(entry.repeated.pid, entry.reopened.pid);
+      entry.passed = true;
+    }
+    for (const [phase, reason] of [['exit-window-close', 'window-close'], ['exit-app-quit', 'app-quit']]) {
+      const dataRoot = path.join(root, phase);
+      const closed = await launchPhase(phase, 30000, { dataRoot });
+      summary.exitDiagnostics.push(closed);
+      assert.equal(closed.exitCode, 0); assert.equal(closed.timedOut, false);
+      assert.equal(closed.passed, false, 'An intentional exit with no completed test report must never count as a passed test');
+      assert.equal(closed.lifecycle?.stage, 'shutdown-complete'); assert.equal(closed.lifecycle?.details?.reason, reason);
+      const events = fs.readFileSync(path.join(dataRoot, 'diagnostics', closed.lifecycle.file), 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line));
+      const verified = events.filter(event => event.processId === closed.pid && event.stage === 'exit-reentry-verified');
+      assert.equal(verified.length, 1); assert.equal(verified[0].details.closeCalls, 1); assert.equal(verified[0].details.materialCount, 2);
+      closed.reentry = verified[0].details;
+    }
     summary.passed = true;
   } catch (error) {
     summary.error = String(error);
     console.error(summary.error);
   } finally {
     fs.writeFileSync(path.join(root, 'desktop-summary.json'), JSON.stringify(summary, null, 2));
-    console.log(JSON.stringify(summary, null, 2));
+    const phaseSummary = phase => phase && ({ phase: phase.phase, pid: phase.pid, passed: phase.passed, exitCode: phase.exitCode, signal: phase.signal, timedOut: phase.timedOut });
+    console.log(JSON.stringify({ passed: summary.passed, output: root, main: phaseSummary(summary.main), profileRestart: phaseSummary(summary.profileRestart),
+      recovery: summary.recovery.map(entry => ({ stage: entry.stage, passed: entry.passed, crash: phaseSummary(entry.crash), reopened: phaseSummary(entry.reopened), repeated: phaseSummary(entry.repeated) })),
+      exitDiagnostics: summary.exitDiagnostics.map(entry => ({ ...phaseSummary(entry), reason: entry.lifecycle?.details?.reason, reentry: entry.reentry })), error: summary.error }, null, 2));
     process.exitCode = summary.passed ? 0 : 1;
   }
 }

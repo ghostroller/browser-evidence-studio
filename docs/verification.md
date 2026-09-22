@@ -2,15 +2,39 @@
 
 更新日期：2026-09-23，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## 退出诊断与最终强杀重开矩阵（2026-09-23）
+
+在 `7a6ef3f` / `9946a4b` 上完成退出诊断、连续退出保护、验收目录保存与控制交还的时序修复，以及统一桌面强杀回归。最终 `npm.cmd run typecheck`、`npm.cmd test` **94/94**、`npm.cmd run test:integration` 均通过；后者包含 Vite 构建和 **19 个真实 Electron 进程**，报告 `output/desktop-1790095701394/desktop-summary.json`。`git diff --check` 通过。Node 24.21.0 / npm 11.19.0、Electron 44.4.3 及锁文件 SHA-256 未变。
+
+主场景 PID **36472**、profile 重启 PID **40276** 均退出 0，覆盖原有 UI、HTTP、控制权、五个脚本变体、checkpoint 取消/失败、请求正文及新的恢复界面。每个恢复案例使用独立合成数据根：收到耐久边界标记后由父启动器 SIGKILL 自己的子进程，再启动两个新 Electron 进程；下表各项均通过。
+
+| 强杀边界 | 强杀 / 首次重开 / 再次重开 PID | 核验结果 |
+| --- | --- | --- |
+| worker 创建前已登记 | 41816 / 17044 / 42432 | 恢复为 interrupted，无结果；checkpoint 原 ID/hash 保留 |
+| worker 已运行 | 32688 / 4840 / 30596 | 不恢复旧 worker 或控制权；恢复为 interrupted |
+| 等待人工 | 35484 / 14608 / 42432 | 不把未回复当成功，不恢复人工等待；恢复为 interrupted |
+| 报告保存后、终态前 | 41020 / 39064 / 34256 | 孤立报告仍按原 hash/字节可读，但不成为执行结果或 pass |
+| 终态后、目录保存前 | 27724 / 17480 / 42416 | 故意破坏目录后仍由终态与报告重建 completed/pass |
+
+五种案例均成功创建新 run 复跑，再次重开时验收记录不重复、原 run 原件字节不变、成功复跑结果仍可验证。新 run 的目录写入 barrier 验证：保存期间对外保持 finalizing/locked，无提前暴露的 result/artifact，重复验收返回 409；释放写入后结果与人工控制同时可用。
+
+连续关窗 PID **38712**、连续 app.quit PID **39460** 均在已有 run 和已保存 checkpoint 下执行。测试阻塞 Studio 关闭，再次请求退出，确认窗口仍在、同一次清理只执行一次；释放后核验两份材料的 hash/字节、writer lock 消失及 active 清空。诊断记录 `exit-reentry-verified` 和对应 `shutdown-complete`，实际退出 0。由于没有完整普通测试报告，这两个进程的普通 `passed` 仍为 false；父启动器按专门的退出诊断断言判定场景通过，五个被强杀进程也不冒充普通测试通过。
+
+生命周期诊断保存在各数据根的 `diagnostics/lifecycle-<实例 ID>.jsonl` 与 `latest.json`，记录 PID、启动时间、renderer/child 退出原因和清理阶段。强杀没有结束记录时只保留最后已确认阶段，不推断具体外部退出原因。首轮恢复界面截图已视检，最终同类截图位于上述报告目录。
+
+本批未重跑 20 分钟长测、独立 Edge 示例或发行 ZIP；此前长测在 18.19 分钟后退出的具体原因仍未知。退出诊断和短合成恢复通过不能外推为长负载、30 分钟全负载、性能阈值或真实账号业务通过。
+
 ## 验收记录持久化与恢复界面（2026-09-23）
 
 writer 修复已提交为 `7a6ef3f`。随后实现 worker 前登记、报告/终态提交与启动重建，增加可信 UI 存档检查、安全重开和中断验收查看。`npm.cmd run typecheck` 与 `npm.cmd test` **94/94 通过，0 失败、0 跳过**；其中验收恢复 12 项、存档恢复 4 项、Windows 原子替换故障注入 3 项。
 
 恢复单测覆盖孤立报告、目录丢失/损坏、报告 hash/身份/输入/版本不一致、checkpoint 材料不完整及正文缺失/修改、旧报告核验、目录写入失败、坏字段容错和启动期间取消。只有完整终态及对应材料通过检查才恢复原结论，目录中的 pass 不具备独立效力。
 
-真实 React/IPC 场景已通过：损坏锁保持原字节且无强制按钮；已退出 writer 可安全恢复；中断记录无 `result` 时仍显示原因与 checkpoint，并可准备新 run。截图 `output/desktop-1790095126782/ui-recovery-refused.png` 与 `ui-recovery-interrupted.png` 已视检，文本与操作入口可读。该目录的 `desktop-summary.json` 是首轮完整 19 进程通过报告；最终退出重入补强的复验另行记录。
+真实 React/IPC 场景已通过：损坏锁保持原字节且无强制按钮；已退出 writer 可安全恢复；中断记录无 `result` 时仍显示原因与 checkpoint，并可准备新 run。截图 `output/desktop-1790095126782/ui-recovery-refused.png` 与 `ui-recovery-interrupted.png` 已视检，文本与操作入口可读。该目录的 `desktop-summary.json` 是首轮完整 19 进程通过报告；最终补强复验见上方记录。
 
 首轮桌面尝试 `output/desktop-1790094903971/desktop-summary.json` 因替换 `manifest.json` 返回 `EPERM` 而失败，随后正常清理写入同一文件成功；没有证据确认具体占用来源。`atomicFile` 现仅对 Windows 的 EPERM/EACCES/EBUSY 有界重试：最多 7 次、总等待 1175 ms，重复 rename 同一已 sync 临时文件，不删除旧目标。永久失败保留旧目标并抛错；故障注入及后续桌面运行通过。
+
+补强复验 `output/desktop-1790095351901/desktop-summary.json` 在新 run 结束时发现完成状态早于人工控制交还，判为失败。原因是目录写入前已发布终态；现保存 terminal 候选快照，对外保持 finalizing，最终同步交还控制并发布结果。新增目录写入 barrier 稳定检查此窗口，包含保存期间拒绝下一次验收；最终运行结果见本页最新记录。
 
 ## writer 所有权与异常恢复（2026-09-23）
 
@@ -106,17 +130,17 @@ Electron ZIP 158,247,567 字节，SHA-256 为 `790a355b684d5c7cc8dc3cdd8c4cca7c4
 | 需求 | 实际证据与边界 |
 | --- | --- |
 | R01 桌面与目标身份 | WebContentsView、普通 Puppeteer 点击和导航、独立捕获连接、弹窗/opener、切页后操作目标、刷新与 DevTools 打开关闭均通过。按 CDP targetId 匹配，未按 URL 猜测。 |
-| R02 存储与恢复 | 单写者、确认提交后强杀 writer、损坏尾部保留、hash 校验、索引重建和稳定 ID 单测通过。renderer 强制崩溃后记录 gap，仍可封存。 |
+| R02 存储与恢复 | OS writer 身份、内核独占、并发回收、原子标记发布两侧强杀、owner token、损坏尾部保留、hash 校验、重复重开与稳定 ID 单测通过。真实 Electron 强杀后确认过的 checkpoint 仍可读；renderer 强制崩溃记录 gap 后仍可封存。unknown/corrupt 不强制回收。 |
 | R03 连续证据 | CDP 请求/响应、两跳重定向、1 MiB 完整 JSON、9 MiB 在 8 MiB 明确截断、rrweb 顶层与 iframe 场景通过。跨域 iframe/Canvas/媒体及 WebSocket/SSE 完整正文不作保证。 |
 | R04 checkpoint 与检查 | 原生视图蒙版、截图/DOM 落盘、有界回读、实际 UI 显示保存截图通过。检查点击只选元素，不执行站点按钮；采集期间页面定时器继续。 |
 | R05 控制与人工交接 | 并发 Promise/定时器命令在闸门关闭后拒绝；连接建立中停止不能晚到点击；两处人工窗口经真实原生输入和状态检查后恢复；未满足检查、超时和取消不通过。 |
 | R06 登录环境 | 同一 profile 新 run 及新 Electron 进程中的合成 Cookie/localStorage/IndexedDB 均保留，另一个 profile 保持为空。保存仍标记登录状态 unknown，不承诺 sessionStorage、内存态或跨机器迁移。 |
 | R07 HTTP | loopback、token ACL、Host/Origin、幂等 job、取消确认、身份与预算相关单测通过；真实 HTTP 场景完成 8 个 job、6 个控制权/身份拒绝，幂等点击只发生一次，键盘 fill 实际值正确，截图和 HTML 下载响应安全头通过。 |
 | R08 普通脚本 | 同一 `examples/orders/run.mjs` 在受管 worker 和独立 Edge 中运行；普通分页、去重和详情分支，无运行时 LLM 或 Electron 必需依赖。 |
-| R09 验收 | normal/duplicate 输出 7 条订单及关联详情并通过；wrong-image、missing、empty-middle 确实判失败。来源、实体 ID、覆盖、字段与版本指纹纳入验收。 |
+| R09 验收 | normal/duplicate 输出 7 条订单及关联详情并通过；wrong-image、missing、empty-middle 确实判失败。新增启动登记与终态证据重建；报告 hash/身份/输入/版本及 checkpoint 材料校验，未提交完整终态不恢复 pass。保留来源、实体 ID、覆盖和字段验收。 |
 | R10 项目技能 | 入口技能与按需引用的 HTTP/探索/验收说明已建立，skill-creator 的 quick_validate 已通过；未全局安装。独立接续检查只完成 capabilities/health/state 读取；进一步读取被自动审批拒绝，因此来源级接续未通过，未执行修改/复跑。 |
 | R11 长流程 | 两次 20 分钟尝试均未完成，最后一次仅有 18.19 分钟的阶段快照；无完整长测、最终封存/重建或该次重启通过结论。reader 的字节预算单测通过，但不能替代长负载验收。 |
-| R12 分发与真实验收 | D: 最新源码 Windows ZIP 生成、打包 EXE 两进程桌面与 profile 重启通过，包含 reader 修复；尚未签名。真实拼多多演示、扫码及业务需求验收未执行。 |
+| R12 分发与真实验收 | 历史 `f8e6eb8` 在 D: 生成 Windows ZIP、打包 EXE 两进程桌面与 profile 重启通过，包含当时 reader 修复；当前源码未重新打包，未签名。真实拼多多演示、扫码及业务需求验收未执行。 |
 
 ## 本轮发现并修复的问题
 

@@ -1,6 +1,6 @@
 # 环境与依赖
 
-更新日期：2026-09-22。开发与验收基线为 Windows x64、Node 24 LTS 和 npm。客户端源码、依赖、精确锁文件和构建入口已经落地；实际通过的场景与尚未完成的验收以 [验证记录](verification.md) 为准。
+更新日期：2026-09-23。开发与验收基线为 Windows x64、Node 24 LTS 和 npm。客户端源码、依赖、精确锁文件和构建入口已经落地；实际通过的场景与尚未完成的验收以 [验证记录](verification.md) 为准。
 
 ## 锁定的组合
 
@@ -21,6 +21,8 @@
 [package.json](../package.json) 是直接依赖版本依据，[package-lock.json](../package-lock.json) 固定传递依赖。`.node-version` 固定 Node，`.npmrc` 启用 `engine-strict` 和 `save-exact`；`engines.node` 为 `>=24.21.0 <25`，`packageManager` 为 `npm@11.19.0`。
 
 开发终端的 Node 与 Electron 内置 Node 是两个运行时。Electron 的 Node/Chromium 版本由应用实际报告并写入验证证据，不能从终端 `node --version` 推断。Puppeteer 与 Electron Chromium 的版本对应也不能代替实际能力验证；M0 关键路径已经运行，完整场景仍需逐项验收。
+
+Windows writer 所有权检查调用系统自带 Windows PowerShell 查询进程启动 FILETIME，后台运行且不加载用户 profile；该系统组件与开发终端或 Node 版本管理器无关。查询无法确认身份时拒绝写入/回收并说明原因。writer 标记原子发布需要文件系统支持硬链接，当前已在本机 NTFS 验证；不支持时明确报错，不降级为覆盖已有锁。
 
 ## 安装和启动
 
@@ -84,14 +86,14 @@ HTTP 服务只供本机访问，地址和连接文件路径可在客户端“连
 | --- | --- |
 | `npm.cmd run typecheck` | 全项目类型检查 |
 | `npm.cmd test` | 单元测试和合成站点测试 |
-| `npm.cmd run test:integration` | 构建后启动真实 Electron，执行桌面场景并在第二个进程中验证 profile 重启 |
+| `npm.cmd run test:integration` | 构建后执行桌面/profile 重启、五种强杀与两次重开，以及重复退出诊断，共 19 个 Electron 进程 |
 | `npm.cmd run test:desktop` | 与 `test:integration` 相同 |
 | `npm.cmd run test:soak` | 同一桌面入口，增加 20 分钟持续录制检查 |
 | `npm.cmd run test:example` | 独立 Chrome 中执行示例；需设置 `BROWSER_EXECUTABLE_PATH`，缺少时跳过 |
 | `npm.cmd run package` | Forge 生成应用目录 |
 | `npm.cmd run make` | Forge 生成 Windows ZIP |
 
-桌面测试自动使用 `output/desktop-<时间戳>/` 保存日志、run 和报告。`desktop-summary.json` 汇总两个 Electron 进程的结果；首阶段失败时不会把未执行的重启检查算作通过。Windows ZIP 与打包 EXE 的两进程回归已有实测通过；20 分钟结果及最近源码与产物的对应关系见 [验证记录](verification.md)，不能仅凭命令存在判定通过。
+桌面测试自动使用 `output/desktop-<时间戳>/` 保存日志、run 和报告。`desktop-summary.json` 汇总各进程结果；首阶段失败时不会把未执行的重启检查算作通过。强杀/缺少完整报告的进程不会被标为普通测试通过，恢复案例由重开后的独立断言判定。诊断记录位于数据根目录 `diagnostics/`，含实例/PID、最后阶段和退出原因；20 分钟旧快照不证明进程仍在运行。Windows ZIP 与打包 EXE 两进程验证是历史记录，当前源码的最新通过范围与产物对应关系见 [验证记录](verification.md)。
 
 ## 升级要求
 

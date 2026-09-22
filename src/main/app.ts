@@ -7,6 +7,7 @@ import { Studio } from './services/studio';
 import { ensure } from '../shared/errors';
 import { makeDispatch } from './services/dispatch';
 import { startApi, type ApiHandle } from './api/server';
+import { LifecycleLog } from './lifecycle-log';
 
 const dataRoot=process.env.BES_DATA||path.join(app.getPath('appData'),app.isPackaged?'BrowserEvidenceStudio':'BrowserEvidenceStudio-dev');
 app.setPath('userData',dataRoot);
@@ -15,11 +16,16 @@ app.commandLine.appendSwitch('remote-debugging-port','0');
 // Managed scripts still need compositor visibility callbacks behind other desktop windows.
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
 protocol.registerSchemesAsPrivileged([{scheme:'bes-artifact',privileges:{standard:true,secure:true,supportFetchAPI:true}}]);
-let studio:Studio|undefined;let api:ApiHandle|undefined;let quitting=false;
+let studio:Studio|undefined;let api:ApiHandle|undefined;let quitting=false;let lifecycle:LifecycleLog|undefined;
+let shutdownTask:Promise<void>|undefined;let shutdownExitCode=0;
 async function endpoint(){for(let i=0;i<100;i++){try{const [port,browserPath]=(await readFile(path.join(dataRoot,'DevToolsActivePort'),'utf8')).trim().split(/\r?\n/);const url=`http://127.0.0.1:${port}/json/version`;const data=await fetch(url).then(r=>r.json()) as any;if(data.webSocketDebuggerUrl)return `ws://127.0.0.1:${port}${browserPath}`;}catch{}await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('Internal CDP endpoint did not become ready');}
 if(!app.requestSingleInstanceLock())app.quit();
 else app.whenReady().then(async()=>{
-  await mkdir(dataRoot,{recursive:true});const window=new StudioWindow();studio=new Studio(dataRoot,window,await endpoint());await studio.init();
+  await mkdir(dataRoot,{recursive:true});lifecycle=await LifecycleLog.start(dataRoot);
+  const testPhase=process.env.BES_TEST?process.env.BES_TEST_PHASE||'main':undefined;
+  const recoveryObserver=testPhase==='recovery-crash'?(await import('../../test/desktop/recovery-scenarios')).recoveryObserver(dataRoot,async(stage)=>{await lifecycle?.record('recovery-test-cut',{stage});}):undefined;
+  const window=new StudioWindow();studio=new Studio(dataRoot,window,await endpoint(),recoveryObserver);
+  await lifecycle.record('workspace-opening');await studio.init();await lifecycle.record('workspace-opened');
   const dispatch=makeDispatch(studio);api=await startApi({root:dataRoot,dispatch});studio.connection={address:api.address,file:api.connectionFile};
   protocol.handle('bes-artifact',async request=>{try{
     const u=new URL(request.url),reader=studio!.reader(u.hostname),id=u.pathname.slice(1),metadata=await reader.artifactMetadata(id);
@@ -33,13 +39,48 @@ else app.whenReady().then(async()=>{
   });
   ipcMain.on('studio:bounds',(event,rect)=>{if(event.sender===window.window.webContents&&event.senderFrame===window.window.webContents.mainFrame&&event.senderFrame.url===window.uiUrl)window.bounds(rect);});
   await window.load();
-  window.window.on('close',event=>{if(!quitting){event.preventDefault();void shutdown();}});
+  await lifecycle.record('ui-ready');
+  window.window.on('close',event=>{event.preventDefault();void shutdown('window-close');});
   if(process.env.BES_TEST){
     const phase=process.env.BES_TEST_PHASE||'main';
-    const resultFile=phase==='profile-restart'?'profile-restart-result.json':'test-result.json';
+    const allowedPhases=['main','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit'];
+    ensure(allowedPhases.includes(phase),'Unknown desktop test phase');
+    const resultFile=phase==='main'?'test-result.json':`${phase}-result.json`;
     const identity:Record<string,unknown>={phase,processId:process.pid,startedAt:new Date().toISOString()};
     try{
-      ensure(phase==='main'||phase==='profile-restart','Unknown desktop test phase');
+      await lifecycle.record('test-started',{phase});
+      if(phase==='exit-window-close'||phase==='exit-app-quit'){
+        const {startFixture}=await import('../../test/fixtures/site');const fixture=await startFixture();
+        const project=await studio.createProject({name:'Exit reentry',objective:'Retain acknowledged evidence while close requests repeat'});
+        const profile=await studio.createProfile({projectId:project.id,name:'Synthetic exit profile'});
+        await studio.startRun({projectId:project.id,profileId:profile.id,url:fixture.url+'/orders'});
+        const runId=studio.required().id,checkpoint=await studio.checkpoint({key:'before-exit',title:'Acknowledged before repeated exit'});
+        ensure(checkpoint.metadata?.captureStatus==='complete','Exit regression requires a complete checkpoint');
+        const savedArtifacts=await Promise.all(checkpoint.artifactRefs.map(id=>studio!.reader(runId).artifactMetadata(id)));
+        const originalClose=studio.close.bind(studio);let closeCalls=0,reentryChecked=false;
+        let reachedClose!:()=>void,releaseClose!:()=>void;
+        const closing=new Promise<void>(resolve=>{reachedClose=resolve;}),released=new Promise<void>(resolve=>{releaseClose=resolve;});
+        studio.close=async()=>{
+          closeCalls++;reachedClose();await released;
+          ensure(reentryChecked&&closeCalls===1,'Repeated exit bypassed or duplicated the pending Studio close');
+          await originalClose();
+          const reader=studio!.reader(runId),checkpoints=await reader.checkpoints({limit:20,maxBytes:32768});
+          ensure(checkpoints.items.some((item:any)=>item.id===checkpoint.id),'The saved checkpoint was lost during repeated exit');
+          for(const saved of savedArtifacts){const verified=await reader.artifactFile(saved.id);ensure(verified.artifact.sha256===saved.sha256&&verified.artifact.capturedBytes===saved.capturedBytes,'Checkpoint material changed during repeated exit');}
+          let writerLockPresent=true;try{await readFile(path.join(reader.runDir,'writer.lock'));}catch(error:any){if(error.code!=='ENOENT')throw error;writerLockPresent=false;}
+          ensure(!writerLockPresent&&!studio!.active,'Repeated exit must finish closing its writer and active run');
+          await fixture.close();await lifecycle!.record('exit-reentry-verified',{phase,runId,checkpointId:checkpoint.id,closeCalls,materialCount:savedArtifacts.length});
+        };
+        const requestExit=()=>phase==='exit-window-close'?window.window.close():app.quit();
+        requestExit();await closing;
+        try{
+          const firstShutdown=shutdownTask;requestExit();
+          await new Promise(resolve=>setTimeout(resolve,100));
+          ensure(!window.window.isDestroyed()&&closeCalls===1&&shutdownTask===firstShutdown,'Repeated exit escaped the pending shutdown barrier');
+          reentryChecked=true;
+        }finally{releaseClose();}
+        await shutdownTask;return;
+      }
       if(phase==='profile-restart'){
         const saved=JSON.parse(await readFile(path.join(dataRoot,'profile-restart-state.json'),'utf8'));
         ensure(saved.schemaVersion===1&&saved.restartStatus==='not-run','A fresh first-process profile restart checkpoint is required');
@@ -51,20 +92,47 @@ else app.whenReady().then(async()=>{
         const {runProfileRestartScenarios}=await import('../../test/desktop/lifecycle');
         const fixture=await startFixture({port:saved.fixturePort});
         try{await runProfileRestartScenarios(studio,fixture.url);}finally{await fixture.close();}
+      }else if(phase.startsWith('recovery-')){
+        const {runRecoveryCrash,verifyRecovery}=await import('../../test/desktop/recovery-scenarios');
+        if(phase==='recovery-crash')await runRecoveryCrash(studio);
+        else Object.assign(identity,await verifyRecovery(studio,phase==='recovery-repeat'));
       }else{
         const {runDesktopTests}=await import('../../test/desktop/scenarios');
         await runDesktopTests(studio);
         Object.assign(identity,{ui:process.env.BES_SKIP_UI?'skipped':'passed',lifecycle:'passed',profileRestart:'pending-second-process'});
       }
       await writeFile(path.join(dataRoot,resultFile),JSON.stringify({...identity,passed:true,finishedAt:new Date().toISOString(),versions:studio.state().versions},null,2));
-      await shutdown();
+      await lifecycle.record('test-completed',{phase});await shutdown('test-completed');
     }catch(error){
       console.error(error);
       await writeFile(path.join(dataRoot,resultFile),JSON.stringify({...identity,passed:false,finishedAt:new Date().toISOString(),error:String(error),stack:(error as Error).stack},null,2));
-      await shutdown(1);
+      await shutdown('test-failed',1);
     }
   }
-}).catch(error=>{console.error(error);app.exit(1);});
+}).catch(error=>{console.error(error);void shutdown('startup-failed',1);});
 app.on('second-instance',()=>studio?.window.window.focus());
-app.on('before-quit',event=>{if(!quitting){event.preventDefault();void shutdown();}});
-async function shutdown(code=0){if(quitting)return;quitting=true;try{await api?.close();await studio?.close();}finally{app.exit(code);}}
+app.on('child-process-gone',(_event,details)=>{
+  if(!quitting)void lifecycle?.record('child-process-gone',{type:details.type,reason:details.reason,exitCode:details.exitCode}).catch(error=>console.error('Lifecycle diagnostic could not be saved',error));
+});
+app.on('render-process-gone',(_event,contents,details)=>{
+  if(!quitting)void lifecycle?.record('renderer-gone',{webContentsId:contents.id,reason:details.reason,exitCode:details.exitCode}).catch(error=>console.error('Lifecycle diagnostic could not be saved',error));
+});
+app.on('before-quit',event=>{event.preventDefault();void shutdown('app-quit');});
+function shutdown(reason:string,code=0):Promise<void>{
+  shutdownExitCode=Math.max(shutdownExitCode,code);
+  if(shutdownTask)return shutdownTask;
+  quitting=true;
+  shutdownTask=(async()=>{
+    const record=async(stage:string,details:Record<string,unknown>={})=>{try{await lifecycle?.record(stage,{reason,...details});}catch(error){shutdownExitCode=1;console.error('Lifecycle diagnostic could not be saved',error);}};
+    await record('shutdown-requested',{exitCode:shutdownExitCode,runId:studio?.active?.id,execution:studio?.active?.execution});
+    for(const [stage,close] of [['api',()=>api?.close()],['studio',()=>studio?.close()]] as const){
+      await record('closing-'+stage);
+      try{await close();await record(stage+'-closed');}
+      catch(error){shutdownExitCode=1;console.error(stage+' shutdown failed',error);await record(stage+'-close-failed');}
+    }
+    // app.exit bypasses before-quit/close, so every ordinary exit request can
+    // remain blocked until this single cleanup promise has finished.
+    await record('shutdown-complete',{exitCode:shutdownExitCode});app.exit(shutdownExitCode);
+  })();
+  return shutdownTask;
+}

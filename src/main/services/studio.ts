@@ -67,8 +67,8 @@ export class Studio {
     const recovered=await recoverValidationCatalog(this.root,this.runs,this.projects);
     this.validations=recovered.records;this.validationRecovery={diagnostics:recovered.diagnostics,catalogStatus:recovered.catalogStatus};this.onChanged();return recovered;
   }
-  private async saveValidations(){
-    try{await saveValidationCatalog(this.root,this.validations);this.validationRecovery.catalogStatus='rebuilt';}
+  private async saveValidations(records:ValidationRecord[]=this.validations){
+    try{await saveValidationCatalog(this.root,records);this.validationRecovery.catalogStatus='rebuilt';}
     catch(error){this.validationRecovery.catalogStatus='write-failed';this.validationRecovery.diagnostics.push({code:'catalog-write-failed',message:`Validation evidence is saved, but its catalog could not be updated: ${String(error)}`});}
   }
   private async observeValidation(stage:ValidationLifecycleStage,context:ValidationLifecycleContext,signal?:AbortSignal){
@@ -332,12 +332,26 @@ export class Studio {
       progress:async(message)=>{await r.store.appendEvent({type:'progress',source:'runner',data:{message}});},
       requestHuman:async(request,signal)=>{const state=await this.beginHuman(request,'runner',p.pageId,signal);await this.observeValidation('waiting-human',context,signal);return state.completion;},
     }});
-    const handle=this.workflow;const settlement=handle.done.then(async result=>{
+    const handle=this.workflow;let terminalRecord:ValidationRecord|undefined,terminalExecution:string|undefined;
+    const catalogSnapshot=(candidate:ValidationRecord)=>this.validations.map(item=>item===record?candidate:item);
+    const settlement=handle.done.then(async result=>{
       record.status='finalizing';r.execution='finalizing';r.locked=true;this.window.lock(true);
-      const savedRecord=await commitValidation(r.store,record,result,(stage,context)=>this.observeValidation(stage,context));
-      Object.assign(record,savedRecord);r.execution=result.status;if(r.handoff)r.handoff.status=result.status==='completed'?'completed':result.status==='cancelled'?'cancelled':'needs-attention';await this.saveValidations();
-    }).catch(async error=>{record.status='interrupted';record.error='Validation report could not be committed: '+String(error);record.recovery={...record.recovery,state:'interrupted',reason:record.error};delete record.result;r.execution='failed';this.validationRecovery.diagnostics.push({runId:r.id,validationId:id,code:'validation-commit-failed',message:record.error});await r.store.appendEvent({type:'gap',source:'runner',data:{reason:record.error,validationId:id}}).catch(()=>{});await this.saveValidations();
-    }).finally(()=>{if(this.active===r&&!r.stopping&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;this.window.lock(false);}if(this.workflow===handle)this.workflow=undefined;if(this.workflowSettlement===settlement)this.workflowSettlement=undefined;this.onChanged();});
+      terminalRecord=await commitValidation(r.store,record,result,(stage,context)=>this.observeValidation(stage,context));terminalExecution=result.status;
+      // Persist a terminal projection without publishing completion while its
+      // catalog write and control cleanup are still in progress.
+      await this.saveValidations(catalogSnapshot(terminalRecord));
+    }).catch(async error=>{
+      const message='Validation report could not be committed: '+String(error);
+      terminalRecord={...record,status:'interrupted',error:message,recovery:{...record.recovery,state:'interrupted',reason:message}};delete terminalRecord.result;delete terminalRecord.artifactId;terminalExecution='failed';
+      this.validationRecovery.diagnostics.push({runId:r.id,validationId:id,code:'validation-commit-failed',message});
+      await r.store.appendEvent({type:'gap',source:'runner',data:{reason:message,validationId:id}}).catch(()=>{});await this.saveValidations(catalogSnapshot(terminalRecord));
+    }).finally(()=>{
+      if(this.active===r&&!r.stopping&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;this.window.lock(false);}
+      if(this.workflow===handle)this.workflow=undefined;if(this.workflowSettlement===settlement)this.workflowSettlement=undefined;
+      // No await between releasing ownership and exposing the terminal record.
+      if(terminalRecord){Object.assign(record,terminalRecord);if(!r.stopping)r.execution=terminalExecution!;if(r.handoff)r.handoff.status=record.status==='completed'?'completed':record.status==='cancelled'?'cancelled':'needs-attention';}
+      this.onChanged();
+    });
     this.workflowSettlement=settlement;if(this.closing||startup.abort.signal.aborted){await handle.cancel('Application closing or takeover during worker startup');await settlement;}return {id,runId:r.id,status:record.status};
     }catch(error){startup.gate?.close();r.execution=startup.abort.signal.aborted?'cancelled':'failed';if(!r.stopping&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;this.window.lock(false);}record.status=r.execution;record.error=String(error);await r.store.appendEvent({type:'validation-launch-failed',source:'studio',data:{id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory,status:record.status,error:record.error,startEventId:record.recovery?.startEventId}}).catch(failure=>{this.validationRecovery.diagnostics.push({runId:r.id,validationId:id,code:'validation-launch-unrecorded',message:String(failure)});});await this.saveValidations();throw error;}
     finally{if(this.workflowStarting===startup)this.workflowStarting=undefined;startup.finish();}
