@@ -6,7 +6,9 @@ import type { Studio } from '../../src/main/services/studio';
 import { EvidenceReader } from '../../src/evidence/reader';
 import { runRunnerScenarios } from './runner-scenarios';
 import { runSoak } from './soak';
-import { runUiScenarios } from './ui-scenarios';
+import { runUiScenarios, runReviewUiScenarios } from './ui-scenarios';
+import { runCheckpointScenarios } from './checkpoint-scenarios';
+import { runRequestBodyScenarios } from './request-body-scenarios';
 import { runLifecycleScenarios } from './lifecycle';
 import { runApiScenarios } from './api-scenarios';
 export async function runDesktopTests(studio:Studio){
@@ -48,8 +50,11 @@ export async function runDesktopTests(studio:Studio){
     const readback=await reader.checkpoints({limit:20});assert.ok(readback.items.some((x:any)=>x.id===cp.id));
     console.log('M0/M1 PASS: exact target, navigation, concurrent gate, independent capture, checkpoint, seal/reopen');
     await runRunnerScenarios(studio,site.url);
+    if(!process.env.BES_SKIP_UI)await runReviewUiScenarios(studio);
     await runLifecycleScenarios(studio,site.url);
     await runApiScenarios(studio,site.url);
+    await runCheckpointScenarios(studio,site.url);
+    await runRequestBodyScenarios(studio,site.url);
     if(Number(process.env.BES_SOAK_MINUTES)>0)await runSoak(studio,site.url,Number(process.env.BES_SOAK_MINUTES));
   }finally{await site.close();}
 }

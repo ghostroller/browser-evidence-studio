@@ -2,10 +2,11 @@ import { readFile } from 'node:fs/promises';
 import type { Studio } from './studio';
 import { ensure } from '../../shared/errors';
 import { loadWorkflow } from '../../runner/fingerprint';
-const READ=new Set(['state','projects','project','profiles','workflows','runs','run','pages','snapshot','checkpoints','summary','gaps','events','artifacts','artifact','artifactContent','handoffs','validations','validation','history','replay']);
+const READ=new Set(['state','projects','project','profiles','workflows','runs','run','pages','snapshot','checkpoints','summary','gaps','events','artifacts','artifact','artifactContent','handoffs','validations','validation','reviews','history','replay']);
 export function makeDispatch(studio:Studio){
-  return async function dispatch(method:string,body:any={},source:'api'|'ui'='ui'):Promise<any>{
+  return async function dispatch(method:string,body:any={},source:'api'|'ui'='ui',context:{signal?:AbortSignal}={}):Promise<any>{
     const execute=async()=>{
+    if(method==='checkpoint')context.signal?.throwIfAborted();
     const runMethods=new Set(['action','checkpoint','control','pauseOperations','pauseCapture','seal','inspect','selectPage','requestHuman','replyHuman','cancelHandoff','startValidation','stopRunner','saveProfile']);
     if(source==='api'&&runMethods.has(method)){
       const r=studio.required();ensure(body.leaseEpoch===r.leaseEpoch,'Stale control lease',409);if(body.runId)ensure(body.runId===r.id,'Run is not active',409);if(body.profileId)ensure(body.profileId===r.profileId,'Profile is not active',409);
@@ -28,7 +29,9 @@ export function makeDispatch(studio:Studio){
       case 'snapshot':if(source==='api')ensure(studio.active?.id===body.runId,'Run is not active',409);return studio.snapshot(body);
       case 'navigate':return studio.navigate(body.url);case 'action':return studio.action(body);
       case 'selectPage':{const r=studio.required(),p=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;ensure(p,'Unknown page');ensure(!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Cannot change execution target while running',409);ensure(!r.pendingOperation,'Operation connection is still starting',409);const operation=r.operation;if(operation){await operation.gate.quiesce();await operation.browser.disconnect();if(r.operation===operation)r.operation=undefined;}ensure(studio.active===r&&r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Page selection was cancelled',409);r.selectedPageId=p.pageId;r.leaseEpoch++;studio.window.show(p.view);return studio.state();}
-      case 'checkpoint':return studio.checkpoint(body);case 'inspect':ensure(studio.required().controller==='human'&&!['running'].includes(studio.required().execution),'Inspection requires human control',409);await studio.current().capture.inspect(!!body.enabled);return {enabled:!!body.enabled};
+      case 'checkpoint':return studio.checkpoint(body,{signal:context.signal});
+      case 'cancelCheckpoint':ensure(source==='ui','Checkpoint API cancellation uses its job identity',403);return studio.cancelCheckpoint(body);
+      case 'inspect':ensure(studio.required().controller==='human'&&!['running'].includes(studio.required().execution),'Inspection requires human control',409);await studio.current().capture.inspect(!!body.enabled);return {enabled:!!body.enabled};
       case 'pauseOperations':return studio.pauseOperations(!!body.paused);case 'pauseCapture':return studio.pauseCapture(!!body.paused);case 'seal':return studio.seal();case 'control':ensure(['human','agent'].includes(body.controller),'Invalid controller');return studio.control(body.controller);case 'saveProfile':return studio.saveProfile();
       case 'history':return studio.history(body.runId);case 'summary':return studio.reader(body.runId).summary(body);case 'events':return studio.reader(body.runId).events(body);case 'gaps':return studio.reader(body.runId).gaps(body);case 'checkpoints':return studio.reader(body.runId).checkpoints(body);case 'artifacts':return studio.reader(body.runId).artifacts(body);
       case 'artifact':{ensure(body.runId,'runId query required');const result=await studio.reader(body.runId).artifact(body.artifactId||body.id,body);return source==='ui'?{...result,url:`bes-artifact://${body.runId}/${body.artifactId||body.id}`}:result;}
@@ -36,11 +39,12 @@ export function makeDispatch(studio:Studio){
       case 'showBrowser':studio.window.setBrowserVisible(!!body.visible);return {};
       case 'syntheticSite':return studio.syntheticSite();case 'replay':ensure(source==='ui','Replay is a trusted UI view',403);return studio.replay(body);
       case 'validate':case 'startValidation':return studio.validate(body);case 'validation':return studio.validation(source==='api'?body.validationId:body.id||body.validationId);case 'validations':return {items:studio.state().validations.filter(v=>!body.runId||v.runId===body.runId)};case 'review':return studio.review({...body,id:source==='api'?body.validationId:body.id||body.validationId});
+      case 'reviews':return studio.reviews(source==='api'?body.validationId:body.id||body.validationId,body);
       case 'requestHuman':return studio.startHandoff(body);case 'replyHuman':case 'releaseHuman':return studio.releaseHuman(body.handoffId||body.id);case 'cancelHandoff':return studio.cancelHandoff(body.handoffId||body.id);case 'handoffs':{const active=studio.active;return {items:active&&active.id===body.runId&&active.handoff?[active.handoff]:[]};}
       case 'stopRunner':return studio.stopRunner();case 'cancelJob':ensure(['startValidation','requestHuman','action'].includes(body.operation),'This short atomic operation cannot be cancelled after commit',409);return studio.stopRunner();
       default:ensure(false,'Unknown operation: '+method,404);
     }};
     // Read-only state and handoff replies must remain responsive during long operations.
-    return READ.has(method)||['replyHuman','releaseHuman','stopRunner','cancelJob','cancelHandoff'].includes(method)?execute():studio.serialized(execute);
+    return READ.has(method)||['replyHuman','releaseHuman','stopRunner','cancelJob','cancelHandoff','cancelCheckpoint'].includes(method)?execute():studio.serialized(execute);
   };
 }

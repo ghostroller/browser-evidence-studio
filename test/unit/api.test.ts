@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { startApi, ApiOptions } from '../../src/main/api/server';
+import { makeDispatch } from '../../src/main/services/dispatch';
+import type { Studio } from '../../src/main/services/studio';
 
 async function setup(dispatch: ApiOptions['dispatch']) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bes-api-test-'));
@@ -25,6 +27,69 @@ async function eventual<T>(read: () => Promise<T>, predicate: (value: T) => bool
   for (let i = 0; i < 80; i++) { const value = await read(); if (predicate(value)) return value; await new Promise((resolve) => setTimeout(resolve, 10)); }
   throw new Error('Asynchronous operation did not reach its expected state.');
 }
+
+test('checkpoint job cancellation binds to the queued job and retains partial evidence for an active job', async () => {
+  let queue: Promise<unknown> = Promise.resolve(), finishFirst!: () => void;
+  const started: string[] = [];
+  const run = { id: 'run-1', leaseEpoch: 1, controller: 'agent', pages: new Map([['page-1', { navigationGeneration: 1 }]]) };
+  const studio = {
+    required: () => run,
+    serialized<T>(action: () => Promise<T>) { const result = queue.then(action); queue = result.catch(() => {}); return result; },
+    async checkpoint(body: any, options: { signal?: AbortSignal }) {
+      started.push(body.key);
+      if (body.key === 'first') await new Promise<void>(resolve => { finishFirst = resolve; });
+      else await new Promise<void>(resolve => { options.signal!.addEventListener('abort', () => resolve(), { once: true }); });
+      return { id: `cp-${body.key}`, artifactRefs: ['saved-screenshot'], metadata: { captureOutcome: options.signal?.aborted ? 'cancelled' : 'completed', captureStatus: 'partial' } };
+    },
+  };
+  const fixture = await setup(makeDispatch(studio as unknown as Studio));
+  try {
+    const body = { pageId: 'page-1', generation: 1, leaseEpoch: 1 };
+    const a = (await fixture.call('POST', '/v1/runs/run-1/checkpoints', { ...body, key: 'first' })).json.jobId;
+    await eventual(async () => started.length, count => count === 1);
+    const b = (await fixture.call('POST', '/v1/runs/run-1/checkpoints', { ...body, key: 'queued' })).json.jobId;
+    await eventual(() => fixture.call('GET', `/v1/jobs/${b}`), result => result.json.status === 'running');
+    await fixture.call('POST', `/v1/jobs/${b}/cancel`, {});
+    assert.deepEqual(started, ['first'], 'Cancelling the queued job cannot invoke or cancel the active capture');
+    finishFirst();
+    const first = await eventual(() => fixture.call('GET', `/v1/jobs/${a}`), result => result.json.status === 'succeeded');
+    assert.equal(first.json.result.metadata.captureOutcome, 'completed');
+    await eventual(() => fixture.call('GET', `/v1/jobs/${b}`), result => result.json.status === 'cancelled');
+    assert.deepEqual(started, ['first'], 'Cancelled service callback must not capture later');
+    const c = (await fixture.call('POST', '/v1/runs/run-1/checkpoints', { ...body, key: 'active' })).json.jobId;
+    await eventual(async () => started.length, count => count === 2);
+    await fixture.call('POST', `/v1/jobs/${c}/cancel`, {});
+    const cancelled = await eventual(() => fixture.call('GET', `/v1/jobs/${c}`), result => result.json.status === 'cancelled');
+    assert.equal(cancelled.json.result.id, 'cp-active');
+    assert.deepEqual(cancelled.json.result.artifactRefs, ['saved-screenshot']);
+    await fixture.call('POST', `/v1/jobs/${c}/cancel`, {});
+    assert.equal((await fixture.call('GET', `/v1/jobs/${c}`)).json.status, 'cancelled');
+  } finally { finishFirst?.(); await fixture.cleanup(); }
+});
+
+test('checkpoint cancellation during commit waits for the actual durable result or storage failure', async () => {
+  let started = false, commit!: (value: unknown) => void, fail!: (error: Error) => void;
+  const fixture = await setup((method) => {
+    assert.equal(method, 'checkpoint'); started = true;
+    return new Promise((resolve, reject) => { commit = resolve; fail = reject; });
+  });
+  try {
+    for (const failStorage of [false, true]) {
+      started = false;
+      const jobId = (await fixture.call('POST', '/v1/runs/run-1/checkpoints', { leaseEpoch: 1, key: String(failStorage) })).json.jobId;
+      await eventual(async () => started, Boolean);
+      await fixture.call('POST', `/v1/jobs/${jobId}/cancel`, {});
+      const pending = (await fixture.call('GET', `/v1/jobs/${jobId}`)).json;
+      assert.equal(pending.status, 'running'); assert.equal(pending.cancellationRequested, true);
+      if (failStorage) fail(new Error('Synthetic disk write failed'));
+      else commit({ id: 'durable-cp', metadata: { captureOutcome: 'completed', captureStatus: 'complete' } });
+      const saved = await eventual(() => fixture.call('GET', `/v1/jobs/${jobId}`), response => ['succeeded', 'failed'].includes(response.json.status));
+      assert.equal(saved.json.status, failStorage ? 'failed' : 'succeeded');
+      if (failStorage) { assert.equal(saved.json.error.code, 'INTERNAL_ERROR'); assert.equal(saved.json.error.status, 500); }
+      else assert.equal(saved.json.result.id, 'durable-cp');
+    }
+  } finally { commit?.({}); await fixture.cleanup(); }
+});
 
 test('loopback API protects its connection secret and rejects wrong auth, browser origin and host', async () => {
   const fixture = await setup(() => ({ healthy: true }));
@@ -99,6 +164,19 @@ test('evidence reader cursors remain unwrapped and binary content is a separate 
     assert.equal(binary.status, 200); assert.equal(binary.headers['content-type'], 'image/png');
     assert.equal(binary.headers['content-disposition'], 'attachment'); assert.equal(binary.headers['x-content-type-options'], 'nosniff');
     assert.deepEqual([...binary.bytes], [137, 80, 78, 71]);
+  } finally { await fixture.cleanup(); }
+});
+
+test('review reads use the validation path identity and remain synchronous bounded queries', async () => {
+  const calls: { method: string; body: Record<string, unknown> }[] = [];
+  const fixture = await setup((method, body) => { calls.push({ method, body }); return { validationId: body.validationId, items: [], nextCursor: 'review-next', outputTruncated: true }; });
+  try {
+    const response = await fixture.call('GET', '/v1/validations/validation-a/reviews?validationId=wrong&id=wrong&limit=4&maxBytes=1024&cursor=prior');
+    assert.equal(response.status, 200); assert.equal(response.json.validationId, 'validation-a'); assert.equal(response.json.nextCursor, 'review-next');
+    assert.equal(calls[0].method, 'reviews'); assert.equal(calls[0].body.validationId, 'validation-a');
+    assert.equal(calls[0].body.limit, 4); assert.equal(calls[0].body.maxBytes, 1024); assert.equal(calls[0].body.cursor, 'prior');
+    assert.equal((await fixture.call('GET', '/v1/validations/validation-a%2Fother/reviews')).status, 400);
+    assert.equal(calls.length, 1);
   } finally { await fixture.cleanup(); }
 });
 

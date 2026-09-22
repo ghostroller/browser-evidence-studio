@@ -4,6 +4,84 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Studio } from '../../src/main/services/studio';
 
+/** Exercise persisted judgments and project-scoped comparisons using a completed synthetic validation. */
+export async function runReviewUiScenarios(studio: Studio): Promise<void> {
+  const candidate = studio.state().validations.find(candidate => candidate.validation?.overall === 'fail' && candidate.validation.requirements.length);
+  assert.ok(candidate, 'Review UI needs an actual failed validation from the runner scenarios');
+  const record = await studio.validation(candidate.id);
+  const machineBefore = JSON.stringify(record.result);
+  const project = studio.projects.find(candidate => candidate.id === record.projectId)!;
+  const profile = studio.profiles.find(candidate => candidate.projectId === project.id)!;
+  const foreignProject = studio.projects.find(candidate => candidate.id !== project.id)!;
+  const foreignProfile = studio.profiles.find(candidate => candidate.projectId === foreignProject.id)!;
+  const key = record.result.validation.requirements[0].checkpointKey;
+  if (studio.active) await studio.seal();
+  await studio.startRun({ projectId: project.id, profileId: profile.id, url: 'about:blank', kind: 'demonstrate' });
+  const ownRunId = studio.required().id;
+  await studio.checkpoint({ key, title: '当前项目合成示范', description: '同项目对照说明' }); await studio.seal();
+  await studio.startRun({ projectId: foreignProject.id, profileId: foreignProfile.id, url: 'about:blank', kind: 'demonstrate' });
+  const foreignRunId = studio.required().id;
+  await studio.checkpoint({ key, title: '其他项目合成示范', description: '不应出现的跨项目对照' }); await studio.seal();
+  for (let index = 0; index < 21; index++) await studio.review({ id: record.id, verdict: 'reject', reason: `合成历史判定 ${index}`, scope: key });
+
+  const ui = studio.window.window.webContents;
+  const evaluate = <T>(expression: string): Promise<T> => ui.executeJavaScript(expression, true);
+  async function waitFor<T>(read: () => Promise<T>, accept: (value: T) => boolean, label: string): Promise<T> {
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) { const value = await read(); if (accept(value)) return value; await delay(70); }
+    const diagnostics = await evaluate<string>(`document.querySelector('.banner.error')?.textContent || document.querySelector('.review-history')?.textContent || document.querySelector('.workspace-heading')?.textContent || ''`);
+    throw new Error(`Review UI timed out: ${label}; ${diagnostics}`);
+  }
+  async function click(label: string, scope = 'document') {
+    await waitFor(() => evaluate<boolean>(`(() => {const button=Array.from((${scope})?.querySelectorAll('button') || []).find(node=>node.textContent.trim()===${JSON.stringify(label)});if(!button||button.disabled)return false;button.click();return true;})()`), Boolean, label);
+  }
+  async function openReport() {
+    await waitFor(() => evaluate<boolean>(`(() => {const button=Array.from(document.querySelectorAll('.project-list button')).find(node=>node.textContent.includes(${JSON.stringify(project.name)}));if(!button||button.disabled)return false;button.click();return true;})()`), Boolean, 'select validation project');
+    await waitFor(() => evaluate<string>(`document.querySelector('.workspace-heading h1')?.textContent || ''`), value => value === project.name, 'project selected');
+    const visibleRuns = studio.runs.filter(run => run.projectId === project.id).slice(0, 15);
+    await waitFor(() => evaluate<number>(`document.querySelectorAll('.run-list button').length`), count => count === visibleRuns.length, 'fresh project archive list');
+    const index = visibleRuns.findIndex(run => run.id === record.runId);
+    assert(index >= 0);
+    await evaluate<void>(`document.querySelectorAll('.run-list button')[${index}].click()`);
+    await waitFor(() => evaluate<string>(`document.querySelector('.archive-meta code')?.textContent || ''`), value => value === record.runId, 'validation run opened');
+    await click('结构化数据 / 验收', `document.querySelector('.archive-tabs')`);
+    await evaluate<void>(`document.querySelector('.validation-list button').click()`);
+    await waitFor(() => evaluate<number>(`document.querySelectorAll('.review-history .review-entry').length`), count => count === 20, 'initial bounded review page');
+  }
+  await openReport();
+  const candidates = await evaluate<string[]>(`Array.from(document.querySelector('[aria-label="同项目人工示范"]').options).map(option=>option.value)`);
+  assert(candidates.includes(ownRunId)); assert(!candidates.includes(foreignRunId), 'An identical checkpoint key from another project must not be selectable');
+  await evaluate<void>(`(() => {const select=document.querySelector('[aria-label="同项目人工示范"]');select.value=${JSON.stringify(ownRunId)};select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await waitFor(() => evaluate<string>(`document.querySelector('.comparison')?.textContent || ''`), text => text.includes('同项目对照说明') && !text.includes('不应出现的跨项目对照'), 'same-project comparison');
+  await click('下一页人工判定', `document.querySelector('.review-history')`);
+  await waitFor(() => evaluate<string>(`document.querySelector('.review-history')?.textContent || ''`), text => text.includes('合成历史判定 20') && !text.includes('合成历史判定 0'), 'review pagination replaces the bounded page');
+  const reason = '合成 UI 例外接受：只接受已核对范围；机器失败必须保留。';
+  await evaluate<void>(`(() => {const root=document.querySelector('.human-review');const verdict=root.querySelector('select');verdict.value='exception';verdict.dispatchEvent(new Event('change',{bubbles:true}));const scope=root.querySelector('input');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(scope,${JSON.stringify(key)});scope.dispatchEvent(new Event('input',{bubbles:true}));const reason=root.querySelector('textarea');Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set.call(reason,${JSON.stringify(reason)});reason.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await click('保存人工判定', `document.querySelector('.human-review')`);
+  await waitFor(() => evaluate<string>(`document.querySelector('.review-history')?.textContent || ''`), text => text.includes(reason), 'saved judgment visible immediately');
+  assert.equal(JSON.stringify(record.result), machineBefore);
+  await click('返回工作台', `document.querySelector('.overlay-heading')`);
+  await waitFor(() => evaluate<boolean>(`!document.querySelector('.overlay')`), Boolean, 'report closed');
+  await openReport(); await click('下一页人工判定', `document.querySelector('.review-history')`);
+  await waitFor(() => evaluate<string>(`document.querySelector('.review-history')?.textContent || ''`), text => text.includes(reason) && text.includes('有条件例外接受') && text.includes(key), 'reopened persisted judgment');
+  assert.equal(JSON.stringify((await studio.validation(record.id)).result), machineBefore, 'Human exception leaves machine failure intact');
+  await evaluate<void>(`(async () => {
+    await document.fonts.ready;
+    document.querySelector('.review-history').scrollIntoView({block:'center'});
+    await new Promise((resolve,reject) => {
+      const timeout=setTimeout(()=>reject(new Error('Review screenshot did not receive two rendered frames')),3000);
+      requestAnimationFrame(()=>requestAnimationFrame(()=>{clearTimeout(timeout);resolve();}));
+    });
+  })()`);
+  await delay(160);
+  assert(await evaluate<boolean>(`document.querySelector('.review-history')?.textContent.includes(${JSON.stringify(reason)})`), 'Review screenshot retains the reopened judgment');
+  const reviewScreenshot = await ui.capturePage();
+  assert.equal(reviewScreenshot.isEmpty(), false, 'Review screenshot contains an actual rendered frame');
+  await writeFile(path.join(studio.root, 'ui-reviews.png'), reviewScreenshot.toPNG());
+  await click('返回工作台', `document.querySelector('.overlay-heading')`);
+  console.log('M5 review UI PASS: append/read/page/reopen, preserved machine failure, project-scoped demonstration comparison');
+}
+
 /** Real trusted renderer/IPC verification. The business page is never injected here. */
 export async function runUiScenarios(studio: Studio): Promise<void> {
   const ui = studio.window.window.webContents;

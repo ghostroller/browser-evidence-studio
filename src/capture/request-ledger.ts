@@ -10,12 +10,18 @@ export interface CapturedRequest {
   streaming?: boolean;
 }
 
+export interface RequestBodyRead {
+  invalidated?: string;
+  release(): void;
+}
+
 /**
  * CDP callbacks update this identity ledger synchronously, before awaiting any
  * disk write. Returned records remain stable after redirects/removal.
  */
 export class RequestLedger {
   private readonly active = new Map<string, CapturedRequest>();
+  private readonly bodyReads = new Map<string, RequestBodyRead>();
   private sequence = 0;
   constructor(private readonly sessionId: string, private readonly targetId: string, private readonly capacity = 4096) {}
 
@@ -23,6 +29,7 @@ export class RequestLedger {
     current: CapturedRequest; previous?: CapturedRequest; evicted?: CapturedRequest;
   } {
     const previous = this.active.get(input.requestId);
+    this.invalidateBodyRead(input.requestId, input.redirect ? 'request-redirected-during-body-read' : 'request-id-reused-during-body-read');
     const occurrence = previous && input.redirect ? previous.occurrence : ++this.sequence;
     const hop = previous && input.redirect ? previous.hop + 1 : 0;
     const current: CapturedRequest = {
@@ -35,6 +42,7 @@ export class RequestLedger {
       const oldest = this.active.keys().next().value as string;
       evicted = this.active.get(oldest);
       this.active.delete(oldest);
+      this.invalidateBodyRead(oldest, 'request-evicted-during-body-read');
     }
     this.active.set(input.requestId, current);
     return { current, previous, evicted };
@@ -52,9 +60,28 @@ export class RequestLedger {
     return current;
   }
 
+  /** A completed request can still return its body, until its ID is reused or capture resets. */
+  acquireBodyRead(request: CapturedRequest): RequestBodyRead {
+    const read: RequestBodyRead = {
+      ...(this.active.get(request.requestId) !== request ? { invalidated: 'request-identity-unavailable-before-body-read' } : {}),
+      release: () => { if (this.bodyReads.get(request.requestId) === read) this.bodyReads.delete(request.requestId); },
+    };
+    if (!read.invalidated) {
+      this.invalidateBodyRead(request.requestId, 'request-body-read-replaced');
+      this.bodyReads.set(request.requestId, read);
+    }
+    return read;
+  }
+
+  private invalidateBodyRead(requestId: string, reason: string): void {
+    const read = this.bodyReads.get(requestId);
+    if (read) { read.invalidated = reason; this.bodyReads.delete(requestId); }
+  }
+
   reset(): CapturedRequest[] {
     const unfinished = [...this.active.values()];
     this.active.clear();
+    for (const requestId of this.bodyReads.keys()) this.invalidateBodyRead(requestId, 'capture-reset-during-body-read');
     return unfinished;
   }
 

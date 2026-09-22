@@ -91,6 +91,15 @@ export async function startFixture(options: { port?: number; qrTtlMs?: number } 
       const path = url.pathname;
       const session = !sessionRevoked && /(?:^|;\s*)synthetic_session=fake-account-001(?:;|$)/.test(request.headers.cookie || '');
       if (path === '/health') return json(response, { ready: true, synthetic: true });
+      if (path === '/api/request-body') {
+        if (request.method !== 'POST' && request.method !== 'GET') return json(response, { error: 'Only synthetic GET and POST are supported' }, 405);
+        const limitBytes = 10 * 1024 * 1024;
+        let receivedBytes = 0;
+        // Drain without buffering, parsing or echoing request content, including synthetic credentials.
+        for await (const part of request) receivedBytes += part.length;
+        if (receivedBytes > limitBytes) return json(response, { marker: 'request-body-sink', error: 'request-body-limit', receivedBytes, limitBytes }, 413);
+        return json(response, { marker: 'request-body-sink', receivedBytes, limitBytes });
+      }
       if (path === '/' || path === '/orders') return send(response, 200, ordersPage(url));
       if (path === '/api/orders') {
         const page = Math.max(1, Number(url.searchParams.get('page')) || 1);

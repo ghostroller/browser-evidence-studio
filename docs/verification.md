@@ -2,6 +2,24 @@
 
 日期：2026-09-22，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## 审查后的首批实现与复验（2026-09-22）
+
+文档审查已提交为 `14f64fb`，随后按用户要求继续实现。本轮终端直接核对 `node --version` / `npm.cmd --version` 为 **24.21.0 / 11.19.0**；项目继续仅限制这两个运行时版本，不限制安装或版本管理工具。锁文件 SHA-256 仍为 `7b7b1100985eae2ad4952fd0987db386a840efc2cec3ab1e26e0e05c6261a93e`。
+
+- `npm.cmd ci --no-audit --no-fund --cache output/npm-cache` 安装 521 包。Electron 官方下载尝试超时后，使用 `@electron/get` 从镜像获取 44.4.3，按已安装包中的 `checksums.json` 核验，再解压至本地依赖目录；没有改依赖版本或锁文件。
+- 修改前基线：`npm.cmd run typecheck`、`npm.cmd test`（42/42）和 `npm.cmd run build` 均通过。
+- 最终源码：`npm.cmd run typecheck` 通过，`npm.cmd test` **65/65 通过，0 失败、0 跳过**；`npm.cmd run test:integration` 的 Vite 构建和两个真实 Electron 进程均通过，报告 `output/desktop-1790092245546/desktop-summary.json`，PID **19088 / 1056**，均退出 0。覆盖原有五个脚本变体、UI/IPC、控制权、HTTP、页面生命周期及跨进程 profile，并增加下述场景。`git diff --check` 通过。
+- `ui.png`、`ui-evidence.png`、新增 `ui-reviews.png` 保存在同一目录；已视检 checkpoint 状态及重开的完整人工判定。首轮实现报告为 `output/desktop-1790091857958/desktop-summary.json`（PID 3464 / 38680），最终报告还包括独立审查后补充的页面关闭恢复与不完整 checkpoint 验收拒绝。
+
+| 本轮补齐项 | 验证范围与限制 |
+| --- | --- |
+| 请求正文 | 独立 artifact 与 requestKey/source 关联；真实 UTF-8 JSON/null、1 MiB 完整、9 MiB 经 `getRequestPostData` 补采并在 8 MiB 截断，分页读取遵守预算；凭据关键词命中、二进制、multipart 被明确排除，无正文为 not-applicable；扫描合成 CDP/事件原件确认不内嵌正文或凭据哨兵。补采超时、晚到值、redirect/ID 重用/暂停/淘汰等另有单测。 |
+| checkpoint 限时与取消 | 真实服务中分别挂起 DOM 或原生截图，通过 React 按钮取消或 10 秒采集期限后保存已有材料与缺失原因、释放安全输入锁；晚到 DOM 不改原 checkpoint，新采集正常。人工/agent 页面关闭后等待旧采集和 disconnect 才恢复替代页面，延迟 disconnect 不提前解锁。HTTP 队列中的取消绑定自身 job，不影响前一任务；保存期间的取消等待实际落盘成功或失败。真实 worker 挂起时可取消，报告队列收敛且不恢复已撤销闸门；另以 partial/failed/timed-out 三种实际采集故障确认材料保留、覆盖不计入、验收 fail。 |
+| 人工评审 | 保持追加式文件，单测验证新 Node 进程读取、固定分页边界、UTF-8 整体响应预算、坏尾部错误及完整理由/范围。真实 React/IPC 验证保存后可见、下一页、关闭重开，并确认人工例外不改变机器失败。 |
+| 示范隔离 | 真实 UI 中为两个项目创建同 key 示范，候选和实际对照只包含验收所属项目。基线选择仍未持久关联到验收记录。 |
+
+所有新材料均在被 Git 忽略的合成 `output/` 下。本轮未复跑 20 分钟长测、独立 Edge 示例或重新生成发行 ZIP；这些不继承为新源码通过记录。10 秒仅限制采集阶段，不保证磁盘写入期限；操作静默失败时保持关闭，需要显式停止。请求正文排除规则不等同于完整个人信息识别或上传文件捕获。
+
 ## 后续工作区审查（2026-09-22，非测试复跑）
 
 在 `main` / `1c3c3b1` 上读取设计、实施计划、源码与测试代码；审查开始时工作树干净，实现仍为 `f8e6eb8`。`Get-FileHash package-lock.json -Algorithm SHA256` 输出 `7b7b1100985eae2ad4952fd0987db386a840efc2cec3ab1e26e0e05c6261a93e`，与下方历史记录一致。
@@ -10,7 +28,7 @@
 
 `Test-Path` 检查确认此检出没有 `node_modules/`、`.vite/`、`output/`、`out/` 或历史 ZIP。因而本轮没有重跑 typecheck、42 项测试、Electron、打包或长测，也未重新核验历史产物；这不否定历史记录，但不能将其作为本次环境的通过结果。版本管理工具的版本列表查询未及时返回，可用版本通过安装目录和直接执行核对。
 
-静态检查确认还存在长历史续读/回放定位、checkpoint 限时取消、请求正文状态、采集/索引进程分工、人工评审回读、示范基线身份和异常恢复等未完成项，详见 [progress.md 的本次核查](progress.md#本次代码与工作区核查)。这些是实现范围核对，不是本轮故障复现。下方“已执行命令”和“合成验收覆盖”保留历史口径。
+当时静态检查列出长历史续读/回放定位、checkpoint 限时取消、请求正文状态、采集/索引进程分工、人工评审回读、示范基线身份和异常恢复等未完成项。其中本轮已收尾的项目以上方新记录为准；剩余边界见 [progress.md 的本次核查](progress.md#本次代码与工作区核查)。下方“已执行命令”和“合成验收覆盖”保留历史口径。
 
 ## 环境与构建
 

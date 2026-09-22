@@ -107,6 +107,8 @@ P0 回看覆盖主文档 DOM、滚动、鼠标、输入、导航边界和关键�
 
 正文尽早获取，避免导航后缓存淘汰。文本/JSON/HTML 默认保存；二进制网络资源默认记录元数据，下载另存为 artifact。政策排除用 excluded，不伪装成 empty 或 not-applicable。
 
+当前请求正文以独立 `request-body` artifact 保存，网络事件只引用 artifact。CDP 事件缺失文本时在 5 秒内补采；请求 ID 重用、重定向、暂停或停止会使旧补采来源失效，晚到正文不得归给新请求。凭据关键词、二进制、multipart 和不支持字符集明确排除；空正文与无正文分开。这里的字节数是 CDP 文本转为 UTF-8 后的观察值，不等同于完整线上编码或文件上传内容。
+
 初始可调预算：单个文本正文 8 MiB、单 run 提示阈值 2 GiB；到限不静默丢弃，记录 capturedBytes、limitBytes、reason 和缺口。HTML 内嵌 JSON 与 API JSON 都保留，不硬编码站点优先级。流式/SSE/WebSocket 不默认宣称已保存完整；P0 至少记录连接和 unsupported/partial 范围。
 
 已覆盖浏览器流量不代表覆盖独立脚本的 Node fetch/Axios。脚本使用这类请求时必须通过 reporter 附入对应来源证据，或者将该字段验收标为证据不足。程序侧自动拦截另属 P1。
@@ -121,9 +123,13 @@ actor、controller、source 分开：当前处于人工控制不证明每个 DOM
 
 ### 4.4 checkpoint
 
-持有短暂输入锁 → 记录页面代际/时间 → 并行采截图与 DOM → 再核对页面代际 → 写入已获取 artifact 和 checkpoint → 释放输入 → 后台更新索引。
+持有短暂输入锁 → 记录页面代际/时间并等待操作静默 → 并行采截图与 DOM → 在完成、10 秒总采集期限或显式取消时冻结材料 → 核对页面代际并安全释放输入 → 写入 artifact 和 checkpoint，确认耐久后返回保存结果。当前索引写入仍在主进程，进程分工属于后续工作。
+
+取消仅作用于指定采集任务。截图或 DOM 无法真正中断时，消费其晚到结果但不再写入；保存阶段不取消已经排队的原件写入。10 秒限制是采集预算，不承诺磁盘持久化也在此期限内完成。操作静默失败时保持闸门关闭，由显式停止流程恢复控制。
 
 只重试有限次数，默认一次；部分成功不丢弃。返回 captureConsistency=consistent/mixed/unknown，以及各 artifact 状态。页面动态更新可能仍导致同一导航下图像和 DOM 不完全同步，不能将 consistent 描述为原子快照。
+
+人工保存允许保留不完整材料用于诊断；managed runner 只将已完成、材料完整且 consistent 的 checkpoint 计入需求覆盖。否则先保存实际证据，再让 reporter 调用失败，避免空材料仅凭 ID 满足验收。
 
 ## 5. 数据模型与落盘
 
@@ -234,7 +240,7 @@ HTTP 写操作携带 leaseEpoch，旧控制权请求返回冲突；原生 Puppet
 | checkpoint | POST /runs/:id/checkpoints，GET /runs/:id/checkpoints |
 | 证据 | GET /runs/:id/summary、gaps、events，GET /artifacts/:id/content |
 | 协作 | POST /runs/:id/handoffs，POST /handoffs/:id/release |
-| 执行/验收 | POST /validations，GET /validations/:id，POST /validations/:id/reviews |
+| 执行/验收 | POST /validations，GET /validations/:id，GET/POST /validations/:id/reviews |
 | 异步任务 | GET /jobs/:id，POST /jobs/:id/cancel |
 
 actions 首版有限集合：navigate、click、fill、press、scroll、select；必须指定 run/page、定位依据和控制权。snapshot 返回 bounded DOM/可访问性摘要及带 generation 的短期元素 ref；ref 必须直接出现在响应里，过期拒绝执行，不要求人开 DevTools 找 ref。

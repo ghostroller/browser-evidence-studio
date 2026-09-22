@@ -8,8 +8,9 @@ import { fingerprintInput, fingerprintWorkflow, loadWorkflow, resolveRegisteredF
 import { validateExecution, type ValidationResult } from './validation';
 import type { HostMessage, WorkerMessage } from './context';
 
-export type RunnerHooks = Omit<WorkflowReporter, 'signal' | 'requestHuman'> & {
+export type RunnerHooks = Omit<WorkflowReporter, 'signal' | 'requestHuman' | 'checkpoint'> & {
   requestHuman(request: HumanRequest, signal?: AbortSignal): Promise<void>;
+  checkpoint(key: string, details?: CheckpointDetails, signal?: AbortSignal): Promise<{ id: string }>;
 };
 export interface StartWorkflowOptions {
   directory: string;
@@ -128,7 +129,7 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
       case 'checkpoint': {
         const [key, details] = args as [string, CheckpointDetails | undefined];
         if (typeof key !== 'string' || !/^[\w.-]{1,128}$/.test(key)) throw new Error('Invalid checkpoint key');
-        const result = await exclusive(() => options.hooks.checkpoint(key, details));
+        const result = await exclusive(() => options.hooks.checkpoint(key, details, cancellation.signal));
         checkpoints.push({ id: result.id, key }); sources.add(result.id);
         return result;
       }

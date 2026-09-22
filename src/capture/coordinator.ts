@@ -4,10 +4,10 @@ import { EvidenceStore } from '../evidence/store';
 import recorder from '../../node_modules/rrweb/dist/rrweb.umd.min.cjs?raw';
 import { RequestLedger, type CapturedRequest } from './request-ledger';
 import { readyMainObserverContexts } from './observer-contexts';
+import { captureRequestBody, redactHeaders as redact, requestMetadata, REQUEST_BODY_LIMIT } from './request-body';
 
 export interface PageIdentity { pageId:string; targetId:string; webContentsId:number; navigationGeneration:number; openerPageId?:string; }
 const BODY_LIMIT = 8 * 1024 * 1024;
-const redact = (headers: Record<string,unknown> = {}) => Object.fromEntries(Object.entries(headers).map(([k,v])=>[k,/authorization|cookie|token|secret/i.test(k)?'[excluded credential]':v]));
 
 export class CaptureCoordinator {
   private cdp!: CDPSession;
@@ -37,7 +37,7 @@ export class CaptureCoordinator {
   private async unfinished(requests:CapturedRequest[],reason:string){
     for(const request of requests){const artifact=await this.store.putArtifact({kind:'response-body',mediaType:request.mime||'application/octet-stream',captureStatus:request.streaming?'unknown':'missing',reason,source:{requestKey:request.key,url:request.url,frameId:request.frameId}});await this.event('gap',{reason,requestKey:request.key,url:request.url,startedAt:request.startedAt,endedAt:new Date().toISOString(),streaming:!!request.streaming},[artifact.id]);}
   }
-  private event(type:string,data:unknown, artifactRefs?:string[]) { return this.store.appendEvent({type,source:'cdp',pageId:this.identity.pageId,navigationGeneration:this.identity.navigationGeneration,data,artifactRefs}); }
+  private event(type:string,data:unknown, artifactRefs?:string[],navigationGeneration=this.identity.navigationGeneration) { return this.store.appendEvent({type,source:'cdp',pageId:this.identity.pageId,navigationGeneration,data,artifactRefs}); }
   async start() {
     this.cdp=await this.page.createCDPSession();
     const cdp=this.cdp as any;
@@ -58,14 +58,21 @@ export class CaptureCoordinator {
     cdp.on('Network.requestWillBeSent',(e:any)=>{
       if(this.paused||this.stopped)return;
       const {current,previous,evicted}=this.requests.begin({requestId:e.requestId,url:e.request.url,frameId:e.frameId,redirect:!!e.redirectResponse});
-      const data={requestKey:current.key,requestId:e.requestId,frameId:e.frameId,loaderId:e.loaderId,timestamp:e.timestamp,request:{...e.request,headers:redact(e.request.headers),postData:e.request.postData&&(/password|passwd|token|secret/i.test(e.request.postData)?'[excluded credential-bearing body]':e.request.postData.slice(0,BODY_LIMIT))},redirectHop:current.hop};
+      const navigationGeneration=this.identity.navigationGeneration;
+      const data={requestKey:current.key,requestId:e.requestId,frameId:e.frameId,loaderId:e.loaderId,timestamp:e.timestamp,request:requestMetadata(e.request),redirectHop:current.hop};
       this.task(async()=>{
+        // Begin the CDP read before persistence can yield to redirects or reused request IDs.
+        const body=captureRequestBody(e.request,{source:{requestKey:current.key,url:current.url,frameId:current.frameId,loaderId:e.loaderId,pageId:this.identity.pageId,targetId:this.identity.targetId,navigationGeneration,method:e.request.method},acquireRead:()=>this.requests.acquireBodyRead(current),readPostData:()=>cdp.send('Network.getRequestPostData',{requestId:e.requestId})});
         if(evicted)await this.unfinished([evicted],'in-flight-request-budget-exceeded');
         if(previous&&!e.redirectResponse)await this.unfinished([previous],'request-id-reused-before-completion');
         if(e.redirectResponse&&previous)await this.event('network-redirect',{requestKey:previous.key,nextRequestKey:current.key,response:{...e.redirectResponse,headers:redact(e.redirectResponse.headers)}});
         else if(e.redirectResponse)await this.event('gap',{reason:'redirect-origin-not-observed',requestKey:current.key});
-        await this.store.appendRaw('cdp',{method:'Network.requestWillBeSent',...data}); await this.event('network-request',data);
-      },Buffer.byteLength(JSON.stringify(data)));
+        const artifact=await this.store.putArtifact(await body);
+        const captured={...data,requestBodyArtifactId:artifact.id};
+        await this.store.appendRaw('cdp',{method:'Network.requestWillBeSent',...captured}); await this.event('network-request',captured,[artifact.id],navigationGeneration);
+        await this.event('network-request-body',{requestKey:current.key,captureStatus:artifact.captureStatus,capturedBytes:artifact.capturedBytes,originalBytes:artifact.originalBytes,reason:artifact.reason},[artifact.id],navigationGeneration);
+        if(['missing','truncated','read-failed','unknown'].includes(artifact.captureStatus))await this.event('gap',{reason:artifact.reason||'request-body-incomplete',requestKey:current.key,captureStatus:artifact.captureStatus},[artifact.id],navigationGeneration);
+      },Buffer.byteLength(JSON.stringify(data))+(typeof e.request.postData==='string'?Math.min(Buffer.byteLength(e.request.postData),REQUEST_BODY_LIMIT):e.request.hasPostData||e.request.postDataEntries?.length?REQUEST_BODY_LIMIT:0));
     });
     cdp.on('Network.responseReceived',(e:any)=>{if(this.paused||this.stopped)return;const r=this.requests.response(e.requestId,e.response.mimeType);this.task(async()=>{
       await this.event('network-response',{requestKey:r?.key,response:{...e.response,headers:redact(e.response.headers)}});

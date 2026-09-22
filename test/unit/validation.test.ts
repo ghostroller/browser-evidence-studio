@@ -136,6 +136,69 @@ test('cancellation stops a busy worker before resolving, retaining a failed acce
   });
 });
 
+test('cancelling during checkpoint capture aborts the hook and drains pending reports without reopening the gate', { timeout: 6000 }, async t => {
+  await withWorker(`
+    const { parentPort } = require('node:worker_threads');
+    parentPort.postMessage({ type:'reporter', id:1, method:'checkpoint', args:['orders', { title:'Pending synthetic checkpoint' }] });
+    setInterval(() => {}, 100);
+  `, async (directory, workerPath, transport) => {
+    const resume = t.mock.method(transport, 'resume');
+    let entered!: () => void;
+    const hookEntered = new Promise<void>(resolve => { entered = resolve; });
+    let releaseForCleanup: (() => void) | undefined;
+    let checkpointSignal: AbortSignal | undefined;
+    let abortObserved = false;
+    let hookSettled = false;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const handle = await startWorkflow({ directory, workerPath, transport, targetId: 'explicit-target', input: {}, maxDurationMs: 4000, hooks: {
+      ...hooks, checkpoint: async (_key, _details, signal) => {
+        assert.ok(signal, 'Checkpoint capture must receive the runner cancellation signal');
+        checkpointSignal = signal;
+        assert.equal(signal.aborted, false);
+        assert.equal(transport.snapshot().state, 'quiesced');
+        let onAbort!: () => void;
+        try {
+          await new Promise<void>((_resolve, reject) => {
+            onAbort = () => { abortObserved = true; reject(signal.reason); };
+            releaseForCleanup = () => reject(new Error('Release a stuck checkpoint after test failure'));
+            signal.addEventListener('abort', onAbort, { once: true });
+            entered();
+          });
+          return { id: 'must-not-accept-an-aborted-checkpoint' };
+        } finally {
+          signal.removeEventListener('abort', onAbort);
+          hookSettled = true;
+        }
+      },
+    } });
+    try {
+      await Promise.race([
+        hookEntered,
+        handle.done.then(result => { throw new Error(`Worker ended before reaching checkpoint capture: ${result.error}`); }),
+      ]);
+      await Promise.race([
+        handle.cancel('User cancelled during checkpoint capture'),
+        new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(new Error('Cancellation remained blocked on outstanding checkpoint reports')), 2000); }),
+      ]);
+      const result = await handle.done;
+      assert.equal(abortObserved, true);
+      assert.equal(hookSettled, true, 'Cancel must wait for the outstanding reporter operation to settle');
+      assert.equal(checkpointSignal?.aborted, true);
+      assert.match(String(checkpointSignal?.reason), /User cancelled during checkpoint capture/);
+      assert.equal(result.status, 'cancelled');
+      assert.equal(result.validation.executionVerdict, 'fail');
+      assert.equal(result.validation.overall, 'fail');
+      assert.deepEqual(result.checkpoints, [], 'An aborted checkpoint cannot count as covered');
+      assert.equal(resume.mock.callCount(), 0, 'Cancellation must never briefly reopen browser operations');
+      assert.equal(transport.snapshot().state, 'closed');
+    } finally {
+      if (deadline) clearTimeout(deadline);
+      releaseForCleanup?.();
+      await handle.cancel('Test cleanup');
+    }
+  });
+});
+
 test('human assistance timeout is a failure and never resumes the operation connection', async () => {
   await withWorker(`
     const { parentPort } = require('node:worker_threads');

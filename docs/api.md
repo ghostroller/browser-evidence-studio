@@ -27,6 +27,8 @@ JSON 请求体上限 64 KiB、嵌套上限 32 层，普通 JSON 响应上限 32 
 
 `POST /v1/jobs/:jobId/cancel` 快速返回取消请求状态。`cancellationRequested:true` 不是已经停止；执行器确认后才变为 `cancelled`，停止失败保留实际任务状态和 `cancellationError`。不能据任务超时推断登录或业务执行成功。
 
+checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求；不会取消另一个正在采集的 checkpoint。已开始采集的任务保留取消前完成的材料，落盘后返回 `cancelled` 及 checkpoint 引用。进入保存阶段后不再中止写入，过晚的取消请求仍可能得到 `succeeded`；写入失败仍为 `failed`，不能当作取消成功。
+
 已有 run 的写操作、保存 profile、回复/取消人工交接都要求当前 `leaseEpoch`。已活跃运行的普通 API 写操作要求 agent 控制；先由客户端交出控制权，handoff reply/cancel 和停止是恢复人工控制的例外。从状态读取实际 `runId/pageId/generation/leaseEpoch`，不要按 URL 或当前活动窗口猜测目标。HTTP snapshot 与 checkpoint 必须携带 `pageId` 和 `generation`；服务按指定已登记页面采集，未知页面和过期代际返回 409。切换页面会递增 leaseEpoch，排队写操作在实际执行时重新核验。路由中的 ID 优先于请求体或查询中的 ID 别名。服务层继续核验运行、页面、导航代际和控制者；只通过 HTTP lease 校验不代表能控制原生 Puppeteer，managed runner 使用独立操作 transport 闸门。
 
 ## 路由
@@ -56,7 +58,7 @@ JSON 请求体上限 64 KiB、嵌套上限 32 层，普通 JSON 响应上限 32 
 | `GET/POST /projects/:projectId/workflows` | 查询已登记流程；登记能力受可信项目目录边界限制 |
 | `POST/GET /runs/:runId/validations` | 启动/查询当前项目的已登记流程，启动请求含 `input`；结果可能引用新 validation run |
 | `GET /validations/:validationId` | 执行、指纹、逐需求结果及当前版本是否仍匹配 |
-| `POST /validations/:validationId/reviews` | 独立追加评审；`verdict` 为 accept/reject/exception，需 `reason`，可带 `scope` |
+| `GET/POST /validations/:validationId/reviews` | 有界回读/独立追加评审；提交 `verdict` 为 accept/reject/exception，需 `reason`，可带 `scope` |
 | `POST /runs/:runId/stop` | 停止自动化并确认静默后交还人工 |
 
 ## 证据读取预算
@@ -68,6 +70,14 @@ JSON 请求体上限 64 KiB、嵌套上限 32 层，普通 JSON 响应上限 32 
 正文按 UTF-8 字符边界分页；`jsonPath` 支持 JSON Pointer `/orders/0/id` 和简单 `$.orders[0].id`。选中真实 null 为 `pathStatus:present,value:null`，字段不存在为 `pathStatus:missing`，解析失败为 `bodyStatus:json-parse-failed`。JSON path 内存解析限 16 MiB；大对象按 `json-fragment` 片段加 cursor 返回。二进制不进入 JSON/base64；通过 `/content` 显式读取，单次内容上限 16 MiB。
 
 原件 `captureStatus`：complete、empty、missing、truncated、read-failed、not-applicable、excluded、unknown。它与查询的 `outputTruncated` 相互独立。读取空字段或空数组不能补造采集缺口；时间相近的事件只能说明时序关联。
+
+请求正文单独保存为 `kind:request-body` artifact，由 `network-request` 的 `requestBodyArtifactId` 和 `artifactRefs` 关联；正文不内嵌在网络事件或 CDP 原件的元数据中。缺失的 CDP 文本尝试补采，最多等 5 秒；文本最多保存 8 MiB，记录观察字节数及来源。无正文为 `not-applicable`；凭据关键词命中、二进制、multipart 和不支持的字符集为 `excluded`。这不是通用个人信息识别，也不承诺文件上传完整捕获。截断、补采失败或来源失效均有明确状态与原因。
+
+checkpoint 从取得输入锁起使用 10 秒采集预算（含操作连接静默等待），超时或取消时冻结现有材料，并为未完成材料保存失败状态。结果 `metadata.captureOutcome` 为 `completed/timed-out/cancelled`，`metadata.captureStatus` 为 `complete/partial/failed`；job 的 `succeeded` 表示证据保存成功，不能据此认定材料完整。输入锁在安全结束采集后释放，磁盘写入仍需确认完成，不包含在 10 秒采集保证内；操作连接未能静默时保持关闭，需显式停止。晚到采集结果不修改已保存 checkpoint。
+
+managed runner 只有在采集完成、材料完整且 `captureConsistency=consistent` 时才将 checkpoint 计入覆盖。部分失败、全部失败、超时、取消或页面代际不一致均保留诊断材料，但 reporter 调用失败，不能据 checkpoint ID 的存在判验收通过。采集中页面关闭会终止相关任务；替代页面的输入恢复必须等待旧采集和操作连接撤销完成。
+
+人工评审查询支持 `limit`（默认 20，1–100）、`maxBytes`（默认 8192，512–32768）及 `cursor`，返回 `validationId/items/nextCursor/outputTruncated/maxBytes/responseBytes`。游标绑定验收记录与读取开始时的追加边界，后续追加从新查询读取；可跨客户端重启续读。理由与范围不会为凑预算截断，单条新评审最多 16 KiB；预算容不下一条完整判定时返回 `REVIEW_BUDGET_TOO_SMALL`。损坏或不完整历史返回明确错误，不能当作空历史。机器验收结果不会因人工 accept/exception 被改写。
 
 ## 验证与限制
 

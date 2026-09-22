@@ -1,5 +1,5 @@
 import { WebContentsView, session, app, type Session, type DownloadItem, type WebContents } from 'electron';
-import { mkdir, readFile, readdir, writeFile, rename, appendFile, stat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, writeFile, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
@@ -15,18 +15,22 @@ import { startWorkflow, type WorkflowHandle } from '../../runner/manager';
 import type { HumanRequest } from '../../contracts/workflow';
 import { fingerprintWorkflow } from '../../runner/fingerprint';
 import { connectManagedPage } from '../../runner/puppeteer';
+import { captureCheckpointMaterials } from '../../capture/checkpoint';
+import { appendReview, readReviews, type ReviewQuery } from './reviews';
 
 interface Project { id:string; name:string; objective:string; scriptDirectory?:string; createdAt:string; }
 interface Profile { id:string; projectId:string; name:string; savedAt?:string; loginStatus:'unknown'|'verified'|'expired'; }
 interface ManagedPage extends PageIdentity { view:WebContentsView; page:Page; capture:CaptureCoordinator; }
 interface ManagedOperation { browser:Browser; gate:GateTransport; page:Page; targetId:string; }
 interface PendingOperation { targetId:string; leaseEpoch:number; abort:AbortController; gate?:GateTransport; promise:Promise<ManagedOperation>; }
+interface CheckpointOperation { id:string; pageId:string; phase:'draining'|'capturing'|'saving'; startedAt:string; abort:AbortController; done:Promise<void>; }
 export interface ActiveRun {
   id:string; projectId:string; profileId:string; store:EvidenceStore; pages:Map<string,ManagedPage>; selectedPageId:string;
   session:Session; controller:'human'|'agent'|'none'; leaseEpoch:number; capture:string; execution:string;
   operation?:ManagedOperation; pendingOperation?:PendingOperation; locked:boolean; stopping?:boolean; ending?:boolean; selection?:unknown; handoff?:any;
   pageClosures?:Set<Promise<void>>;
   stopDownloads?:()=>Promise<void>;releaseDownloads?:()=>void;
+  checkpointTask?:CheckpointOperation;
 }
 export class Studio {
   readonly instanceId=randomUUID();
@@ -60,7 +64,7 @@ export class Studio {
   required(){ensure(this.active,'No active run',409);return this.active;}
   private pageContents(p:ManagedPage){try{const contents=p.view.webContents;return contents&&!contents.isDestroyed()?contents:undefined;}catch{return undefined;}}
   current(){const r=this.required();const p=r.pages.get(r.selectedPageId);ensure(p&&this.pageContents(p),'No live selected page',409);return p;}
-  state(){const r=this.active;return {instanceId:this.instanceId,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(v=>({id:v.id,runId:v.runId,status:v.status,validation:v.result?.validation})),fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
+  state(){const r=this.active;return {instanceId:this.instanceId,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(v=>({id:v.id,runId:v.runId,status:v.status,validation:v.result?.validation})),fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
   async createProject(body:any){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');const p={id:randomUUID(),name:body.name.trim().slice(0,200),objective:String(body.objective||'').slice(0,4000),scriptDirectory:body.scriptDirectory?path.resolve(body.scriptDirectory):undefined,createdAt:now()};this.projects.push(p);await this.save();return p;}
   async updateProject(body:any){const project=this.projects.find(item=>item.id===(body.projectId||body.id));ensure(project,'Unknown project',404);if(body.name!==undefined){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');project.name=body.name.trim().slice(0,200);}if(body.objective!==undefined){ensure(typeof body.objective==='string','Objective must be text');project.objective=body.objective.slice(0,4000);}if(body.scriptDirectory!==undefined){ensure(typeof body.scriptDirectory==='string'||body.scriptDirectory===null,'Workflow directory must be a path');project.scriptDirectory=body.scriptDirectory?path.resolve(body.scriptDirectory):undefined;}await this.save();return project;}
   async createProfile(body:any){ensure(this.projects.some(p=>p.id===body.projectId),'Unknown project');ensure(typeof body.name==='string'&&body.name.trim(),'Profile name required');const p:Profile={id:randomUUID(),projectId:body.projectId,name:body.name.trim().slice(0,120),loginStatus:'unknown'};this.profiles.push(p);await this.save();return p;}
@@ -84,12 +88,16 @@ export class Studio {
   }
   private pageDestroyed(r:ActiveRun,view:WebContentsView,identity:{pageId:string;webContentsId:number;openerPageId?:string},registered?:ManagedPage){
     const closedAt=now(),wasSelected=r.selectedPageId===identity.pageId,targetId=registered?.targetId;
+    const checkpoint=r.checkpointTask,controllerAtClosure=r.controller;
     r.pages.delete(identity.pageId);
     if((r.selection as any)?.pageId===identity.pageId)r.selection=undefined;
     const operationAffected=!!targetId&&(r.operation?.targetId===targetId||r.pendingOperation?.targetId===targetId);
-    if(wasSelected||operationAffected)r.leaseEpoch++;
+    const checkpointAffected=!!checkpoint&&(checkpoint.pageId===identity.pageId||wasSelected||operationAffected);
+    if(checkpointAffected)checkpoint.abort.abort(new Error('Page closed during checkpoint acquisition'));
+    if(wasSelected||operationAffected||checkpointAffected)r.leaseEpoch++;
+    const closureEpoch=r.leaseEpoch,operationRevoked=operationAffected||checkpointAffected;
     // Revocation starts synchronously, before another task can use the old lease.
-    const revoked=operationAffected?this.revokeOperation(r):Promise.resolve();
+    const revoked=operationRevoked?this.revokeOperation(r):Promise.resolve();
     this.window.remove(view);
     if(wasSelected){
       const opener=identity.openerPageId?r.pages.get(identity.openerPageId):undefined;
@@ -105,10 +113,19 @@ export class Studio {
     }
     if(!r.pages.size){r.capture='stopped';r.controller='none';}
     const selectedPageId=r.selectedPageId||null,closures=r.pageClosures??(r.pageClosures=new Set<Promise<void>>());
+    const checkpointRecovery=checkpointAffected?(async()=>{
+      // The old checkpoint cannot release a newer lease. This page-close owner
+      // may restore input only after its capture and operation connection stop.
+      await revoked;await checkpoint.done;
+      if(this.active!==r||r.ending||this.closing||r.stopping||r.leaseEpoch!==closureEpoch||r.controller!==controllerAtClosure||r.selectedPageId!==selectedPageId||!r.pages.has(r.selectedPageId)||r.checkpointTask||r.operation||r.pendingOperation)return;
+      // Managed worker shutdown/finalization owns its own input transition.
+      if(this.workflow||this.workflowStarting||this.workflowSettlement||['running','waiting-human','finalizing','stopping'].includes(r.execution))return;
+      r.locked=false;this.window.lock(r.controller!=='human');this.onChanged();
+    })():Promise.resolve();
     const cleanup=(async()=>{
-      const outcomes=await Promise.allSettled([revoked,registered?.capture.stop()]);
+      const outcomes=await Promise.allSettled([revoked,registered?.capture.stop(),checkpointRecovery]);
       const errors=outcomes.flatMap(outcome=>outcome.status==='rejected'?[String(outcome.reason)]:[]);
-      await r.store.appendEvent({type:'page-closed',source:'electron',pageId:identity.pageId,data:{...identity,targetId,wasRegistered:!!registered,selectedPageId,operationRevoked:operationAffected,closedAt,cleanupErrors:errors}});
+      await r.store.appendEvent({type:'page-closed',source:'electron',pageId:identity.pageId,data:{...identity,targetId,wasRegistered:!!registered,selectedPageId,operationRevoked,closedAt,cleanupErrors:errors}});
       if(errors.length){r.capture='degraded';await r.store.appendEvent({type:'gap',source:'electron',pageId:identity.pageId,data:{reason:'closed-page-cleanup-failed',errors}});}
     })().catch(error=>{r.capture='degraded';console.error('Could not persist business page closure',error);}).finally(()=>{closures.delete(cleanup);this.onChanged();});
     closures.add(cleanup);this.onChanged();
@@ -191,13 +208,50 @@ export class Studio {
     switch(body.type){case 'navigate':ensure(/^https?:\/\//.test(body.url),'HTTP(S) URL required');await op.page.goto(body.url);break;case 'click':await op.page.click(String(body.selector));break;case 'fill':await op.page.$eval(String(body.selector),(el:any)=>{el.value='';el.dispatchEvent(new Event('input',{bubbles:true}));});await op.page.type(String(body.selector),String(body.value));break;case 'press':await op.page.keyboard.press(body.key);break;case 'scroll':await op.page.evaluate(({x,y})=>window.scrollBy(x,y),{x:Number(body.x)||0,y:Number(body.y)||0});break;case 'select':await op.page.select(String(body.selector),String(body.value));break;default:ensure(false,'Unsupported action');}
     return {commandId,generation:p.navigationGeneration};
   }
-  async checkpoint(body:any,options:{fromRunner?:boolean;pageId?:string}={}){const r=this.required();ensure(options.fromRunner||!['running','waiting-human','finalizing','stopping'].includes(r.execution),'A running workflow owns checkpoint capture; stop it before taking a manual checkpoint',409);const requestedPageId=options.pageId??body.pageId;const p=requestedPageId?r.pages.get(requestedPageId):this.current();ensure(p,'Checkpoint page no longer exists',409);if(body.generation!==undefined)ensure(body.generation===p.navigationGeneration,'Stale navigation generation',409);ensure(!r.locked,'Checkpoint or transition already in progress',409);const wasLocked=r.locked,leaseEpoch=r.leaseEpoch;r.locked=true;this.window.lock(true);const op=r.operation;let drained=false;
-    try{if(op){await op.gate.quiesce();drained=true;}const captureStartedAt=now(),generation=p.navigationGeneration;
-      const result=await Promise.allSettled([p.view.webContents.capturePage().then(img=>r.store.putArtifact({kind:'screenshot',mediaType:'image/png',data:img.toPNG(),source:{pageId:p.pageId}})),p.page.evaluate(()=>{const clone=document.documentElement.cloneNode(true) as HTMLElement;clone.querySelectorAll('input,textarea').forEach(el=>{el.removeAttribute('value');if(el.tagName==='TEXTAREA')el.textContent='[masked]';});return '<!doctype html>'+clone.outerHTML;}).then(dom=>r.store.putArtifact({kind:'dom',mediaType:'text/html',data:dom,limitBytes:16*1024*1024,source:{pageId:p.pageId}}))]);
-      const artifacts=[];for(let i=0;i<result.length;i++){const a=result[i];artifacts.push(a.status==='fulfilled'?a.value:await r.store.putArtifact({kind:i===0?'screenshot':'dom',mediaType:i===0?'image/png':'text/html',captureStatus:'read-failed',reason:String(a.reason)}));}
-      const checkpoint=await r.store.appendCheckpoint({key:String(body.key||'checkpoint-'+Date.now()).slice(0,200),title:String(body.title||''),description:String(body.description||''),requirementIds:Array.isArray(body.requirementIds)?body.requirementIds:[],captureStartedAt,captureEndedAt:now(),pageId:p.pageId,navigationGeneration:generation,captureConsistency:p.navigationGeneration===generation?'consistent':'mixed',artifactRefs:artifacts.map(a=>a.id),metadata:{artifacts,selection:r.selection,note:'A capture interval, not an atomic or frozen page snapshot'}});
-      return checkpoint;
-    }finally{if(this.active===r&&r.leaseEpoch===leaseEpoch){if(op&&drained&&r.operation===op&&r.controller==='agent')op.gate.resume();r.locked=wasLocked;this.window.lock(r.locked||r.controller!=='human');}}
+  async checkpoint(body:any,options:{fromRunner?:boolean;pageId?:string;signal?:AbortSignal}={}){
+    options.signal?.throwIfAborted();
+    const r=this.required();ensure(options.fromRunner||!['running','waiting-human','finalizing','stopping'].includes(r.execution),'A running workflow owns checkpoint capture; stop it before taking a manual checkpoint',409);
+    const requestedPageId=options.pageId??body.pageId,p=requestedPageId?r.pages.get(requestedPageId):this.current();ensure(p,'Checkpoint page no longer exists',409);
+    if(body.generation!==undefined)ensure(body.generation===p.navigationGeneration,'Stale navigation generation',409);
+    ensure(!r.locked&&!r.checkpointTask,'Checkpoint or transition already in progress',409);
+    const wasLocked=r.locked,leaseEpoch=r.leaseEpoch,op=r.operation,generation=p.navigationGeneration;
+    const selection=r.selection===undefined?undefined:structuredClone(r.selection),deadline=performance.now()+10000;
+    let finish!:()=>void;const task:CheckpointOperation={id:randomUUID(),pageId:p.pageId,phase:'draining',startedAt:now(),abort:new AbortController(),done:new Promise<void>(resolve=>{finish=resolve;})};
+    const abort=()=>{if(task.phase!=='saving')task.abort.abort(options.signal?.reason);};options.signal?.addEventListener('abort',abort,{once:true});
+    r.checkpointTask=task;r.locked=true;this.window.lock(true);this.onChanged();let drained=!op,released=false;
+    const releaseInput=()=>{
+      if(released)return;released=true;
+      if(this.active!==r||r.checkpointTask!==task||r.leaseEpoch!==leaseEpoch||r.stopping||this.closing)return;
+      // Failed drains remain closed until explicit stop/revocation confirms silence.
+      if(!drained)return;
+      if(op&&r.operation===op&&r.controller==='agent'&&op.gate.snapshot().state==='quiesced')op.gate.resume();
+      r.locked=wasLocked;this.window.lock(r.locked||r.controller!=='human');
+    };
+    try{
+      if(op){await op.gate.quiesce(Math.min(5000,Math.max(1,deadline-performance.now())));drained=true;}
+      task.phase='capturing';this.onChanged();
+      const captured=await captureCheckpointMaterials({
+        screenshot:()=>p.view.webContents.capturePage().then(img=>img.toPNG()),
+        dom:()=>p.page.evaluate(()=>{const clone=document.documentElement.cloneNode(true) as HTMLElement;clone.querySelectorAll('input,textarea').forEach(el=>{el.removeAttribute('value');if(el.tagName==='TEXTAREA')el.textContent='[masked]';});return '<!doctype html>'+clone.outerHTML;}),
+        signal:task.abort.signal,timeoutMs:Math.max(1,deadline-performance.now()),
+      });
+      const consistency=r.pages.get(p.pageId)!==p?'unknown':p.navigationGeneration===generation?'consistent':'mixed';
+      task.phase='saving';releaseInput();this.onChanged();
+      // Once queued, evidence writes must reach their durable boundary; cancellation
+      // stops acquisition only and never falsely acknowledges unfinished disk writes.
+      const artifacts=[];
+      for(const material of captured.materials)artifacts.push(await r.store.putArtifact({...material,limitBytes:material.kind==='dom'?16*1024*1024:undefined,source:{pageId:p.pageId,checkpointOperationId:task.id}}));
+      const complete=artifacts.filter(a=>a.captureStatus==='complete'||a.captureStatus==='empty').length;
+      return await r.store.appendCheckpoint({key:String(body.key||'checkpoint-'+Date.now()).slice(0,200),title:String(body.title||''),description:String(body.description||''),requirementIds:Array.isArray(body.requirementIds)?body.requirementIds:[],captureStartedAt:task.startedAt,captureEndedAt:captured.captureEndedAt,pageId:p.pageId,navigationGeneration:generation,captureConsistency:consistency,artifactRefs:artifacts.map(a=>a.id),metadata:{artifacts,selection,operationId:task.id,captureOutcome:captured.outcome,captureStatus:complete===artifacts.length?'complete':complete?'partial':'failed',note:'A capture interval, not an atomic or frozen page snapshot'}});
+    }finally{
+      releaseInput();options.signal?.removeEventListener('abort',abort);if(r.checkpointTask===task)r.checkpointTask=undefined;finish();this.onChanged();
+    }
+  }
+  async cancelCheckpoint(body:{runId:string;operationId:string}){
+    const r=this.required(),task=r.checkpointTask;
+    ensure(body.runId===r.id&&task?.id===body.operationId,'Checkpoint operation is no longer active',409);
+    ensure(task.phase!=='saving','Acquisition has finished; saved materials are being committed',409);
+    task.abort.abort(new Error('Checkpoint acquisition cancelled'));await task.done;return {operationId:task.id,cancelled:true};
   }
   async snapshot(body:any={}){const r=this.required(),p=body.pageId?r.pages.get(body.pageId):this.current();ensure(p,'Snapshot page no longer exists',409);const generation=p.navigationGeneration;if(body.generation!==undefined)ensure(body.generation===generation,'Stale navigation generation',409);const max=body.maxBytes??4000;ensure(Number.isSafeInteger(max)&&max>=512&&max<=16000,'Snapshot maxBytes must be between 512 and 16000');const elements=await p.page.evaluate(()=>Array.from(document.querySelectorAll('a,button,input,select,[role],h1,h2')).slice(0,80).map((el,i)=>({ref:i,tag:el.tagName,role:el.getAttribute('role'),name:el.getAttribute('aria-label'),text:el.textContent?.trim().slice(0,180),selector:el.id?'#'+CSS.escape(el.id):null})));ensure(this.active===r&&r.pages.get(p.pageId)===p&&p.navigationGeneration===generation,'Snapshot target navigated during capture; refresh its identity',409);const result={pageId:p.pageId,generation,url:p.view.webContents.getURL(),elements:[] as typeof elements,outputTruncated:false};for(const item of elements){const candidate={...result,elements:[...result.elements,item]};if(Buffer.byteLength(JSON.stringify(candidate))+32>max)break;result.elements.push(item);}result.outputTruncated=result.elements.length<elements.length;ensure(Buffer.byteLength(JSON.stringify(result))<=max,'Snapshot metadata exceeds maxBytes; increase the budget',413);return result;}
   async pauseOperations(paused:boolean){const r=this.required();ensure(r.controller==='human','Only manual control can be paused here',409);r.locked=paused;this.window.lock(paused);return this.state().active;}
@@ -248,7 +302,7 @@ export class Studio {
     const id=randomUUID(),record:any={id,runId:r.id,projectId:r.projectId,directory,status:'running',startedAt:now()};this.validations.unshift(record);
     let finishStartup!:()=>void;const startup={abort:new AbortController(),gate:undefined as GateTransport|undefined,done:new Promise<void>(resolve=>{finishStartup=resolve;}),finish:()=>finishStartup()};this.workflowStarting=startup;
     try{const gate=new GateTransport(await SocketTransport.connect(this.endpoint,startup.abort.signal));startup.gate=gate;startup.abort.signal.throwIfAborted();ensure(this.active===r&&r.controller==='agent'&&!r.locked,'Workflow startup lost control',409);this.workflow=await startWorkflow({directory,input:body.input||{},targetId:p.targetId,transport:gate,dependencyLockPath:path.join(app.getAppPath(),'package-lock.json'),hooks:{
-      checkpoint:async(key,details)=>{const cp=await this.checkpoint({key,...details},{fromRunner:true,pageId:p.pageId});return {id:cp.id};},
+       checkpoint:async(key,details,signal)=>{const cp=await this.checkpoint({key,...details},{fromRunner:true,pageId:p.pageId,signal});if(cp.metadata?.captureOutcome!=='completed'||cp.metadata?.captureStatus!=='complete'||cp.captureConsistency!=='consistent')throw new Error(`Checkpoint capture is incomplete (${cp.metadata?.captureOutcome}/${cp.metadata?.captureStatus}/${cp.captureConsistency}); retained checkpoint ${cp.id} cannot satisfy validation coverage`);return {id:cp.id};},
       emitData:async(name,records,provenance)=>{const artifact=await r.store.putArtifact({kind:'dataset',mediaType:'application/json',data:JSON.stringify({name,records,...provenance}),source:{origin:'runner'}});await r.store.appendEvent({type:'dataset',source:'runner',artifactRefs:[artifact.id],data:{name,count:records.length,provenance}});},
       attachArtifact:async(name,content,mediaType)=>{const a=await r.store.putArtifact({kind:'runner-attachment',mediaType,data:content,metadata:{name}});return {id:a.id};},
       assertion:async(assertion)=>{await r.store.appendEvent({type:'assertion',source:'runner',data:assertion});},
@@ -302,7 +356,8 @@ export class Studio {
   }
   async cancelHandoff(handoffId?:string){const r=this.required();ensure(r.handoff&&(!handoffId||r.handoff.handoffId===handoffId),'Unknown handoff',404);return this.stopRunner();}
   async stopRunner(){
-    const r=this.required(),startup=this.workflowStarting;
+    const r=this.required(),startup=this.workflowStarting,checkpoint=r.checkpointTask;
+    checkpoint?.abort.abort(new Error('Runner stopping'));
     r.stopping=true;r.locked=true;r.execution='stopping';r.leaseEpoch++;this.window.lock(true);
     startup?.abort.abort(new Error('User requested stop during workflow startup'));startup?.gate?.close();
     const operationStopped=this.revokeOperation(r);
@@ -310,11 +365,13 @@ export class Studio {
     if(startup)await startup.done;
     if(this.workflowSettlement)await this.workflowSettlement;
     await operationStopped;
+    if(checkpoint)await checkpoint.done;
     this.humanDone?.reject(new Error('Handoff cancelled'));this.humanDone=undefined;
     if(this.active===r){r.stopping=false;r.execution='cancelled';r.controller='human';r.locked=false;if(r.handoff)r.handoff.status='cancelled';this.window.lock(false);}
     return this.state().active;
   }
   async validation(id:string){const record=this.validations.find(v=>v.id===id);ensure(record,'Unknown validation',404);let currentVersion='unknown';if(record.result){const registered=this.projects.find(project=>project.id===record.projectId)?.scriptDirectory;if(!registered||path.relative(path.resolve(record.directory),path.resolve(registered))!=='')currentVersion='needs-revalidation';else try{const hash=await fingerprintWorkflow(registered,path.join(app.getAppPath(),'package-lock.json'));currentVersion=hash.sha256===record.result.fingerprintAfter.sha256?'matched':'needs-revalidation';}catch{currentVersion='unavailable';}}return {...record,currentVersion};}
-  async review(body:any){ensure(this.validations.some(v=>v.id===body.id),'Unknown validation',404);ensure(['accept','reject','exception'].includes(body.verdict)&&typeof body.reason==='string'&&body.reason.trim(),'Review verdict and reason required');const review={id:randomUUID(),validationId:body.id,verdict:body.verdict,reason:body.reason,scope:body.scope||'all',createdAt:now()};await appendFile(path.join(this.root,'reviews.jsonl'),JSON.stringify(review)+'\n');return review;}
-  async close(){this.closing=true;const startup=this.workflowStarting;startup?.abort.abort(new Error('Application closing'));startup?.gate?.close();if(this.active){this.active.ending=true;this.active.locked=true;this.active.leaseEpoch++;await this.revokeOperation(this.active);}await this.queue.catch(()=>{});if(startup)await startup.done;const settlement=this.workflowSettlement;if(this.workflow)await this.workflow.cancel('Application closing');if(settlement)await settlement;this.humanDone?.reject(new Error('Application closing'));this.humanDone=undefined;if(this.active){const r=this.active;await r.stopDownloads?.();await Promise.allSettled([...(r.pageClosures??[])]);for(const p of [...r.pages.values()])await p.capture.stop().catch(()=>{});await r.store.updateManifest({status:'interrupted',execution:'interrupted'});await r.store.close();this.window.closeViews();r.releaseDownloads?.();this.active=undefined;}await this.fixture?.close();this.observer?.disconnect();this.window.closeViews();}
+  async review(body:any){ensure(this.validations.some(v=>v.id===body.id),'Unknown validation',404);return appendReview(this.root,body.id,body);}
+  async reviews(id:string,options:ReviewQuery={}){ensure(this.validations.some(v=>v.id===id),'Unknown validation',404);return readReviews(this.root,id,options);}
+  async close(){this.closing=true;this.active?.checkpointTask?.abort.abort(new Error('Application closing'));const startup=this.workflowStarting;startup?.abort.abort(new Error('Application closing'));startup?.gate?.close();if(this.active){this.active.ending=true;this.active.locked=true;this.active.leaseEpoch++;await this.revokeOperation(this.active);}await this.queue.catch(()=>{});if(startup)await startup.done;const settlement=this.workflowSettlement;if(this.workflow)await this.workflow.cancel('Application closing');if(settlement)await settlement;this.humanDone?.reject(new Error('Application closing'));this.humanDone=undefined;if(this.active){const r=this.active;await r.stopDownloads?.();await Promise.allSettled([...(r.pageClosures??[])]);for(const p of [...r.pages.values()])await p.capture.stop().catch(()=>{});await r.store.updateManifest({status:'interrupted',execution:'interrupted'});await r.store.close();this.window.closeViews();r.releaseDownloads?.();this.active=undefined;}await this.fixture?.close();this.observer?.disconnect();this.window.closeViews();}
 }

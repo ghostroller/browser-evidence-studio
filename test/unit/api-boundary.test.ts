@@ -24,6 +24,7 @@ function mockStudio() {
     action: async (body: unknown) => { calls.push({ method: 'action', body }); return body; },
     validation: async (id: string) => { calls.push({ method: 'validation', body: id }); return { id }; },
     review: async (body: unknown) => { calls.push({ method: 'review', body }); return body; },
+    reviews: async (id: string, body: unknown) => { calls.push({ method: 'reviews', body: { id, options: body } }); return { id }; },
     reader: () => ({ summary: async (body: unknown) => { calls.push({ method: 'summary', body }); return body; } }),
   };
   return { fake, run, calls, dispatch: makeDispatch(fake as unknown as Studio) };
@@ -65,7 +66,9 @@ test('path validation identity wins over a conflicting body/query alias and summ
   await dispatch('validation', { validationId: 'path-id', id: 'wrong-id' }, 'api');
   await dispatch('review', { validationId: 'path-id', id: 'wrong-id', verdict: 'accept', reason: 'scope' }, 'api');
   await dispatch('summary', { runId: 'run-1', maxBytes: 1200 }, 'api');
+  await dispatch('reviews', { validationId: 'path-id', id: 'wrong-id', maxBytes: 1200, cursor: 'bounded-next' }, 'api');
   assert.equal(calls[0].body, 'path-id'); assert.equal(calls[1].body.id, 'path-id'); assert.equal(calls[2].body.maxBytes, 1200);
+  assert.equal(calls[3].body.id, 'path-id'); assert.equal(calls[3].body.options.maxBytes, 1200); assert.equal(calls[3].body.options.cursor, 'bounded-next');
 });
 
 test('a pending WebSocket handshake can be revoked without ever exposing an operation transport', async () => {

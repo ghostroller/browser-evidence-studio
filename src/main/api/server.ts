@@ -11,14 +11,14 @@ const JSON_LIMIT = 32 * 1024;
 const JOB_RESULT_LIMIT = 24 * 1024;
 export interface ApiOptions {
   root: string;
-  dispatch: (method: string, body: Record<string, unknown>, source: 'api') => unknown | Promise<unknown>;
+  dispatch: (method: string, body: Record<string, unknown>, source: 'api', context?: { signal?: AbortSignal }) => unknown | Promise<unknown>;
   state?: () => unknown | Promise<unknown>;
 }
 export interface ApiHandle { address: string; connectionFile: string; close(): Promise<void>; }
 type JobStatus = 'queued' | 'running' | 'waiting-human' | 'succeeded' | 'failed' | 'cancelled';
 interface ApiFailure { code: string; message: string; status: number; }
 interface Job { id: string; status: JobStatus; operation: string; createdAt: string; updatedAt: string; result?: unknown; error?: ApiFailure; cancellationRequested?: boolean; cancellationError?: ApiFailure; }
-interface InternalJob { public: Job; body: Record<string, unknown>; }
+interface InternalJob { public: Job; body: Record<string, unknown>; cancellation?: AbortController; }
 interface Route { verb: string; pattern: RegExp; parameters: string[]; operation: string; mutate?: boolean; lease?: boolean; extra?: Record<string, unknown>; binary?: boolean; }
 const route = (verb: string, pattern: RegExp, parameters: string[], operation: string, options: Partial<Route> = {}): Route => ({ verb, pattern, parameters, operation, ...options });
 const routes: Route[] = [
@@ -40,6 +40,7 @@ const routes: Route[] = [
   route('POST', /^\/v1\/handoffs\/([^/]+)\/reply$/, ['handoffId'], 'replyHuman', { mutate: true, lease: true }),
   route('POST', /^\/v1\/handoffs\/([^/]+)\/cancel$/, ['handoffId'], 'cancelHandoff', { mutate: true, lease: true }),
   route('GET', /^\/v1\/validations\/([^/]+)$/, ['validationId'], 'validation'),
+  route('GET', /^\/v1\/validations\/([^/]+)\/reviews$/, ['validationId'], 'reviews'),
   route('POST', /^\/v1\/validations\/([^/]+)\/reviews$/, ['validationId'], 'review', { mutate: true }),
 ];
 class ApiError extends Error { constructor(readonly code: string, message: string, readonly status = 400) { super(message); } }
@@ -114,11 +115,12 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
   const token = randomBytes(32).toString('base64url'), tokenHash = createHash('sha256').update(token).digest();
   const instanceId = randomUUID(), jobs = new Map<string, InternalJob>(), idempotency = new Map<string, { fingerprint: string; jobId: string }>();
   let address = '', stopped = false;
-  const dispatch = (operation: string, body: Record<string, unknown>): Promise<unknown> => Promise.resolve().then(() => operation === 'state' && options.state ? options.state() : options.dispatch(operation, body, 'api'));
+  const dispatch = (operation: string, body: Record<string, unknown>, context?: { signal?: AbortSignal }): Promise<unknown> => Promise.resolve().then(() => operation === 'state' && options.state ? options.state() : options.dispatch(operation, body, 'api', context));
   const runJob = (job: InternalJob): void => {
     if (stopped || job.public.status !== 'queued') return;
     job.public.status = 'running'; job.public.updatedAt = new Date().toISOString();
-    void dispatch(job.public.operation, job.body).then((result) => {
+    if(job.public.operation==='checkpoint')job.cancellation=new AbortController();
+    void dispatch(job.public.operation, job.body, {signal:job.cancellation?.signal}).then((result) => {
       if (job.public.status !== 'running') return;
       const serialized = JSON.stringify(result ?? null);
       const references: Record<string, string> = {};
@@ -128,8 +130,9 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
         if (typeof value === 'string' && value.length <= 128) references[field] = value;
       }
       job.public.result = Buffer.byteLength(serialized) > JOB_RESULT_LIMIT ? { outputTruncated: true, resultBytes: Buffer.byteLength(serialized), references, nextRead: 'Read this run through summary, checkpoints, validations or artifact queries.' } : result;
-      job.public.status = 'succeeded'; job.public.updatedAt = new Date().toISOString();
-    }).catch((error: unknown) => { if (job.public.status !== 'running') return; job.public.status = 'failed'; job.public.error = failure(error); job.public.updatedAt = new Date().toISOString(); });
+      const cancelled=job.public.operation==='checkpoint'&&(result as any)?.metadata?.captureOutcome==='cancelled';
+      job.public.status = cancelled?'cancelled':'succeeded'; job.public.updatedAt = new Date().toISOString();
+    }).catch((error: unknown) => { if (job.public.status !== 'running') return; const cancelled=job.public.operation==='checkpoint'&&job.cancellation?.signal.aborted&&error===job.cancellation.signal.reason;job.public.status=cancelled?'cancelled':'failed';if(!cancelled)job.public.error=failure(error);job.public.updatedAt=new Date().toISOString(); });
   };
   const server = createServer((request, response) => {
     void (async () => {
@@ -157,10 +160,16 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
           else if (job.public.status === 'running' || job.public.status === 'waiting-human') {
             if (!job.public.cancellationRequested) {
               job.public.cancellationRequested = true;
+              if(job.public.operation==='checkpoint'){
+                // Abort only this job, including a callback still waiting in the
+                // Studio queue. The checkpoint result retains persisted evidence.
+                job.cancellation?.abort(new Error('Checkpoint acquisition cancelled'));
+              }else{
               void dispatch('cancelJob', { jobId: job.public.id, operation: job.public.operation, operationBody: job.body }).then(() => {
                 if (job.public.status === 'running' || job.public.status === 'waiting-human') job.public.status = 'cancelled';
                 job.public.updatedAt = new Date().toISOString();
               }, (error: unknown) => { job.public.cancellationError = failure(error); job.public.cancellationRequested = false; job.public.updatedAt = new Date().toISOString(); });
+              }
             }
           }
           json(response, 202, { jobId: job.public.id, status: job.public.status, cancellationRequested: job.public.cancellationRequested ?? false }); return;
