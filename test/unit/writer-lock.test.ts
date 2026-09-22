@@ -6,10 +6,10 @@ import { once } from 'node:events';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { claimWriterLock, inspectWriterLock, queryProcessIdentity, recoverWriterLock, type ProcessIdentity, type WriterOwner } from '../../src/evidence/writer-lock';
-import { EvidenceStore } from '../../src/evidence/store';
-import { EvidenceReader } from '../../src/evidence/reader';
-import { evidenceSources } from '../../src/evidence/index';
+import { claimWriterLock, inspectWriterLock, queryProcessIdentity, recoverWriterLock, type ProcessIdentity, type WriterOwner } from '@/evidence/writer-lock';
+import { EvidenceStore } from '@/evidence/store';
+import { EvidenceReader } from '@/evidence/reader';
+import { evidenceSources } from '@/evidence/index';
 
 async function fixture() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'bes-writer-lock-'));

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Studio } from '../../src/main/services/studio';
+import type { Studio } from '@/main/services/studio';
 import { captureUiFrame, runUiLayoutScenarios, setUiTheme } from './ui-layout';
 
 /** Exercise persisted judgments and project-scoped comparisons using a completed synthetic validation. */

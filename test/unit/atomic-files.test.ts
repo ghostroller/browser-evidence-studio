@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { atomicFile } from '../../src/evidence/files';
+import { atomicFile } from '@/evidence/files';
 
 async function fixture() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'bes-atomic-files-'));

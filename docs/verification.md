@@ -2,6 +2,29 @@
 
 更新日期：2026-09-23，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## 统一源码别名（2026-09-23）
+
+收到前端完成交接后，将根 paths 统一为 `@/* -> ./src/*`，三份 Vite 配置启用原生 `resolve.tsconfigPaths: true`，shadcn 五个 aliases 使用 `@/renderer/...`。源码/测试共 55 文件、125 处导入字面量改变，另外调整 5 份配置；独立复核确认每处仍指向原文件，其余源码逻辑、运行时路径及前端改动保持原样。package.json 和锁文件字节未变，后者 SHA-256 仍为 `aaeca20cd2ca57f8d6bbac8c9e67a03c35bbfacc8d49b5acfe6d39de445b2c9c`。未迁移 Vitest。
+
+实际环境为 Node **24.21.0** / npm **11.19.0** / Vite **8.3.0** / TypeScript **7.0.2** / Electron **44.4.3**。统一实验目录为 `output/alias-validation-1790104668534`，以下日志均位于该目录，除非另列完整相对路径。
+
+| 命令 / 场景 | 实际结果与材料 |
+| --- | --- |
+| 隔离目录内固定 shadcn CLI 4.21.0：`info --json`、`add button dialog sidebar --dry-run`、`add button dialog sidebar --yes` | 配置解析、预览、实际生成通过；9 个组件/Hook 文件和 8 处 `@/renderer/...` 导入符合预期。`fixture-paths.json` 与 `*-result.json` 记录结果；CLI 直接联网未通过，成功依赖下述受控 registry 转发。 |
+| fixture 中 `npm.cmd run typecheck`、`npm.cmd run build` | 实际导入生成组件后类型检查与 Vite 构建通过；`fixture-typecheck.log`、`fixture-build.log`。只在 fixture 安装依赖，没有把这些新增依赖加入产品。 |
+| 根项目 `npm.cmd run typecheck`、`npm.cmd test` | 类型检查通过，**102/102 测试通过，0 失败、0 跳过**；`typecheck.log`、`unit.log`。 |
+| `npm.cmd run test:integration` | 三个 Vite 产物构建成功；首轮主进程 PID **20424** 在布局拖动断言失败，`output/desktop-1790105742693/desktop-summary.json` 为 passed=false，后续进程未运行。 |
+| 同一构建执行 `node test/desktop/launch.js` | **19 个 Electron 进程完整矩阵通过**，`output/desktop-1790105788982/desktop-summary.json` 为 passed=true；主阶段 PID **30696**，profile 重启 PID **27828**，五种强杀边界的重开/重复重开及两个退出场景均通过。日志 `integration-recheck.log`。 |
+| `npm.cmd run start`，独立 `BES_DATA` / `BES_TEST=1`，清除 `ELECTRON_RUN_AS_NODE` | Forge 开发模式完整主阶段通过，Electron PID **22716**，退出 0；`forge-1790105985597/test-result.json` 与 `runtime-check.json`。实际 URL `http://localhost:8246`，HTML、`/@vite/client` 均为 200，同端口 HMR WebSocket 收到 connected；只验证连接，没有通过改源码触发一次热更新。 |
+| `npm.cmd run package` | 成功生成当前源码的应用目录，日志 `package.log`。使用既有 Electron ZIP，已重新核对 SHA-256 为 `790a355b684d5c7cc8dc3cdd8c4cca7c4b2d054685427c7554a956879a82e70b`；该值与此前核验的官方清单一致。未运行 make 生成分发 ZIP。 |
+| 新包 `out/Browser Evidence Studio-win32-x64/BrowserEvidenceStudio.exe`，独立 `BES_DATA` / `BES_TEST=1` | **打包主阶段通过**，实际 PID **28016**、退出 0、shutdown-complete；`packaged-1790106170900/test-result.json` 与 `runtime-check.json`。覆盖真实 renderer/preload、runner 五变体、人工交接、HTTP、checkpoint 与恢复界面；此轮包未单独复跑 profile-restart 或强杀矩阵。app.asar SHA-256 为 `7a6b1381dd3cf6c1f0ccd0175961f9e041b771b1ccc529995de5d086ee637639`。 |
+
+首轮拖动失败保留为失败：事件记录在 pointerdown 与后续按住移动之间插入一个 `(601.714, 302.286)`、`buttons=0` 的 pointermove；这不属于测试主动发送的横向序列。react-resizable-panels 4.13.2 收到无按键移动会将拖动状态设为 inactive，解释了布局未改变。同一构建、未改源码或断言的重跑及后续 Forge 主阶段通过。额外事件来源未确认，不能宣称该偶发问题已修复，也不能归因为别名解析。
+
+shadcn 的成功实验使用其支持的 REGISTRY_URL 指向本机转发服务，逐字节转发官方 `ui.shadcn.com/r/...` 响应并记录 SHA-256；只临时调整 CLI 子进程的 loopback 代理环境，没有改写响应、全局代理或 TLS 校验。CLI 直接访问 registry 的等待问题仍未解决。tooltip 终端帮助中的 `@/components/ui/tooltip` 没有跟随配置改写，生成文件则正确；详见 [路径方案与实验](import-alias-plan.md)。
+
+preload 当前没有本地别名导入，其构建与真实桥接通过不等于额外验证了该导入场景。CSS 内也没有使用 `@/`。本轮未重跑 20 分钟长测、独立 Edge 示例或真实账号流程；Windows 物理鼠标跨原生视图的命中路由仍未验收。构建存在既有上游指令、source map、chunk 大小及 Forge 旧选项提示，未借本次路径迁移调整依赖或优化包体。
+
 ## 前端重构与窗口 IPC 修复（2026-09-23）
 
 先完成 [frontend-refactor.md](frontend-refactor.md)，再实施紧凑左右布局、默认亮色/可切暗色、可拖动主分界与保存点/元素/执行/证据分界。项目/profile 创建、存档恢复与完整证据阅读使用 Dialog；移除首字装饰图标和多层卡片。主题与布局保存在独立 `userData/ui-preferences.json`，不写入 run 证据。录制、控制权、部分采集、回放、验收、人工评审和恢复继续使用既有业务接口。

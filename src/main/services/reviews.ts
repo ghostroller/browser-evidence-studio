@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { jsonBytes, jsonLines, safeFile } from '../../evidence/files';
-import { ensure, StudioError } from '../../shared/errors';
+import { jsonBytes, jsonLines, safeFile } from '@/evidence/files';
+import { ensure, StudioError } from '@/shared/errors';
 
 export interface HumanReview {
   id: string;

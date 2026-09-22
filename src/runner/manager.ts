@@ -2,7 +2,7 @@ import { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import Ajv from 'ajv';
-import type { CheckpointDetails, DataProvenance, Dataset, HumanRequest, JsonValue, ReportedAssertion, WorkflowManifest, WorkflowReporter } from '../contracts/workflow';
+import type { CheckpointDetails, DataProvenance, Dataset, HumanRequest, JsonValue, ReportedAssertion, WorkflowManifest, WorkflowReporter } from '@/contracts/workflow';
 import { GateTransport } from './gate';
 import { fingerprintInput, fingerprintWorkflow, loadWorkflow, resolveRegisteredFile, type WorkflowFingerprint } from './fingerprint';
 import { validateExecution, type ValidationResult } from './validation';

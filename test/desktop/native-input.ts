@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Studio } from '../../src/main/services/studio';
+import type { Studio } from '@/main/services/studio';
 
 /**
  * Human input for the LOCAL synthetic fixture only. The Puppeteer connection is

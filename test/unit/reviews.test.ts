@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { appendReview, readReviews } from '../../src/main/services/reviews';
+import { appendReview, readReviews } from '@/main/services/reviews';
 
 test('persisted review history preserves reasons and scopes across reads without rewriting machine results', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'bes-reviews-'));

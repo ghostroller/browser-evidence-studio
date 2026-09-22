@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isTrustedUiSender } from '../../src/main/ui-ipc';
+import { isTrustedUiSender } from '@/main/ui-ipc';
 
 function fixture() {
   const frame = { url: 'file:///trusted/index.html' };

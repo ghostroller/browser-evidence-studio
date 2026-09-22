@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { setTimeout as delay } from 'node:timers/promises';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Studio } from '../../src/main/services/studio';
+import type { Studio } from '@/main/services/studio';
 export async function runSoak(studio:Studio,url:string,minutes:number){
   if(studio.active)await studio.seal();const project=await studio.createProject({name:'长录制验证',objective:'连续记录、checkpoint与有界回读'}),profile=await studio.createProfile({projectId:project.id,name:'独立合成长录制'});
   await studio.startRun({projectId:project.id,profileId:profile.id,url:url+'/orders'});const run=studio.required(),page=studio.current();

@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { parseWorkflowManifest, type WorkflowManifest } from '../../src/contracts/workflow';
-import { fingerprintWorkflow, loadWorkflow, resolveRegisteredFile } from '../../src/runner/fingerprint';
-import { validateExecution, type ValidationInput } from '../../src/runner/validation';
-import { GateTransport, type ProtocolTransport } from '../../src/runner/gate';
-import { startWorkflow, type RunnerHooks } from '../../src/runner/manager';
+import { parseWorkflowManifest, type WorkflowManifest } from '@/contracts/workflow';
+import { fingerprintWorkflow, loadWorkflow, resolveRegisteredFile } from '@/runner/fingerprint';
+import { validateExecution, type ValidationInput } from '@/runner/validation';
+import { GateTransport, type ProtocolTransport } from '@/runner/gate';
+import { startWorkflow, type RunnerHooks } from '@/runner/manager';
 
 const manifest: WorkflowManifest = {
   schemaVersion: 1, workflowId: 'test', entry: './run.mjs', exportName: 'run', driver: 'puppeteer',

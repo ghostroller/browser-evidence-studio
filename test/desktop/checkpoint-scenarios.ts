@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Studio } from '../../src/main/services/studio';
-import { makeDispatch } from '../../src/main/services/dispatch';
+import type { Studio } from '@/main/services/studio';
+import { makeDispatch } from '@/main/services/dispatch';
 import { setUiTheme } from './ui-layout';
 
 async function waitUntil<T>(read:()=>T|Promise<T>,accept:(value:T)=>boolean,label:string,timeoutMs=30000):Promise<T>{

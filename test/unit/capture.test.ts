@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RequestLedger } from '../../src/capture/request-ledger';
-import { readyMainObserverContexts } from '../../src/capture/observer-contexts';
+import { RequestLedger } from '@/capture/request-ledger';
+import { readyMainObserverContexts } from '@/capture/observer-contexts';
 
 test('redirect response/body identity advances before delayed redirect persistence', async () => {
   const ledger = new RequestLedger('capture-session', 'business-target');

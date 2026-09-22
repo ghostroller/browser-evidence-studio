@@ -4,11 +4,11 @@ import { createReadStream } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Studio } from '../../src/main/services/studio';
-import type { ValidationRecord } from '../../src/main/services/validation-lifecycle';
-import { atomicJson, safeFile } from '../../src/evidence/files';
-import { evidenceSources } from '../../src/evidence/index';
-import { EvidenceReader } from '../../src/evidence/reader';
+import type { Studio } from '@/main/services/studio';
+import type { ValidationRecord } from '@/main/services/validation-lifecycle';
+import { atomicJson, safeFile } from '@/evidence/files';
+import { evidenceSources } from '@/evidence/index';
+import { EvidenceReader } from '@/evidence/reader';
 import { startFixture } from '../fixtures/site';
 
 const stages = ['registered-before-worker', 'running', 'waiting-human', 'report-before-terminal', 'terminal-before-catalog'];

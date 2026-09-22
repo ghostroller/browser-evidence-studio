@@ -3,7 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { BrowserWindow, nativeImage } from 'electron';
-import type { Studio } from '../../src/main/services/studio';
+import type { Studio } from '@/main/services/studio';
 
 type Rect = { x: number; y: number; width: number; height: number };
 const separator = '[role="separator"][aria-label="调整工作台与浏览器宽度"]';

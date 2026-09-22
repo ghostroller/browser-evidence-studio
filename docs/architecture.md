@@ -33,6 +33,14 @@ TypeScript 保持 `module: "preserve"` / `moduleResolution: "bundler"`，与 Vit
 
 这次调整固定模块规范，不升级 Node/npm 或依赖版本。配置加载、开发启动、worker、preload 桥接及打包的实际通过范围仍以 [verification.md](verification.md) 为准，历史 CommonJS 构建的通过记录不能替代 ESM 版本验收。
 
+### 1.2 源码导入路径定调（2026-09-23）
+
+根 `tsconfig.json` 只维护 `@/* -> ./src/*`。跨职责导入写明目录，例如 `@/main/...`、`@/renderer/...`、`@/runner/...`、`@/contracts/...`；同一职责目录内的紧邻模块可继续相对导入。测试导入客户端源码也使用这一映射，不为每层另设一组前缀。
+
+main、preload、renderer 三份 Vite 配置均启用 Vite 8 原生 `resolve.tsconfigPaths: true`，不再另写一份 renderer alias。shadcn 的 `components.json` 五个 aliases 全部位于 `@/renderer/...`，包括 components、ui、lib、hooks 和 utils；新增组件时也要同时核对落盘位置与实际生成的导入。具体配置、CLI 实验与开源参考见 [import-alias-plan.md](import-alias-plan.md)。
+
+别名只负责源码解析，不提供进程或权限隔离。renderer 不得因此直接引入 main、capture、evidence 或 runner 的宿主能力；共享契约使用 type-only 导入，运行时 shared 模块须适用于浏览器。preload 的 sandbox 边界不变。worker/preload 产物、测试子进程入口、外部业务脚本仍使用真实文件路径或 URL，不能把 `@/` 放进 `new URL()` 或原生 Node 的运行时入口。
+
 ## 2. 模块与进程
 
 ~~~text

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, open } from 'node:fs/promises';
 import path from 'node:path';
-import { atomicJson } from '../evidence/files';
+import { atomicJson } from '@/evidence/files';
 
 /** Local process diagnostics, separate from immutable run evidence. No URLs, input or tokens. */
 export class LifecycleLog {

@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer, Socket } from 'node:net';
 import { test } from 'node:test';
-import { makeDispatch } from '../../src/main/services/dispatch';
-import type { Studio } from '../../src/main/services/studio';
-import { SocketTransport } from '../../src/main/browser/connection';
+import { makeDispatch } from '@/main/services/dispatch';
+import type { Studio } from '@/main/services/studio';
+import { SocketTransport } from '@/main/browser/connection';
 
 function mockStudio() {
   const pageA = { pageId: 'page-a', navigationGeneration: 3, view: {} };

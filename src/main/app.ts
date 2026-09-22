@@ -4,7 +4,7 @@ import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { StudioWindow } from './window';
 import { Studio } from './services/studio';
-import { ensure } from '../shared/errors';
+import { ensure } from '@/shared/errors';
 import { makeDispatch } from './services/dispatch';
 import { startApi, type ApiHandle } from './api/server';
 import { LifecycleLog } from './lifecycle-log';

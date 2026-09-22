@@ -1,4 +1,4 @@
-import type { ArtifactInput } from '../evidence/contracts';
+import type { ArtifactInput } from '@/evidence/contracts';
 
 export type CheckpointCaptureOutcome = 'completed' | 'timed-out' | 'cancelled';
 export type CheckpointMaterial = Pick<ArtifactInput, 'kind' | 'mediaType' | 'data' | 'captureStatus' | 'reason'>;

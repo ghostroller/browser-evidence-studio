@@ -1,13 +1,13 @@
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { EvidenceStore } from '../../evidence/store';
-import { EvidenceReader } from '../../evidence/reader';
-import { evidenceSources } from '../../evidence/index';
-import { atomicJson, hashBytes, jsonLines, safeFile } from '../../evidence/files';
-import type { EvidenceEvent, RunManifest } from '../../evidence/contracts';
-import { parseWorkflowManifest } from '../../contracts/workflow';
-import { validateExecution } from '../../runner/validation';
-import type { WorkflowPrepared, WorkflowRunResult } from '../../runner/manager';
+import { EvidenceStore } from '@/evidence/store';
+import { EvidenceReader } from '@/evidence/reader';
+import { evidenceSources } from '@/evidence/index';
+import { atomicJson, hashBytes, jsonLines, safeFile } from '@/evidence/files';
+import type { EvidenceEvent, RunManifest } from '@/evidence/contracts';
+import { parseWorkflowManifest } from '@/contracts/workflow';
+import { validateExecution } from '@/runner/validation';
+import type { WorkflowPrepared, WorkflowRunResult } from '@/runner/manager';
 
 export type ValidationLifecycleStage = 'registered-before-worker' | 'running' | 'waiting-human' | 'report-before-terminal' | 'terminal-before-catalog';
 export interface ValidationLifecycleContext {

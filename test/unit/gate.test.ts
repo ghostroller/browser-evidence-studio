@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { GateDrainError, GateTransport, type ProtocolTransport } from '../../src/runner/gate';
+import { GateDrainError, GateTransport, type ProtocolTransport } from '@/runner/gate';
 
 class FakeTransport implements ProtocolTransport {
   onmessage?: (message: string) => void;

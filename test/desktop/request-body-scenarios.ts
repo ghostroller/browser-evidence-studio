@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Studio } from '../../src/main/services/studio';
-import type { Artifact, QueryPage } from '../../src/evidence/contracts';
-import { jsonLines, safeFile } from '../../src/evidence/files';
+import type { Studio } from '@/main/services/studio';
+import type { Artifact, QueryPage } from '@/evidence/contracts';
+import { jsonLines, safeFile } from '@/evidence/files';
 
 const credentialSentinel = 'BES-REQUEST-CREDENTIAL-SENTINEL';
 const variants = ['complete', 'large', 'truncated', 'credential', 'binary', 'multipart', 'no-body'] as const;

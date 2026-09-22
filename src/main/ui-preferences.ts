@@ -1,7 +1,7 @@
 import { closeSync, openSync, readSync } from 'node:fs';
 import path from 'node:path';
-import { atomicJson } from '../evidence/files';
-import { ensure } from '../shared/errors';
+import { atomicJson } from '@/evidence/files';
+import { ensure } from '@/shared/errors';
 
 export type UiTheme = 'light' | 'dark';
 export interface UiPreferences { theme: UiTheme; layout: Record<string, number[]>; }

@@ -5,9 +5,9 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { EvidenceStore } from '../../src/evidence/store';
-import { EvidenceReader, selectJson } from '../../src/evidence/reader';
-import { CaptureStatus, EvidenceError } from '../../src/evidence/contracts';
+import { EvidenceStore } from '@/evidence/store';
+import { EvidenceReader, selectJson } from '@/evidence/reader';
+import { CaptureStatus, EvidenceError } from '@/evidence/contracts';
 
 async function fixture(options?: Parameters<typeof EvidenceStore.create>[2]) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'bes-evidence-test-'));

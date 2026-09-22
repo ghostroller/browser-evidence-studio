@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Studio } from '../../src/main/services/studio';
+import type { Studio } from '@/main/services/studio';
 
 interface JsonReply { response: Response; data: any; bytes: number; elapsedMs: number; }
 interface Accepted { jobId: string; elapsedMs: number; }

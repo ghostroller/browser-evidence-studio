@@ -3,10 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Studio } from '../../src/main/services/studio';
-import { EvidenceStore } from '../../src/evidence/store';
-import { registerValidation } from '../../src/main/services/validation-lifecycle';
-import { fingerprintInput, fingerprintWorkflow, loadWorkflow } from '../../src/runner/fingerprint';
+import type { Studio } from '@/main/services/studio';
+import { EvidenceStore } from '@/evidence/store';
+import { registerValidation } from '@/main/services/validation-lifecycle';
+import { fingerprintInput, fingerprintWorkflow, loadWorkflow } from '@/runner/fingerprint';
 import { captureUiFrame, setUiTheme } from './ui-layout';
 
 /** Synthetic files and the real trusted renderer; this never opens an account profile. */

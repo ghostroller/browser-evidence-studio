@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 export default defineConfig({
+  resolve:{tsconfigPaths:true},
   build:{
     outDir:'.vite/build',emptyOutDir:false,sourcemap:true,minify:false,
     // Electron's sandboxed preload cannot load ESM; keep this boundary bundled.

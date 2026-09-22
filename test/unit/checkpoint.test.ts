@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate as nextTurn } from 'node:timers/promises';
-import { captureCheckpointMaterials } from '../../src/capture/checkpoint';
+import { captureCheckpointMaterials } from '@/capture/checkpoint';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

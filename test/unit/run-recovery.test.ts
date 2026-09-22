@@ -4,11 +4,11 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { EvidenceStore } from '../../src/evidence/store';
-import { EvidenceReader } from '../../src/evidence/reader';
-import { makeDispatch } from '../../src/main/services/dispatch';
-import { inspectRunRecovery, recoverRun } from '../../src/main/services/run-recovery';
-import type { Studio } from '../../src/main/services/studio';
+import { EvidenceStore } from '@/evidence/store';
+import { EvidenceReader } from '@/evidence/reader';
+import { makeDispatch } from '@/main/services/dispatch';
+import { inspectRunRecovery, recoverRun } from '@/main/services/run-recovery';
+import type { Studio } from '@/main/services/studio';
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'bes-run-recovery-')), runId = 'synthetic-recovery-run', runDir = path.join(root, 'runs', runId);

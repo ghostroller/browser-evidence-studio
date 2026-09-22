@@ -1,6 +1,6 @@
 import type { Page, CDPSession } from 'puppeteer-core';
 import { randomUUID } from 'node:crypto';
-import { EvidenceStore } from '../evidence/store';
+import { EvidenceStore } from '@/evidence/store';
 import recorder from '../../node_modules/rrweb/dist/rrweb.umd.min.cjs?raw';
 import { RequestLedger, type CapturedRequest } from './request-ledger';
 import { readyMainObserverContexts } from './observer-contexts';

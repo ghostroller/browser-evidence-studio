@@ -1,4 +1,4 @@
-import type { DataRule, Dataset, JsonValue, ReportedAssertion, Verdict, WorkflowManifest } from '../contracts/workflow';
+import type { DataRule, Dataset, JsonValue, ReportedAssertion, Verdict, WorkflowManifest } from '@/contracts/workflow';
 import type { WorkflowFingerprint } from './fingerprint';
 
 export interface RuleResult { name: string; verdict: Verdict; message: string }

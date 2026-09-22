@@ -1,9 +1,9 @@
 import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { EvidenceStore } from '../../evidence/store';
-import { safeFile } from '../../evidence/files';
-import { inspectWriterLock, recoverWriterLock } from '../../evidence/writer-lock';
-import { ensure } from '../../shared/errors';
+import { EvidenceStore } from '@/evidence/store';
+import { safeFile } from '@/evidence/files';
+import { inspectWriterLock, recoverWriterLock } from '@/evidence/writer-lock';
+import { ensure } from '@/shared/errors';
 import type { Studio } from './studio';
 
 async function recoveryTarget(studio: Studio, runId: unknown) {

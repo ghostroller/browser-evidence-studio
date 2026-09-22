@@ -1,4 +1,4 @@
-import type { ArtifactInput } from '../evidence/contracts';
+import type { ArtifactInput } from '@/evidence/contracts';
 import type { RequestBodyRead } from './request-ledger';
 
 export const REQUEST_BODY_LIMIT = 8 * 1024 * 1024;

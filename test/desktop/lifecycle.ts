@@ -4,10 +4,10 @@ import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Studio } from '../../src/main/services/studio';
-import { makeDispatch } from '../../src/main/services/dispatch';
-import type { Artifact, QueryPage } from '../../src/evidence/contracts';
-import type { EvidenceReader } from '../../src/evidence/reader';
+import type { Studio } from '@/main/services/studio';
+import { makeDispatch } from '@/main/services/dispatch';
+import type { Artifact, QueryPage } from '@/evidence/contracts';
+import type { EvidenceReader } from '@/evidence/reader';
 import { clickSyntheticHuman as nativeFixtureClick } from './native-input';
 
 async function waitFor<T>(read: () => Promise<T> | T, accept: (value: T) => boolean, label: string, timeoutMs = 15_000): Promise<T> {

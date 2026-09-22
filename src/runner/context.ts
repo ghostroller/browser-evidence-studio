@@ -1,4 +1,4 @@
-import type { WorkflowReporter } from '../contracts/workflow';
+import type { WorkflowReporter } from '@/contracts/workflow';
 
 export type ReporterMethod = Exclude<keyof WorkflowReporter, 'signal'>;
 export type WorkerMessage =

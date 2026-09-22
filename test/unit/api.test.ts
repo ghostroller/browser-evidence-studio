@@ -4,9 +4,9 @@ import { request } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { startApi, ApiOptions } from '../../src/main/api/server';
-import { makeDispatch } from '../../src/main/services/dispatch';
-import type { Studio } from '../../src/main/services/studio';
+import { startApi, ApiOptions } from '@/main/api/server';
+import { makeDispatch } from '@/main/services/dispatch';
+import type { Studio } from '@/main/services/studio';
 
 async function setup(dispatch: ApiOptions['dispatch']) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bes-api-test-'));

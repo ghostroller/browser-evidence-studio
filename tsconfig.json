@@ -4,7 +4,7 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"], "jsx": "react-jsx", "strict": true,
     "esModuleInterop": true, "skipLibCheck": true, "resolveJsonModule": true,
     "outDir": "dist", "ignoreDeprecations": "6.0",
-    "paths": { "@/*": ["./src/renderer/*"] }
+    "paths": { "@/*": ["./src/*"] }
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "test/**/*.ts", "forge.config.ts", "vite.*.config.ts"]
 }

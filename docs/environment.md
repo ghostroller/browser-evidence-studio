@@ -66,6 +66,12 @@ preload 的 CJS 产物是 Electron sandbox 的运行边界。sandboxed preload �
 
 Forge Vite 插件为锁定的非预发布版本；其官方集成说明的成熟度提示仍需结合本项目开发启动、生产构建、桌面测试和包装结果判断。初期 TS7 与 ts-loader 的编译接口不兼容已通过改用 Vite 的构建方案消除，不保留双构建链。配置依据见 [Forge Vite 插件文档](https://www.electronforge.io/config/plugins/vite)。
 
+## 源码导入别名与 shadcn
+
+根 `tsconfig.json` 的 `@/*` 统一指向 `./src/*`；跨职责导入使用 `@/main/...`、`@/renderer/...` 等完整目录前缀。三份 Vite 配置启用原生 `resolve.tsconfigPaths: true`，tsx 测试读取同一根配置。shadcn 的五个 aliases 均配置为 `@/renderer/...`；CSS 路径仍相对项目根。不要恢复旧的 `@/* -> ./src/renderer/*` 映射，也不要只改编辑器 paths 而遗漏构建配置。
+
+Windows 隔离实验已验证固定 shadcn CLI 4.21.0 的路径解析、实际生成组件及 Vite 构建。CLI 直接访问 registry 在本机代理环境下未通过；实验通过本机转发取得未经改写的官方响应，具体方法和限制见 [路径方案](import-alias-plan.md)。该版本 tooltip 的终端提示示例仍写 `@/components/ui/tooltip`，生成文件则遵循配置；使用提示示例时需调整为本项目的 `@/renderer/components/ui/tooltip`。这些观察不代表已经确认用户以前的报错原因。
+
 ## 安装网络与防火墙观察
 
 本机安装时，npm registry 经现有代理访问出现 TLS reset；让 `registry.npmjs.org` 走 `NO_PROXY` 后安装恢复。该结论仅适用于此次观察：如果已有代理配置遇到同类错误，可在当前终端保留原值并临时追加该域名后重试；无需关闭 TLS 校验或改写全局代理。

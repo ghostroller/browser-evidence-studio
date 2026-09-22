@@ -3,16 +3,16 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
-import { EvidenceStore } from '../../src/evidence/store';
-import { EvidenceReader } from '../../src/evidence/reader';
-import { evidenceSources } from '../../src/evidence/index';
-import { hashBytes, jsonLines } from '../../src/evidence/files';
-import { fingerprintInput, fingerprintWorkflow } from '../../src/runner/fingerprint';
-import { GateTransport, type ProtocolTransport } from '../../src/runner/gate';
-import { startWorkflow, type RunnerHooks, type WorkflowPrepared, type WorkflowRunResult } from '../../src/runner/manager';
-import { validateExecution } from '../../src/runner/validation';
-import type { WorkflowManifest } from '../../src/contracts/workflow';
-import { commitValidation, recoverValidationCatalog, registerValidation, type ValidationRecord } from '../../src/main/services/validation-lifecycle';
+import { EvidenceStore } from '@/evidence/store';
+import { EvidenceReader } from '@/evidence/reader';
+import { evidenceSources } from '@/evidence/index';
+import { hashBytes, jsonLines } from '@/evidence/files';
+import { fingerprintInput, fingerprintWorkflow } from '@/runner/fingerprint';
+import { GateTransport, type ProtocolTransport } from '@/runner/gate';
+import { startWorkflow, type RunnerHooks, type WorkflowPrepared, type WorkflowRunResult } from '@/runner/manager';
+import { validateExecution } from '@/runner/validation';
+import type { WorkflowManifest } from '@/contracts/workflow';
+import { commitValidation, recoverValidationCatalog, registerValidation, type ValidationRecord } from '@/main/services/validation-lifecycle';
 
 const manifest: WorkflowManifest = { schemaVersion: 1, workflowId: 'recovery', entry: './run.mjs', exportName: 'run', driver: 'puppeteer',
   requirements: [{ id: 'saved', checkpointKey: 'saved', description: 'A saved synthetic observation' }] };

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import type { Studio } from './studio';
-import { ensure } from '../../shared/errors';
-import { loadWorkflow } from '../../runner/fingerprint';
+import { ensure } from '@/shared/errors';
+import { loadWorkflow } from '@/runner/fingerprint';
 import { inspectRunRecovery, recoverRun } from './run-recovery';
 const READ=new Set(['state','projects','project','profiles','workflows','runs','run','pages','snapshot','checkpoints','summary','gaps','events','artifacts','artifact','artifactContent','handoffs','validations','validation','reviews','history','replay']);
 export function makeDispatch(studio:Studio){

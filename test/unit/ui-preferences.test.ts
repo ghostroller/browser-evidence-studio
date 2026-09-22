@@ -3,9 +3,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { UiPreferencesStore } from '../../src/main/ui-preferences';
-import { makeDispatch } from '../../src/main/services/dispatch';
-import type { Studio } from '../../src/main/services/studio';
+import { UiPreferencesStore } from '@/main/ui-preferences';
+import { makeDispatch } from '@/main/services/dispatch';
+import type { Studio } from '@/main/services/studio';
 
 test('UI preferences start light and persist independently of renderer origin with isolated returned values', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'bes-ui-preferences-'));

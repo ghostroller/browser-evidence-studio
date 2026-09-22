@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import type { ProtocolTransport } from '../../runner/gate';
+import type { ProtocolTransport } from '@/runner/gate';
 export class SocketTransport implements ProtocolTransport {
   onmessage?: (message: string) => void;
   onclose?: () => void;

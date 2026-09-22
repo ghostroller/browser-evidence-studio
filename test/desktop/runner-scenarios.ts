@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { Studio } from '../../src/main/services/studio';
+import type { Studio } from '@/main/services/studio';
 import { clickSyntheticHuman } from './native-input';
 
 async function waitUntil<T>(read: () => Promise<T> | T, accept: (value: T) => boolean, label: string, timeoutMs = 90_000): Promise<T> {

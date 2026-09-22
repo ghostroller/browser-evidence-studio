@@ -3,10 +3,10 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { captureRequestBody, requestMetadata, type NetworkRequest } from '../../src/capture/request-body';
-import { RequestLedger } from '../../src/capture/request-ledger';
-import { EvidenceStore } from '../../src/evidence/store';
-import { EvidenceReader } from '../../src/evidence/reader';
+import { captureRequestBody, requestMetadata, type NetworkRequest } from '@/capture/request-body';
+import { RequestLedger } from '@/capture/request-ledger';
+import { EvidenceStore } from '@/evidence/store';
+import { EvidenceReader } from '@/evidence/reader';
 
 const request = (input: Partial<NetworkRequest> = {}): NetworkRequest => ({ method: 'POST', url: 'https://synthetic.invalid/submit', headers: { 'Content-Type': 'application/json' }, ...input });
 

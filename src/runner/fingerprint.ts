@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { parseWorkflowManifest, type WorkflowManifest } from '../contracts/workflow';
+import { parseWorkflowManifest, type WorkflowManifest } from '@/contracts/workflow';
 
 export interface WorkflowFingerprint {
   sha256: string;

@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import { builtinModules } from 'node:module';
 export default defineConfig({
+  resolve:{tsconfigPaths:true},
   build: { target:'node24',outDir:'.vite/build',emptyOutDir:false,sourcemap:true,minify:false,
     lib:{entry:{index:'src/main/app.ts','runner-worker':'src/runner/worker.ts'},formats:['es'],fileName:(_format,name)=>name+'.js'},
     rolldownOptions:{
