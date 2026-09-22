@@ -8,19 +8,17 @@
 
 ## 开发启动
 
-后续开发固定使用 `D:\workspace\browser-evidence-studio`。在已配置 fnm 的 PowerShell 中运行：
+后续开发固定使用 `D:\workspace\browser-evidence-studio`。自行安装或选择 Node 24.21.0 / npm 11.19.0，项目不限制安装方式或版本管理器。在 PowerShell 中核对版本后运行：
 
 ```powershell
 Set-Location D:\workspace\browser-evidence-studio
-fnm install 24.21.0
-fnm use 24.21.0
 node --version
 npm.cmd --version
 npm.cmd ci
 npm.cmd start
 ```
 
-预期 Node 为 `v24.21.0`、npm 为 `11.19.0`。已经安装该 Node 版本时可跳过 `fnm install`；没有配置终端自动切换时，用 `fnm exec --using 24.21.0 npm.cmd start` 显式选择运行时。项目已提供依赖清单与锁文件，不需要全局安装 Electron 或 Puppeteer。
+预期 Node 为 `v24.21.0`、npm 为 `11.19.0`。进入目录或存在 `.node-version` 不代表当前终端已切换版本，执行项目前应核对输出。版本要求和安装说明见 [环境与依赖](docs/environment.md#安装和启动)。项目已提供依赖清单与锁文件，不需要全局安装 Electron 或 Puppeteer。
 
 构建使用 Electron Forge + Vite + React，类型检查独立执行。安装遇到代理或 Electron 下载问题时，见 [环境与依赖](docs/environment.md)。
 

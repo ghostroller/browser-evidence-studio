@@ -13,6 +13,7 @@
 ## 工程边界
 
 - 使用当代受支持稳定依赖和 Node LTS，锁定实际验证组合。没有 Node 14、旧 Puppeteer、旧录制格式兼容任务。
+- 开发环境仅约束 Node/npm 版本，当前验证基线为 Node 24.21.0 / npm 11.19.0；安装方式和版本管理器由开发者选择。执行前核对实际版本，不因进入仓库或存在 `.node-version` 就假定已经切换。
 - 单仓库、单 npm 包、少量职责明确模块；不用 monorepo、通用工作流 DSL、多套并行公共控制接口或双框架 Page 抽象。
 - 构建基线为 Electron Forge + Vite + TypeScript + React（2026-09-22 用户明确指定 Vite）；不引入 Webpack。依赖是否稳定以发布渠道及包元数据核实，不只看 latest 标签。
 - 先证明 WebContentsView、Puppeteer、CDP 采集、原生输入蒙版和进程生命周期可行，再扩大界面。

@@ -24,27 +24,25 @@
 
 ## 安装和启动
 
-固定开发目录为 `D:\workspace\browser-evidence-studio`。在已经配置 fnm 的 PowerShell 中执行：
+固定开发目录为 `D:\workspace\browser-evidence-studio`。项目仅约束 Node/npm 版本，不指定安装方式、版本管理器或本机安装路径。准备好 Node 24.21.0 / npm 11.19.0 后，在 PowerShell 中核对版本并执行：
 
 ```powershell
 Set-Location D:\workspace\browser-evidence-studio
-fnm install 24.21.0
-fnm use 24.21.0
 node --version
 npm.cmd --version
 npm.cmd ci
 npm.cmd start
 ```
 
-版本检查应分别输出 `v24.21.0` 和 `11.19.0`。首次安装 Node 后，后续只需切换版本；进入目录本身不保证当前终端已切换。独立命令也可以显式指定：
+版本检查应分别输出 `v24.21.0` 和 `11.19.0`。版本不符时，使用自行选择的安装或切换方式调整后重新检查。进入目录或存在 `.node-version` 本身不保证当前终端已使用正确版本。依赖安装完成后，常用验证命令为：
 
 ```powershell
-fnm exec --using 24.21.0 npm.cmd run typecheck
-fnm exec --using 24.21.0 npm.cmd test
-fnm exec --using 24.21.0 npm.cmd run build
+npm.cmd run typecheck
+npm.cmd test
+npm.cmd run build
 ```
 
-不要混用其他包管理器锁文件。常规复现使用 `npm ci`；版本升级应作为独立变更修改锁文件并重跑相关验证。不需要全局安装 Electron、Puppeteer 或测试 CLI。`puppeteer-core` 不自带独立 Chrome：客户端使用 Electron，独立示例通过可执行文件路径选择测试浏览器。
+不要混用其他包管理器锁文件。常规复现使用 `npm ci`；版本升级应作为独立变更修改锁文件并重跑相关验证。不需要全局安装 Electron、Puppeteer 或测试 CLI。`puppeteer-core` 不自带独立 Chrome：客户端使用 Electron，独立示例通过可执行文件路径选择测试浏览器。验证记录统一使用通用 Node/npm 命令，复现只需准备相同版本的运行时。
 
 ## Vite 构建边界
 

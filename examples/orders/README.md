@@ -12,11 +12,11 @@
 
 ## 无需 Electron 的独立测试
 
-仓库依赖安装完成后，在仓库根目录指定一个已安装的独立 Chrome：
+确认当前终端使用 Node 24.21.0 / npm 11.19.0，安装或版本切换方式不限。仓库依赖安装完成后，在仓库根目录指定一个已安装的独立 Chrome：
 
 ```powershell
 $env:BROWSER_EXECUTABLE_PATH = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
-fnm exec --using 24.21.0 npm.cmd run test:example
+npm.cmd run test:example
 ```
 
 将路径替换为本机 Chrome 的实际位置。该命令自行启动 Node 合成站点、执行五个变体并关闭浏览器及站点，不需要运行客户端或连接其 HTTP API。未设置 `BROWSER_EXECUTABLE_PATH` 时测试会跳过，不能视为通过。每个变体的报告写入终端显示的临时目录；预期失败变体返回非零码，由测试核对结果。
@@ -26,7 +26,7 @@ fnm exec --using 24.21.0 npm.cmd run test:example
 单次执行使用 `standalone.mjs`。它需要 Node、`puppeteer-core`、Ajv 和一个已运行的合成站点，以及同目录的 `run.mjs`、`input.schema.json`、`output.schema.json`；当前锁定版本见仓库 `package.json`。`workflow.json` 用于客户端登记，不是独立入口的执行依赖。浏览器由 `--executable-path` 或 `BROWSER_EXECUTABLE_PATH` 指定：
 
 ```powershell
-fnm exec --using 24.21.0 node examples/orders/standalone.mjs --url http://127.0.0.1:合成端口 --executable-path 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+node examples/orders/standalone.mjs --url http://127.0.0.1:合成端口 --executable-path 'C:\Program Files\Google\Chrome\Application\chrome.exe'
 ```
 
 将 URL 替换为正在运行的合成站点地址。此单次入口不会启动站点：可使用客户端“合成站点”提供的地址，也可由 Node 调用 `test/fixtures/site/index.ts` 的 `startFixture()` 托管同一测试夹具；上面的 `test:example` 已自动完成后一种方式。脚本面向这套合成订单页面，不能把 URL 换成任意真实商城并期待通用采集。

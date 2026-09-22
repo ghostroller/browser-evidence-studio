@@ -42,7 +42,7 @@
 4. 实测 CDP 捕获与控制同时工作；验证新窗口、iframe、刷新、DevTools/detach。
 5. 加入 rrweb 稳定版最小注入/回放，跨导航重新建立记录；同时保存一条独立响应正文。
 6. 原生视图级输入锁原型：阻止鼠标和快捷键，期间页面异步更新仍可继续。同时验证 Puppeteer 操作连接的撤销/闸门：人工交接前排清在途命令，交接期间并发 Promise/定时器命令被拒绝；采集连接继续工作。无法安全暂停的强制接管须先断开/终止 runner，不能承诺续跑原栈。
-7. 验证 profile 持久化及 utility/worker 生命周期，确定发行运行时不依赖开发机 fnm。
+7. 验证 profile 持久化及 utility/worker 生命周期，确定发行运行时不依赖开发机的 Node 安装方式或版本管理器。
 
 交付与通过标准：
 - npm start 可开窗口，npm run test:integration 可复跑本地夹具。
