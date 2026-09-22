@@ -4,7 +4,7 @@
 
 最新前端重构已按“先文档后实现”完成：shadcn 组件、亮/暗主题、紧凑左右布局和可调整信息区已通过类型检查、102/102 测试、19 进程桌面矩阵及 Forge 开发验证，报告 `output/desktop-1790104067949/desktop-summary.json`。同步修复窗口销毁后的迟到 IPC 异常与被拒导航导致浏览器隐藏的问题；Windows 物理鼠标跨原生视图命中仍待人工体验检查。详细范围见 [前端方案](frontend-refactor.md) 与 [验证记录](verification.md#前端重构与窗口-ipc-修复2026-09-23)。下方较早批次的计数和锁文件说明保留历史口径。
 
-前端交接后已完成统一源码别名：`@/* -> ./src/*`，三份 Vite 配置读取 TS paths，shadcn 五个 aliases 指向 `@/renderer/...`。隔离 CLI 实际生成、类型检查、102/102 单测、19 进程矩阵、Forge 开发/HMR、package 和新包主阶段通过；首轮桌面拖动曾被额外 `buttons=0` 事件打断，同构建未改代码重跑通过，事件来源仍未确认。CLI 直接联网问题也未宣布修复。详情见 [路径方案](import-alias-plan.md) 与 [验证记录](verification.md#统一源码别名2026-09-23)。本次没有迁移测试框架。
+前端交接后已完成统一源码别名：`@/* -> ./src/*`，三份 Vite 配置读取 TS paths，shadcn 五个 aliases 指向 `@/renderer/...`。隔离 CLI 实际生成、类型检查、102/102 单测、19 进程矩阵、Forge 开发/HMR、package 和新包主阶段通过；首轮桌面拖动曾被额外 `buttons=0` 事件打断，同构建未改代码重跑通过，事件来源仍未确认。CLI 直接联网问题也未宣布修复。详情见 [路径方案](import-alias-plan.md) 与 [验证记录](verification.md#统一源码别名2026-09-23)。Vitest 仍为[选型评估](test-runner-assessment.md)，没有实施迁移。
 
 ## 工作目录与提交
 
