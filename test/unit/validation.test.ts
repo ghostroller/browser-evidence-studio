@@ -103,7 +103,7 @@ async function withWorker(script: string, run: (directory: string, workerPath: s
     await writeFile(path.join(directory, 'workflow.json'), JSON.stringify({ ...manifest, humanPoints: [{ id: 'confirm', description: 'Explicit synthetic confirmation' }] }));
     await writeFile(path.join(directory, 'run.mjs'), 'export const run = async () => {};');
     await writeFile(path.join(directory, 'package-lock.json'), '{"lockfileVersion":3}');
-    const workerPath = path.join(directory, 'test-worker.cjs');
+    const workerPath = path.join(directory, 'test-worker.mjs');
     await writeFile(workerPath, script);
     const raw: ProtocolTransport = { send: () => {}, close: () => raw.onclose?.() };
     await run(directory, workerPath, new GateTransport(raw));
@@ -138,7 +138,7 @@ test('cancellation stops a busy worker before resolving, retaining a failed acce
 
 test('cancelling during checkpoint capture aborts the hook and drains pending reports without reopening the gate', { timeout: 6000 }, async t => {
   await withWorker(`
-    const { parentPort } = require('node:worker_threads');
+    import { parentPort } from 'node:worker_threads';
     parentPort.postMessage({ type:'reporter', id:1, method:'checkpoint', args:['orders', { title:'Pending synthetic checkpoint' }] });
     setInterval(() => {}, 100);
   `, async (directory, workerPath, transport) => {
@@ -201,7 +201,7 @@ test('cancelling during checkpoint capture aborts the hook and drains pending re
 
 test('human assistance timeout is a failure and never resumes the operation connection', async () => {
   await withWorker(`
-    const { parentPort } = require('node:worker_threads');
+    import { parentPort } from 'node:worker_threads';
     parentPort.postMessage({ type:'reporter', id:1, method:'requestHuman', args:[{ id:'confirm', instructions:'Confirm synthetic page', timeoutMs:15, completionCheck:{selector:'#confirmed'} }] });
     setInterval(() => {}, 100);
   `, async (directory, workerPath, transport) => {
@@ -223,7 +223,7 @@ test('human assistance timeout is a failure and never resumes the operation conn
 
 test('a timer command during a human window terminates the worker and records failed acceptance', async () => {
   await withWorker(`
-    const { parentPort } = require('node:worker_threads');
+    import { parentPort } from 'node:worker_threads';
     parentPort.postMessage({ type:'reporter', id:1, method:'requestHuman', args:[{ id:'confirm', instructions:'Confirm synthetic page', timeoutMs:1000, completionCheck:{selector:'#confirmed'} }] });
     setTimeout(() => parentPort.postMessage({type:'cdp.send', message:JSON.stringify({id:2,method:'Input.dispatchMouseEvent',params:{type:'mousePressed',x:1,y:1}})}), 25);
     setInterval(() => {}, 100);

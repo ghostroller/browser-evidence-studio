@@ -16,6 +16,8 @@
 - 开发环境仅约束 Node/npm 版本，当前验证基线为 Node 24.21.0 / npm 11.19.0；安装方式和版本管理器由开发者选择。执行前核对实际版本，不因进入仓库或存在 `.node-version` 就假定已经切换。
 - 单仓库、单 npm 包、少量职责明确模块；不用 monorepo、通用工作流 DSL、多套并行公共控制接口或双框架 Page 抽象。
 - 构建基线为 Electron Forge + Vite + TypeScript + React（2026-09-22 用户明确指定 Vite）；不引入 Webpack。依赖是否稳定以发布渠道及包元数据核实，不只看 latest 标签。
+- 模块基线为根包 `"type": "module"`：源码、配置和直接执行的 Node 脚本统一 `import`/`export`；Forge 与 Vite 配置使用 `.ts`，纳入类型检查。main、runner worker、renderer 输出 ESM；preload 源码仍用 ESM，但因 Electron sandbox 限制打包为单文件 `preload.cjs`，不得为格式统一关闭 sandbox 或 contextIsolation。具体边界见 docs/architecture.md 和 docs/environment.md。
+- Node 内置模块使用 `node:` 前缀；运行时相邻资源基于 `import.meta.url` / `import.meta.dirname` 定位，不依赖 CommonJS 全局变量或启动工作目录。TS 源码按 Vite/tsx 的加载方式维护，不假定 Node 可直接执行所有 `.ts`。
 - 先证明 WebContentsView、Puppeteer、CDP 采集、原生输入蒙版和进程生命周期可行，再扩大界面。
 - 实现脚本以普通 Puppeteer 为执行依据；JSON 不重复维护代码中的分支和循环。
 - 默认无运行时 AI 自愈；修改后重新验证受影响 checkpoint。

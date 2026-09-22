@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 export class StudioWindow {
-  readonly uiUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL!=='undefined'&&MAIN_WINDOW_VITE_DEV_SERVER_URL ? new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL).href : pathToFileURL(path.join(__dirname,'../renderer/main_window/index.html')).href;
+  readonly uiUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL!=='undefined'&&MAIN_WINDOW_VITE_DEV_SERVER_URL ? new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL).href : pathToFileURL(path.join(import.meta.dirname,'../renderer/main_window/index.html')).href;
   readonly window: BrowserWindow;
   readonly mask: WebContentsView;
   private views: WebContentsView[] = [];
@@ -12,7 +12,7 @@ export class StudioWindow {
   private locked = false;
   private browserVisible = true;
   constructor() {
-    this.window = new BrowserWindow({ width: 1460, height: 940, minWidth: 1100, minHeight: 760, title: 'Browser Evidence Studio', backgroundColor:'#10151c', show: true, webPreferences: { preload: path.join(__dirname,'preload.js'), nodeIntegration:false, contextIsolation:true, sandbox:true,backgroundThrottling:false } });
+    this.window = new BrowserWindow({ width: 1460, height: 940, minWidth: 1100, minHeight: 760, title: 'Browser Evidence Studio', backgroundColor:'#10151c', show: true, webPreferences: { preload: path.join(import.meta.dirname,'preload.cjs'), nodeIntegration:false, contextIsolation:true, sandbox:true,backgroundThrottling:false } });
     this.window.webContents.setWindowOpenHandler(() => ({action:'deny'}));
     this.window.webContents.on('will-navigate', event => event.preventDefault());
     this.mask = new WebContentsView({webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});

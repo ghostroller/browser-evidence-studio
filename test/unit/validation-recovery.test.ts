@@ -165,8 +165,8 @@ function transport() { const raw: ProtocolTransport = { send() {}, close() { raw
 
 test('pre-worker registration failure and cancellation never execute a worker', async () => {
   await fixture(async f => {
-    const workerPath = path.join(f.directory, 'worker.cjs'), marker = path.join(f.root, 'must-not-exist');
-    await writeFile(workerPath, `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'worker started');`);
+    const workerPath = path.join(f.directory, 'worker.mjs'), marker = path.join(f.root, 'must-not-exist');
+    await writeFile(workerPath, `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(marker)}, 'worker started');`);
     await assert.rejects(startWorkflow({ directory: f.directory, input: {}, targetId: 'synthetic', workerPath, transport: transport(), hooks,
       beforeWorker: async prepared => { assert.match(prepared.inputSha256, /^[a-f0-9]{64}$/); throw new Error('Registration failed'); } }), /Registration failed/);
     const cancellation = new AbortController();
@@ -178,8 +178,8 @@ test('pre-worker registration failure and cancellation never execute a worker', 
 
 test('cancelling while the durable running hook waits still settles the worker and pending hook', { timeout: 5000 }, async () => {
   await fixture(async f => {
-    const workerPath = path.join(f.directory, 'worker.cjs');
-    await writeFile(workerPath, `require('node:worker_threads').parentPort.postMessage({type:'started',nodeVersion:process.versions.node});setInterval(()=>{},100);`);
+    const workerPath = path.join(f.directory, 'worker.mjs');
+    await writeFile(workerPath, `import { parentPort } from 'node:worker_threads'; parentPort.postMessage({type:'started',nodeVersion:process.versions.node});setInterval(()=>{},100);`);
     let reached!: () => void; const running = new Promise<void>(resolve => { reached = resolve; });
     const gate = transport();
     const handle = await startWorkflow({ directory: f.directory, input: {}, targetId: 'synthetic', workerPath, transport: gate, hooks,

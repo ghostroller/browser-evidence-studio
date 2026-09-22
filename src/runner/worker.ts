@@ -47,8 +47,7 @@ async function main(): Promise<void> {
   const { browser, page } = await connectManagedPage(transport, options.targetId);
   try {
     // Native import retains registered entries outside the client's bundle.
-    const nativeImport = new Function('specifier', 'return import(specifier)') as (specifier: string) => Promise<Record<string, unknown>>;
-    const module = await nativeImport(pathToFileURL(options.entryPath).href);
+    const module = await import(/* @vite-ignore */ pathToFileURL(options.entryPath).href);
     const entry = module[options.exportName];
     if (typeof entry !== 'function') throw new Error(`Workflow export ${options.exportName} is not a function`);
     const output = await entry({ page, input: options.input, reporter });

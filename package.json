@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Local browser demonstration, evidence and validation workbench",
   "private": true,
+  "type": "module",
   "main": ".vite/build/index.js",
   "author": "Browser Evidence Studio contributors",
   "license": "UNLICENSED",
@@ -13,12 +14,12 @@
   "packageManager": "npm@11.19.0",
   "scripts": {
     "start": "electron-forge start",
-    "build": "vite build --config vite.main.config.mjs && vite build --config vite.preload.config.mjs && vite build --config vite.renderer.config.mjs",
+    "build": "vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts && vite build --config vite.renderer.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/unit/*.test.ts test/fixtures/site/site.test.ts",
-    "test:integration": "npm run build && node test/desktop/launch.cjs",
+    "test:integration": "npm run build && node test/desktop/launch.js",
     "test:desktop": "npm run test:integration",
-    "test:soak": "npm run build && node test/desktop/launch.cjs --soak=20",
+    "test:soak": "npm run build && node test/desktop/launch.js --soak=20",
     "test:example": "node --import tsx --test examples/orders/standalone.test.mjs",
     "package": "electron-forge package",
     "make": "electron-forge make"
@@ -45,6 +46,6 @@
     "@electron-forge/plugin-vite": "7.11.2"
   },
   "config": {
-    "forge": "./forge.config.cjs"
+    "forge": "./forge.config.ts"
   }
 }

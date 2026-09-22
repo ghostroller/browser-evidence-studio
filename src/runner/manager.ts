@@ -89,7 +89,7 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   options.startupSignal?.throwIfAborted();
   await options.beforeWorker?.({ manifest, entryPath, inputSha256, fingerprintBefore, startedAt });
   options.startupSignal?.throwIfAborted();
-  const worker = new Worker(options.workerPath ?? path.join(__dirname, 'runner-worker.js'), {
+  const worker = new Worker(options.workerPath ?? path.join(import.meta.dirname, 'runner-worker.js'), {
     workerData: { entryPath, exportName: manifest.exportName, input: options.input, targetId: options.targetId },
   });
   let status: WorkflowRunResult['status'] = 'interrupted';

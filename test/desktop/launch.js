@@ -1,7 +1,8 @@
-const { spawn } = require('node:child_process');
-const fs = require('node:fs');
-const path = require('node:path');
-const assert = require('node:assert/strict');
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import electron from 'electron';
 
 const root = path.resolve('output/desktop-' + Date.now());
 fs.mkdirSync(root, { recursive: true });
@@ -14,7 +15,7 @@ if (soakArgument) {
   baseEnv.BES_SOAK_MINUTES = String(minutes);
 }
 const executableArgument = process.argv.find(argument => argument.startsWith('--executable='));
-const executable = executableArgument ? path.resolve(executableArgument.slice('--executable='.length)) : require('electron');
+const executable = executableArgument ? path.resolve(executableArgument.slice('--executable='.length)) : electron;
 
 function launchPhase(phase, timeoutMs, { dataRoot = root, extraEnv = {}, terminateAtReady = false } = {}) {
   return new Promise(resolve => {

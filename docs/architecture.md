@@ -15,6 +15,24 @@
 
 现代 Electron/Puppeteer 的 Chromium 不一定完全同版。M0 验证当前稳定组合，仅调整当代稳定依赖；不实现旧版本兼容矩阵。
 
+### 1.1 模块格式定调（2026-09-23）
+
+根 `package.json` 设置 `"type": "module"`。项目源码、构建配置和 Node 启动脚本统一使用 `import` / `export`；不同时维护 CommonJS 与 ESM 两套入口。模块格式由实际加载位置决定：
+
+| 层 | 源码/配置 | 构建与运行格式 |
+| --- | --- | --- |
+| Forge / Vite 配置 | `forge.config.ts`、`vite.*.config.ts`，默认导出；Vite 使用 `defineConfig` | 由 Forge / Vite 加载 TS 配置，纳入 `tsc --noEmit` |
+| Electron main / runner worker | TypeScript ESM | `.vite/build/index.js`、`runner-worker.js`，ESM |
+| 可信 renderer | TypeScript / React ESM | Vite 浏览器 ESM |
+| 可信 UI preload | TypeScript ESM | `.vite/build/preload.cjs`，单文件 CommonJS |
+| Node 桌面测试入口 / 独立示例 | ESM | `test/desktop/launch.js` 按根包 ESM 运行；独立示例保留显式 ESM 的 `.mjs` |
+
+preload 是明确的运行时例外：Electron 的 sandboxed preload 没有 ESM 上下文，包级 `"type": "module"` 也不会改变其加载方式。因此保留 `sandbox: true`、`contextIsolation: true`，构建时将 ESM 源码及本地依赖打包为单文件 CJS，仅使用 Electron 提供的有限 `require` 能力；不能为了统一产物格式削弱隔离。[Electron 官方 ESM 边界](https://www.electronjs.org/docs/latest/tutorial/esm)
+
+TypeScript 保持 `module: "preserve"` / `moduleResolution: "bundler"`，与 Vite 构建和 tsx 测试加载方式对应，不承诺全部 `.ts` 可由 Node 原生直接执行。Node 直接执行的 JS 入口使用完整相对路径扩展名；Node 内置模块带 `node:` 前缀。main / worker 的相邻资源基于 `import.meta.url` 或 `import.meta.dirname` 定位，不使用 `__dirname`、`require.resolve` 或工作目录猜测运行时位置。ESM 主进程中必须在 Electron `ready` 前完成的初始化应显式等待，不能依赖未等待的动态导入时序。
+
+这次调整固定模块规范，不升级 Node/npm 或依赖版本。配置加载、开发启动、worker、preload 桥接及打包的实际通过范围仍以 [verification.md](verification.md) 为准，历史 CommonJS 构建的通过记录不能替代 ESM 版本验收。
+
 ## 2. 模块与进程
 
 ~~~text

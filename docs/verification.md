@@ -2,6 +2,25 @@
 
 更新日期：2026-09-23，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## ESM 模块迁移（2026-09-23）
+
+根包改为 `"type": "module"`，Forge 与 Vite 配置迁至 `.ts` 并纳入类型检查；main、runner worker 和 renderer 输出 ESM。Electron sandboxed preload 仍从 TS ESM 源码打包为单文件 `preload.cjs`。运行时资源/worker 位置使用 `import.meta.dirname`，登记脚本使用原生动态 `import()`；桌面启动器和故障测试子进程也改用 ESM。未降低 sandbox/contextIsolation。
+
+迁移实际运行环境仍为 **Node 24.21.0 / npm 11.19.0 / Electron 44.4.3**。本次模块变更本身没有调整依赖版本。开发启动记录是在同时应用动态端口修复的工作树上取得，模块格式迁移与端口修复为独立变更。
+
+- `npm.cmd run typecheck` 通过，含四个根配置；`npm.cmd test` **94/94 通过，0 失败、0 跳过**。
+- `npm.cmd run test:integration` 的 Vite 构建及 **19 个 Electron 进程**完整矩阵通过，报告 `output/desktop-1790101014732/desktop-summary.json`。主场景 PID **37720**、profile 重启 PID **28576**，均退出 0；五种强杀边界的两次重开/新 run 复跑和两个退出清理场景均通过。
+- 该次构建的 SHA-256：`index.js` 为 `ea7778b2016d5ecefe4c441bfb1fc7662674b08fcb88c78ec220b7aba06a4a11`，`runner-worker.js` 为 `1af5acfb48e309d35ef063dfa584f17bb1a8392f1fc4df8a6ed8ca2bf88a0dc4`，`preload.cjs` 为 `313be288f1dae26ecd0bef48c0bae9e1e8c2e1069099b98c29cc478598ba3418`。
+
+随后完成模块专项开发/打包验证：
+
+- 设置独立 `BES_DATA=output/forge-esm-1790101319212`、`BES_TEST=1`、`BES_TEST_PHASE=exit-app-quit`，清除 `ELECTRON_RUN_AS_NODE` 后执行 `npm.cmd run start`。Forge 加载 TS 配置并完成开发构建；Electron PID **30308** 保存 `ui-ready`、`exit-reentry-verified`（两份 checkpoint 材料）和 `shutdown-complete` / exitCode 0。这是开发启动与退出场景通过，不标为完整主阶段测试报告。
+- 核验本机 Electron ZIP 的 SHA-256 仍与安装包官方清单一致（`790a355b684d5c7cc8dc3cdd8c4cca7c4b2d054685427c7554a956879a82e70b`），将 `ELECTRON_ZIP_DIR` 指向 `output/electron-cache/97c4824d52fa18e59ceb86513ea4d84a0cb0a407b42cff72f0fdb998616bb008`，执行 `npm.cmd run package` 成功。
+- `node test/desktop/launch.js '--executable=out/Browser Evidence Studio-win32-x64/BrowserEvidenceStudio.exe' --recovery-only` **17 进程专项矩阵通过**，报告 `output/desktop-1790101407643/desktop-summary.json`。覆盖五种强杀位置的重开、新 ESM worker 实跑、重复重开，以及两种完整退出清理；此命令明确没有运行 packaged main/profile-restart 阶段。
+- ASAR 内核对 `package.json` 的 `type=module`、主入口、ESM main/worker 和 `preload.cjs`；摘要保存于 `output/forge-esm-1790101319212/package-modules.json`。该次 `app.asar` SHA-256 为 `c5f969366ec052661a8cd3fef59fc94352afcb2efbe346a8f6cebc0f63d82d0a`。未生成新分发 ZIP。
+
+验证期间同目录另一项前端重构开始加入依赖、界面和测试改动。94 项及 19 进程结果对应前一实际 ESM 构建；随后共享树类型检查曾因尚未生成的 UI 组件及未就绪依赖失败，不能把当前前端中间状态算作全量通过。开发/打包专项只验收当次产物的模块加载与恢复，未验收新界面；后续前端任务负责最终源码/依赖/产物一致性及全量复验。未复跑长测与真实业务。Forge 上游 `inlineDynamicImports` 与 `codeSplitting:false` 同时存在时有忽略旧选项的提示，产物仍为单文件 preload；未修改 node_modules。
+
 ## 退出诊断与最终强杀重开矩阵（2026-09-23）
 
 在 `7a6ef3f` / `9946a4b` 上完成退出诊断、连续退出保护、验收目录保存与控制交还的时序修复，以及统一桌面强杀回归。最终 `npm.cmd run typecheck`、`npm.cmd test` **94/94**、`npm.cmd run test:integration` 均通过；后者包含 Vite 构建和 **19 个真实 Electron 进程**，报告 `output/desktop-1790095701394/desktop-summary.json`。`git diff --check` 通过。Node 24.21.0 / npm 11.19.0、Electron 44.4.3 及锁文件 SHA-256 未变。

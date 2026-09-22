@@ -255,15 +255,15 @@ test('long event metadata and projected fields paginate within full envelope bud
 
 test('a checkpoint acknowledged by a forcibly terminated writer remains readable after stale-lock recovery', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'bes-evidence-crash-'));
-  const modulePath = path.resolve('src/evidence/store.ts');
-  const program = `const { EvidenceStore } = require(${JSON.stringify(modulePath)}); (async () => {
+  const moduleUrl = new URL('../../src/evidence/store.ts', import.meta.url).href;
+  const program = `import { EvidenceStore } from ${JSON.stringify(moduleUrl)}; (async () => {
     const store = await EvidenceStore.create(${JSON.stringify(directory)}, {id:'crash-run', projectId:'synthetic',kind:'demonstrate',mode:'synthetic',objective:'Forced termination durability'});
     const artifact = await store.putArtifact({kind:'dom',mediaType:'text/html',data:'<p>acknowledged before termination</p>'});
     const cp = await store.appendCheckpoint({key:'durable',captureStartedAt:new Date().toISOString(),captureEndedAt:new Date().toISOString(),captureConsistency:'consistent',artifactRefs:[artifact.id]});
     process.stdout.write(JSON.stringify({checkpointId:cp.id,artifactId:artifact.id})+'\\n');
     setInterval(() => {}, 1000);
   })().catch(error=>{process.stderr.write(String(error));process.exit(1)});`;
-  const child = spawn(process.execPath, ['--import', 'tsx', '--eval', program], { cwd: process.cwd(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', program], { cwd: process.cwd(), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const exited = once(child, 'exit');
   try {
     const acknowledged = await new Promise<{ checkpointId: string; artifactId: string }>((resolve, reject) => {

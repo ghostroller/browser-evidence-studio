@@ -46,15 +46,21 @@ npm.cmd run build
 
 不要混用其他包管理器锁文件。常规复现使用 `npm ci`；版本升级应作为独立变更修改锁文件并重跑相关验证。不需要全局安装 Electron、Puppeteer 或测试 CLI。`puppeteer-core` 不自带独立 Chrome：客户端使用 Electron，独立示例通过可执行文件路径选择测试浏览器。验证记录统一使用通用 Node/npm 命令，复现只需准备相同版本的运行时。
 
-## Vite 构建边界
+## ESM 与 Vite 构建边界
 
 按用户的实施要求，项目已从最初的 Webpack 方案改为 Electron Forge + Vite；旧 Webpack 配置和依赖已移除。
 
-- `vite.main.config.mjs` 构建 `.vite/build/index.js` 和 `runner-worker.js`。
-- `vite.preload.config.mjs` 构建 `.vite/build/preload.js`。
-- `vite.renderer.config.mjs` 构建 `.vite/renderer/main_window/`。
-- Electron main/preload 使用 CommonJS，renderer 使用 ESM；包根没有设置 `type: module`，普通独立示例使用 `.mjs`。
-- Vite 负责转译，`npm run typecheck` 单独运行 `tsc --noEmit`。构建成功不等于类型检查通过。
+2026-09-23 将根包定为 `"type": "module"`，项目源码、配置和直接执行的 Node 脚本统一使用 ESM 写法。`forge.config.ts` 使用带类型的默认导出，三个 Vite 配置使用 `defineConfig`。Forge 从 7.8.1 起内置通过 jiti 加载 TS 配置；Vite 8 支持 TS 配置并默认先用 Rolldown 打包加载，无需另加 `ts-node`，本项目不要求切换 `--configLoader native`。配置依据见 [Forge TypeScript 配置](https://www.electronforge.io/config/typescript-configuration) 和 [Vite 8 配置](https://v8.vite.dev/config/)。
+
+- `vite.main.config.ts` 构建 ESM 的 `.vite/build/index.js` 和 `runner-worker.js`。
+- `vite.preload.config.ts` 将 TS ESM 源码打包为单文件 `.vite/build/preload.cjs`。
+- `vite.renderer.config.ts` 构建浏览器 ESM 到 `.vite/renderer/main_window/`。
+- `test/desktop/launch.js` 按根包 ESM 执行；普通独立示例保留 `.mjs`，仍是 ESM，无需为了统一扩展名改名。
+- Vite 负责转译，`npm run typecheck` 单独运行 `tsc --noEmit`，覆盖源码、TS 测试以及根目录 Forge/Vite 配置。构建成功不等于类型检查通过。
+
+preload 的 CJS 产物是 Electron sandbox 的运行边界。sandboxed preload 不支持 ESM imports，并且忽略包级 `"type": "module"`；本项目保留 `sandbox` 和 `contextIsolation`，不为了统一扩展名关闭它们。preload 源码照常使用 `import` / `export`，本地依赖由 Vite 打包；运行时不要求加载额外 ESM 文件。[Electron 官方说明](https://www.electronjs.org/docs/latest/tutorial/esm)
+
+`tsconfig.json` 使用 `module: "preserve"` / `moduleResolution: "bundler"`：客户端由 Vite 构建，TS 测试由 `node --import tsx` 加载，不把所有 TS 文件都当作 Node 原生可执行入口。Node 内置模块使用 `node:`；运行时相邻文件通过 `import.meta.url` / `import.meta.dirname` 解析。模块迁移不改变上方锁定的依赖版本，迁移后实际验证结果及尚未重跑的范围见 [验证记录](verification.md)。
 
 Forge Vite 插件为锁定的非预发布版本；其官方集成说明的成熟度提示仍需结合本项目开发启动、生产构建、桌面测试和包装结果判断。初期 TS7 与 ts-loader 的编译接口不兼容已通过改用 Vite 的构建方案消除，不保留双构建链。配置依据见 [Forge Vite 插件文档](https://www.electronforge.io/config/plugins/vite)。
 

@@ -20,7 +20,7 @@ npm.cmd start
 
 预期 Node 为 `v24.21.0`、npm 为 `11.19.0`。进入目录或存在 `.node-version` 不代表当前终端已切换版本，执行项目前应核对输出。版本要求和安装说明见 [环境与依赖](docs/environment.md#安装和启动)。项目已提供依赖清单与锁文件，不需要全局安装 Electron 或 Puppeteer。
 
-构建使用 Electron Forge + Vite + React，类型检查独立执行。安装遇到代理或 Electron 下载问题时，见 [环境与依赖](docs/environment.md)。
+构建使用 Electron Forge + Vite + React，根包采用 `"type": "module"`。源码与配置统一使用 ESM，Forge/Vite 配置使用 TypeScript；为保留 Electron sandbox，preload 单独打包为 `preload.cjs`。类型检查独立执行，模块边界及安装问题见 [环境与依赖](docs/environment.md)。
 
 ## 第一次操作
 

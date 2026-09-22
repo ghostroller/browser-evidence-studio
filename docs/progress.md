@@ -48,6 +48,7 @@
 
 ## 历史修复和验证边界
 
+- 2026-09-23 已将根包、主进程/runner、配置和测试入口迁至 ESM；沙箱 preload 保留单文件 `preload.cjs` 产物。模块规范见 [architecture.md](architecture.md#11-模块格式定调2026-09-23)。类型检查、94/94 单测与 19 进程桌面矩阵通过，报告 `output/desktop-1790101014732/desktop-summary.json`；Forge 开发启动/退出、package 和打包 EXE 的 17 进程恢复专项也通过（`output/desktop-1790101407643`）。同目录前端重构的中间状态未作为整体验收，不把这些专项结果外推到新界面、最终源码或新分发 ZIP，详情见 [验证记录](verification.md#esm-模块迁移2026-09-23)。
 - 已按用户要求改为 Vite，不保留 Webpack 构建链。
 - Electron 弹窗报错 `Invalid webContents` 已修复：接管 Electron 传入的 guest WebContents，真实弹窗、opener、切页和自关闭均通过。
 - 普通 Puppeteer 点击被遮挡窗口节流、rrweb 辅助 iframe 递归、preload 文件名不一致、操作连接与取消竞态已修复并回归。

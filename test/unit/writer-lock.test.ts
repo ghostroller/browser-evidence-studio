@@ -28,11 +28,12 @@ async function marker(file: string, changes: Partial<WriterOwner> = {}): Promise
   return bytes;
 }
 
-const actorProgram = `const { claimWriterLock } = require(${JSON.stringify(path.resolve('src/evidence/writer-lock.ts'))});
+const actorProgram = `import { claimWriterLock } from ${JSON.stringify(new URL('../../src/evidence/writer-lock.ts', import.meta.url).href)};
+import { promises as fs } from 'node:fs';
 let lock; const keepalive=setInterval(()=>{},1000);
 process.on('message',async message=>{
  if(message==='claim-pause-before-publication'||message==='claim-pause-after-publication'){
-  const after=message==='claim-pause-after-publication',fs=require('node:fs').promises,link=fs.link.bind(fs);fs.link=async(...args)=>{if(after)await link(...args);process.send({status:'publication-paused'});await new Promise(()=>{});};message='claim';
+  const after=message==='claim-pause-after-publication',link=fs.link.bind(fs);fs.link=async(...args)=>{if(after)await link(...args);process.send({status:'publication-paused'});await new Promise(()=>{});};message='claim';
  }
  if(message==='claim')try{lock=await claimWriterLock(process.argv[1]);process.send({status:'held',owner:lock.owner,recovery:lock.recovery});}catch(error){process.send({status:'rejected',code:error.code,message:error.message});}
  if(message==='release')try{await lock.release();process.send({status:'released'});clearInterval(keepalive);process.disconnect();}catch(error){process.send({status:'release-failed',code:error.code});}
@@ -47,7 +48,7 @@ function waitMessage(child: ChildProcess): Promise<any> {
   });
 }
 async function actor(directory: string) {
-  const child = spawn(process.execPath, ['--import', 'tsx', '--eval', actorProgram, directory], { cwd: process.cwd(), windowsHide: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', actorProgram, directory], { cwd: process.cwd(), windowsHide: true, stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
   const exited = once(child, 'exit');
   let errors = ''; child.stderr!.on('data', chunk => { errors += chunk.toString(); });
   assert.equal((await waitMessage(child)).status, 'ready', errors);
@@ -57,7 +58,7 @@ async function actor(directory: string) {
 test('OS identity distinguishes alive processes from exited processes without treating query failures as death', async () => {
   const identity = await currentIdentity();
   assert.ok(identity.value);
-  const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { windowsHide: true, stdio: 'ignore' });
+  const child = spawn(process.execPath, ['--input-type=module', '-e', 'setInterval(()=>{},1000)'], { windowsHide: true, stdio: 'ignore' });
   const exited = once(child, 'exit');
   try {
     assert.equal((await queryProcessIdentity(child.pid!)).state, 'alive');
