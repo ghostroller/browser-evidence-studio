@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import type { Studio } from './studio';
 import { ensure } from '../../shared/errors';
 import { loadWorkflow } from '../../runner/fingerprint';
+import { inspectRunRecovery, recoverRun } from './run-recovery';
 const READ=new Set(['state','projects','project','profiles','workflows','runs','run','pages','snapshot','checkpoints','summary','gaps','events','artifacts','artifact','artifactContent','handoffs','validations','validation','reviews','history','replay']);
 export function makeDispatch(studio:Studio){
   return async function dispatch(method:string,body:any={},source:'api'|'ui'='ui',context:{signal?:AbortSignal}={}):Promise<any>{
@@ -20,6 +21,8 @@ export function makeDispatch(studio:Studio){
     if(source==='api'&&['createProject','updateProject'].includes(method))ensure(!body.scriptDirectory,'Workflow directories are registered in the trusted client UI',403);
     switch(method){
       case 'state':return studio.state();case 'projects':return {items:studio.projects};case 'project':{const p=studio.projects.find(p=>p.id===body.projectId);ensure(p,'Unknown project',404);return p;}
+      case 'inspectRunRecovery':ensure(source==='ui','Archive recovery inspection is available in the trusted client only',403);return inspectRunRecovery(studio,body);
+      case 'recoverRun':ensure(source==='ui','Archive recovery is available in the trusted client only',403);return recoverRun(studio,body);
       case 'profiles':return {items:studio.profiles.filter(p=>p.projectId===body.projectId)};
       case 'runs':return {items:studio.runs.slice(0,100)};case 'run':{const run=studio.runs.find(r=>r.id===body.runId);ensure(run,'Unknown run',404);return {...run,active:studio.active?.id===body.runId?studio.state().active:null};}
       case 'createProject':return studio.createProject(body);case 'updateProject':return studio.updateProject(body);case 'createProfile':return studio.createProfile(body);case 'startRun':return studio.startRun(body);
@@ -45,6 +48,6 @@ export function makeDispatch(studio:Studio){
       default:ensure(false,'Unknown operation: '+method,404);
     }};
     // Read-only state and handoff replies must remain responsive during long operations.
-    return READ.has(method)||['replyHuman','releaseHuman','stopRunner','cancelJob','cancelHandoff','cancelCheckpoint'].includes(method)?execute():studio.serialized(execute);
+    return READ.has(method)||['replyHuman','releaseHuman','stopRunner','cancelJob','cancelHandoff','cancelCheckpoint','inspectRunRecovery'].includes(method)?execute():studio.serialized(execute);
   };
 }

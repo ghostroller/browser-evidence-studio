@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { EvidenceError } from './contracts';
 
 export const hashBytes = (data: Uint8Array | string): string => createHash('sha256').update(data).digest('hex');
@@ -12,8 +13,19 @@ export async function atomicFile(file: string, data: Uint8Array): Promise<void> 
   await fs.mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${randomUUID()}.tmp`;
   const handle = await fs.open(temporary, 'wx');
-  try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
-  try { await fs.rename(temporary, file); } catch (error) { await fs.rm(temporary, { force: true }); throw error; }
+  try {
+    try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
+    // Windows readers may briefly deny replacement. Keep the synced file and old target intact.
+    const retryDelays = [25, 50, 100, 200, 400, 400];
+    for (let attempt = 0; ; attempt++) {
+      try { await fs.rename(temporary, file); break; }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (process.platform !== 'win32' || !['EACCES', 'EPERM', 'EBUSY'].includes(code || '') || attempt >= retryDelays.length) throw error;
+        await delay(retryDelays[attempt]);
+      }
+    }
+  } catch (error) { await fs.rm(temporary, { force: true }); throw error; }
 }
 /** Resolve only run-local regular files. Imported metadata must never escape the run through links. */
 export async function safeFile(root: string, relative: string): Promise<string> {

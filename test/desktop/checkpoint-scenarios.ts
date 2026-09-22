@@ -128,6 +128,7 @@ async function runIncompleteRunnerCheckpoints(studio:Studio,url:string){
       assert.equal(record.result?.status,'failed',scenario+': incomplete checkpoint must fail execution');
       assert.equal(record.result.validation.overall,'fail');assert.equal(record.result.validation.coverageVerdict,'not-run');
       assert.deepEqual(record.result.checkpoints,[],'Persisted partial evidence must not become a covered checkpoint');
+      assert.ok(record.result.error);
       assert.match(record.result.error,/Checkpoint capture is incomplete/);
       const checkpoints=await studio.reader(started.runId).checkpoints({limit:20,maxBytes:32768});
       const retained=checkpoints.items.find((value:any)=>value.key==='orders-complete') as any;

@@ -11,6 +11,7 @@ import { runCheckpointScenarios } from './checkpoint-scenarios';
 import { runRequestBodyScenarios } from './request-body-scenarios';
 import { runLifecycleScenarios } from './lifecycle';
 import { runApiScenarios } from './api-scenarios';
+import { runRecoveryUiScenarios } from './recovery-ui';
 export async function runDesktopTests(studio:Studio){
   const site=await startFixture();
   try{
@@ -55,6 +56,7 @@ export async function runDesktopTests(studio:Studio){
     await runApiScenarios(studio,site.url);
     await runCheckpointScenarios(studio,site.url);
     await runRequestBodyScenarios(studio,site.url);
+    if(!process.env.BES_SKIP_UI)await runRecoveryUiScenarios(studio);
     if(Number(process.env.BES_SOAK_MINUTES)>0)await runSoak(studio,site.url,Number(process.env.BES_SOAK_MINUTES));
   }finally{await site.close();}
 }

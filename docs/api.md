@@ -79,6 +79,10 @@ managed runner 只有在采集完成、材料完整且 `captureConsistency=consi
 
 人工评审查询支持 `limit`（默认 20，1–100）、`maxBytes`（默认 8192，512–32768）及 `cursor`，返回 `validationId/items/nextCursor/outputTruncated/maxBytes/responseBytes`。游标绑定验收记录与读取开始时的追加边界，后续追加从新查询读取；可跨客户端重启续读。理由与范围不会为凑预算截断，单条新评审最多 16 KiB；预算容不下一条完整判定时返回 `REVIEW_BUDGET_TOO_SMALL`。损坏或不完整历史返回明确错误，不能当作空历史。机器验收结果不会因人工 accept/exception 被改写。
 
+验收生命周期在 worker 创建前持久登记，结束时依次保存报告 artifact 与引用该报告 hash 的终态事件；`validations.json` 是可重建目录。重启后没有完整、校验相符终态的记录返回 `status=interrupted` 和原因，可能没有 `result` 或 `artifactId`。客户端应保留中断状态和 checkpoint 入口，不能将缺少报告解释为通过，也不能恢复旧 HTTP job、lease 或人工等待。复跑仍调用 `POST /validations` 建立新 run。
+
+新 `validation-report` 正文为 `{schemaVersion:1,kind:"managed-validation-report",validationId,runId,projectId,profileId,startEventId,result}`；按 artifact ID 读取 JSON path 时，执行结果字段位于 `/result/...`。旧报告仍是直接的执行结果对象，需按 `kind` 区分。`GET /validations/:id` 的 `result` 仍是执行结果，未额外套封套；恢复诊断随记录返回，旧报告核验成功标记为 `legacy-verified`。锁检查与安全重开仅提供可信 UI 入口，HTTP 不提供强制清锁操作。
+
 ## 验证与限制
 
 `test/unit/api.test.ts` 覆盖鉴权、Host/Origin、202、幂等冲突、请求体/lease、路径目标、二进制与取消状态；`test/unit/evidence.test.ts` 覆盖预算、UTF-8、null/missing、损坏尾部、哈希/引用、背压及强制结束后的 checkpoint 恢复。完整验证命令和实际运行结果记录在 `docs/verification.md`。

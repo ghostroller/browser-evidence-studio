@@ -17,6 +17,8 @@ import { fingerprintWorkflow } from '../../runner/fingerprint';
 import { connectManagedPage } from '../../runner/puppeteer';
 import { captureCheckpointMaterials } from '../../capture/checkpoint';
 import { appendReview, readReviews, type ReviewQuery } from './reviews';
+import { commitValidation, recoverValidationCatalog, registerValidation, saveValidationCatalog, type ValidationLifecycleContext, type ValidationLifecycleObserver, type ValidationLifecycleStage, type ValidationRecord, type ValidationRecoveryDiagnostic } from './validation-lifecycle';
+export type { ValidationLifecycleContext, ValidationLifecycleObserver, ValidationLifecycleStage } from './validation-lifecycle';
 
 interface Project { id:string; name:string; objective:string; scriptDirectory?:string; createdAt:string; }
 interface Profile { id:string; projectId:string; name:string; savedAt?:string; loginStatus:'unknown'|'verified'|'expired'; }
@@ -45,10 +47,11 @@ export class Studio {
   private workflowStarting?:{abort:AbortController;gate?:GateTransport;done:Promise<void>;finish:()=>void};
   private closing=false;
   private humanDone?:{resolve:()=>void;reject:(e:Error)=>void};
-  private validations:any[]=[];
+  private validations:ValidationRecord[]=[];
+  private validationRecovery:{diagnostics:ValidationRecoveryDiagnostic[];catalogStatus:'rebuilt'|'write-failed'}={diagnostics:[],catalogStatus:'rebuilt'};
   private fixture?:{url:string;close:()=>Promise<void>};
   onChanged=()=>{};
-  constructor(readonly root:string, readonly window:StudioWindow, readonly endpoint:string) {}
+  constructor(readonly root:string, readonly window:StudioWindow, readonly endpoint:string, private readonly lifecycleObserver?:ValidationLifecycleObserver) {}
   async init(){
     await mkdir(this.root,{recursive:true});
     try{const ws=JSON.parse(await readFile(path.join(this.root,'workspace.json'),'utf8'));this.projects=ws.projects;this.profiles=ws.profiles;}catch(e:any){if(e.code!=='ENOENT')throw e;}
@@ -56,15 +59,32 @@ export class Studio {
     for(const id of await readdir(path.join(this.root,'runs'))){
       try{const store=await EvidenceStore.open(path.join(this.root,'runs',id));this.runs.push(store.manifest);await store.close();}catch(error){this.runs.push({id,status:'unreadable',error:String(error)});}
     }
-    try{this.validations=JSON.parse(await readFile(path.join(this.root,'validations.json'),'utf8'));}catch(e:any){if(e.code!=='ENOENT')throw e;}
+    await this.refreshValidations();
     this.observer=await puppeteer.connect({browserWSEndpoint:this.endpoint,defaultViewport:null});
+  }
+  async refreshValidations(){
+    ensure(!this.workflow&&!this.workflowStarting&&!this.workflowSettlement,'Cannot rebuild validation history during execution',409);
+    const recovered=await recoverValidationCatalog(this.root,this.runs,this.projects);
+    this.validations=recovered.records;this.validationRecovery={diagnostics:recovered.diagnostics,catalogStatus:recovered.catalogStatus};this.onChanged();return recovered;
+  }
+  private async saveValidations(){
+    try{await saveValidationCatalog(this.root,this.validations);this.validationRecovery.catalogStatus='rebuilt';}
+    catch(error){this.validationRecovery.catalogStatus='write-failed';this.validationRecovery.diagnostics.push({code:'catalog-write-failed',message:`Validation evidence is saved, but its catalog could not be updated: ${String(error)}`});}
+  }
+  private async observeValidation(stage:ValidationLifecycleStage,context:ValidationLifecycleContext,signal?:AbortSignal){
+    if(!process.env.BES_TEST||!this.lifecycleObserver)return;
+    signal?.throwIfAborted();
+    const observed=Promise.resolve().then(()=>this.lifecycleObserver!(stage,context));
+    if(!signal){await observed;return;}
+    let aborted!:()=>void;const cancelled=new Promise<never>((_resolve,reject)=>{aborted=()=>reject(signal.reason??new Error('Validation stopped'));signal.addEventListener('abort',aborted,{once:true});});
+    try{await Promise.race([observed,cancelled]);}finally{signal.removeEventListener('abort',aborted);}
   }
   private async save(){ const file=path.join(this.root,'workspace.json');await writeFile(file+'.tmp',JSON.stringify({schemaVersion:1,projects:this.projects,profiles:this.profiles},null,2));await rename(file+'.tmp',file); }
   serialized<T>(fn:()=>Promise<T>):Promise<T>{const next=this.queue.then(fn);this.queue=next.catch(()=>{});return next;}
   required(){ensure(this.active,'No active run',409);return this.active;}
   private pageContents(p:ManagedPage){try{const contents=p.view.webContents;return contents&&!contents.isDestroyed()?contents:undefined;}catch{return undefined;}}
   current(){const r=this.required();const p=r.pages.get(r.selectedPageId);ensure(p&&this.pageContents(p),'No live selected page',409);return p;}
-  state(){const r=this.active;return {instanceId:this.instanceId,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(v=>({id:v.id,runId:v.runId,status:v.status,validation:v.result?.validation})),fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
+  state(){const r=this.active;return {instanceId:this.instanceId,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
   async createProject(body:any){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');const p={id:randomUUID(),name:body.name.trim().slice(0,200),objective:String(body.objective||'').slice(0,4000),scriptDirectory:body.scriptDirectory?path.resolve(body.scriptDirectory):undefined,createdAt:now()};this.projects.push(p);await this.save();return p;}
   async updateProject(body:any){const project=this.projects.find(item=>item.id===(body.projectId||body.id));ensure(project,'Unknown project',404);if(body.name!==undefined){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');project.name=body.name.trim().slice(0,200);}if(body.objective!==undefined){ensure(typeof body.objective==='string','Objective must be text');project.objective=body.objective.slice(0,4000);}if(body.scriptDirectory!==undefined){ensure(typeof body.scriptDirectory==='string'||body.scriptDirectory===null,'Workflow directory must be a path');project.scriptDirectory=body.scriptDirectory?path.resolve(body.scriptDirectory):undefined;}await this.save();return project;}
   async createProfile(body:any){ensure(this.projects.some(p=>p.id===body.projectId),'Unknown project');ensure(typeof body.name==='string'&&body.name.trim(),'Profile name required');const p:Profile={id:randomUUID(),projectId:body.projectId,name:body.name.trim().slice(0,120),loginStatus:'unknown'};this.profiles.push(p);await this.save();return p;}
@@ -299,26 +319,27 @@ export class Studio {
       await this.startRun({projectId:project.id,profileId,url:url||'about:blank',kind:'validate'});
     }
     const r=this.required(),p=this.current();await this.control('agent');r.execution='running';
-    const id=randomUUID(),record:any={id,runId:r.id,projectId:r.projectId,directory,status:'running',startedAt:now()};this.validations.unshift(record);
+    const id=randomUUID(),record:ValidationRecord={id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory,status:'starting',startedAt:now()};this.validations.unshift(record);
+    const context:ValidationLifecycleContext={validationId:id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory};
     let finishStartup!:()=>void;const startup={abort:new AbortController(),gate:undefined as GateTransport|undefined,done:new Promise<void>(resolve=>{finishStartup=resolve;}),finish:()=>finishStartup()};this.workflowStarting=startup;
-    try{const gate=new GateTransport(await SocketTransport.connect(this.endpoint,startup.abort.signal));startup.gate=gate;startup.abort.signal.throwIfAborted();ensure(this.active===r&&r.controller==='agent'&&!r.locked,'Workflow startup lost control',409);this.workflow=await startWorkflow({directory,input:body.input||{},targetId:p.targetId,transport:gate,dependencyLockPath:path.join(app.getAppPath(),'package-lock.json'),hooks:{
+    try{const gate=new GateTransport(await SocketTransport.connect(this.endpoint,startup.abort.signal));startup.gate=gate;startup.abort.signal.throwIfAborted();ensure(this.active===r&&r.controller==='agent'&&!r.locked,'Workflow startup lost control',409);this.workflow=await startWorkflow({directory,input:body.input||{},targetId:p.targetId,transport:gate,dependencyLockPath:path.join(app.getAppPath(),'package-lock.json'),startupSignal:startup.abort.signal,
+      beforeWorker:async prepared=>{Object.assign(record,await registerValidation(r.store,record,prepared));this.onChanged();await this.observeValidation('registered-before-worker',context,startup.abort.signal);},
+      onStarted:async(nodeVersion,signal)=>{await r.store.appendEvent({type:'validation-running',source:'runner',data:{id,runId:r.id,startEventId:record.recovery?.startEventId,nodeVersion}});await this.observeValidation('running',context,signal);},hooks:{
        checkpoint:async(key,details,signal)=>{const cp=await this.checkpoint({key,...details},{fromRunner:true,pageId:p.pageId,signal});if(cp.metadata?.captureOutcome!=='completed'||cp.metadata?.captureStatus!=='complete'||cp.captureConsistency!=='consistent')throw new Error(`Checkpoint capture is incomplete (${cp.metadata?.captureOutcome}/${cp.metadata?.captureStatus}/${cp.captureConsistency}); retained checkpoint ${cp.id} cannot satisfy validation coverage`);return {id:cp.id};},
       emitData:async(name,records,provenance)=>{const artifact=await r.store.putArtifact({kind:'dataset',mediaType:'application/json',data:JSON.stringify({name,records,...provenance}),source:{origin:'runner'}});await r.store.appendEvent({type:'dataset',source:'runner',artifactRefs:[artifact.id],data:{name,count:records.length,provenance}});},
       attachArtifact:async(name,content,mediaType)=>{const a=await r.store.putArtifact({kind:'runner-attachment',mediaType,data:content,metadata:{name}});return {id:a.id};},
       assertion:async(assertion)=>{await r.store.appendEvent({type:'assertion',source:'runner',data:assertion});},
       progress:async(message)=>{await r.store.appendEvent({type:'progress',source:'runner',data:{message}});},
-      requestHuman:(request,signal)=>this.requestHuman(request,signal,p.pageId),
+      requestHuman:async(request,signal)=>{const state=await this.beginHuman(request,'runner',p.pageId,signal);await this.observeValidation('waiting-human',context,signal);return state.completion;},
     }});
     const handle=this.workflow;const settlement=handle.done.then(async result=>{
       record.status='finalizing';r.execution='finalizing';r.locked=true;this.window.lock(true);
-      const report=await r.store.putArtifact({kind:'validation-report',mediaType:'application/json',data:JSON.stringify(result)});await r.store.appendEvent({type:'validation-complete',source:'runner',artifactRefs:[report.id],data:{id,status:result.status,validation:result.validation}});await r.store.flush();
-      const savedRecord={...record,result,status:result.status,artifactId:report.id};
-      await writeFile(path.join(this.root,'validations.json.tmp'),JSON.stringify(this.validations.map(v=>v===record?savedRecord:v)));await rename(path.join(this.root,'validations.json.tmp'),path.join(this.root,'validations.json'));
-      Object.assign(record,savedRecord);r.execution=result.status;if(r.handoff)r.handoff.status=result.status==='completed'?'completed':result.status==='cancelled'?'cancelled':'needs-attention';
-    }).catch(async error=>{record.status='failed';record.error='Validation report could not be saved: '+String(error);r.execution='failed';await r.store.appendEvent({type:'gap',source:'runner',data:{reason:record.error}}).catch(()=>{});
+      const savedRecord=await commitValidation(r.store,record,result,(stage,context)=>this.observeValidation(stage,context));
+      Object.assign(record,savedRecord);r.execution=result.status;if(r.handoff)r.handoff.status=result.status==='completed'?'completed':result.status==='cancelled'?'cancelled':'needs-attention';await this.saveValidations();
+    }).catch(async error=>{record.status='interrupted';record.error='Validation report could not be committed: '+String(error);record.recovery={...record.recovery,state:'interrupted',reason:record.error};delete record.result;r.execution='failed';this.validationRecovery.diagnostics.push({runId:r.id,validationId:id,code:'validation-commit-failed',message:record.error});await r.store.appendEvent({type:'gap',source:'runner',data:{reason:record.error,validationId:id}}).catch(()=>{});await this.saveValidations();
     }).finally(()=>{if(this.active===r&&!r.stopping&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;this.window.lock(false);}if(this.workflow===handle)this.workflow=undefined;if(this.workflowSettlement===settlement)this.workflowSettlement=undefined;this.onChanged();});
     this.workflowSettlement=settlement;if(this.closing||startup.abort.signal.aborted){await handle.cancel('Application closing or takeover during worker startup');await settlement;}return {id,runId:r.id,status:record.status};
-    }catch(error){startup.gate?.close();r.execution=startup.abort.signal.aborted?'cancelled':'failed';if(!r.stopping&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;this.window.lock(false);}record.status=r.execution;record.error=String(error);throw error;}
+    }catch(error){startup.gate?.close();r.execution=startup.abort.signal.aborted?'cancelled':'failed';if(!r.stopping&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;this.window.lock(false);}record.status=r.execution;record.error=String(error);await r.store.appendEvent({type:'validation-launch-failed',source:'studio',data:{id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory,status:record.status,error:record.error,startEventId:record.recovery?.startEventId}}).catch(failure=>{this.validationRecovery.diagnostics.push({runId:r.id,validationId:id,code:'validation-launch-unrecorded',message:String(failure)});});await this.saveValidations();throw error;}
     finally{if(this.workflowStarting===startup)this.workflowStarting=undefined;startup.finish();}
   }
   private async beginHuman(request:HumanRequest,owner:'runner'|'agent',pageId:string,signal?:AbortSignal){

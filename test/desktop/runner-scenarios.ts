@@ -85,6 +85,7 @@ export async function runRunnerScenarios(studio: Studio, siteUrl: string) {
   await studio.current().page.waitForSelector('#scope-status[data-confirmed="true"]');
   await studio.releaseHuman();
   const assistedResult = (await validationFinished(studio, assisted.id)).result;
+  assert.ok(assistedResult);
   assert.equal(assistedResult.validation.overall, 'pass', assistedResult.error);
   assert.deepEqual(assistedResult.humanAttempts.map((attempt: any) => [attempt.id, attempt.status]), [['login', 'completed'], ['confirm-scope', 'completed']]);
   console.log('M3/M5 human flow PASS: explicit native fixture input, real completion checks, two declared assistance points');
@@ -94,6 +95,7 @@ export async function runRunnerScenarios(studio: Studio, siteUrl: string) {
   const retainedPage = studio.current();
   await studio.stopRunner();
   const cancelledResult = (await validationFinished(studio, cancelled.id)).result;
+  assert.ok(cancelledResult);
   assert.equal(cancelledResult.status, 'cancelled');
   assert.equal(cancelledResult.validation.overall, 'fail');
   assert.equal(studio.required().controller, 'human');

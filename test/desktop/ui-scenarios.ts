@@ -9,6 +9,7 @@ export async function runReviewUiScenarios(studio: Studio): Promise<void> {
   const candidate = studio.state().validations.find(candidate => candidate.validation?.overall === 'fail' && candidate.validation.requirements.length);
   assert.ok(candidate, 'Review UI needs an actual failed validation from the runner scenarios');
   const record = await studio.validation(candidate.id);
+  assert.ok(record.result, 'Review UI requires a completed machine report');
   const machineBefore = JSON.stringify(record.result);
   const project = studio.projects.find(candidate => candidate.id === record.projectId)!;
   const profile = studio.profiles.find(candidate => candidate.projectId === project.id)!;

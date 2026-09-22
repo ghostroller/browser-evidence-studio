@@ -24,6 +24,18 @@ export interface StartWorkflowOptions {
   dependencyLockPath?: string;
   knownSourceRefs?: string[];
   maxDurationMs?: number;
+  /** Persist the execution identity before a worker can run user code. */
+  beforeWorker?: (prepared: WorkflowPrepared) => Promise<void>;
+  onStarted?: (nodeVersion: string, signal: AbortSignal) => Promise<void>;
+  startupSignal?: AbortSignal;
+}
+
+export interface WorkflowPrepared {
+  manifest: WorkflowManifest;
+  entryPath: string;
+  inputSha256: string;
+  fingerprintBefore: WorkflowFingerprint;
+  startedAt: string;
 }
 
 export interface WorkflowRunResult {
@@ -74,6 +86,9 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   const sources = new Set(options.knownSourceRefs ?? []);
   const startedMs = Date.now();
   const startedAt = new Date(startedMs).toISOString();
+  options.startupSignal?.throwIfAborted();
+  await options.beforeWorker?.({ manifest, entryPath, inputSha256, fingerprintBefore, startedAt });
+  options.startupSignal?.throwIfAborted();
   const worker = new Worker(options.workerPath ?? path.join(__dirname, 'runner-worker.js'), {
     workerData: { entryPath, exportName: manifest.exportName, input: options.input, targetId: options.targetId },
   });
@@ -182,7 +197,15 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
 
   worker.on('message', (message: WorkerMessage) => {
     if (stopping) return;
-    if(message.type==='started'){runtimeNodeVersion=message.nodeVersion;}
+    if(message.type==='started'){
+      runtimeNodeVersion=message.nodeVersion;
+      if(options.onStarted){
+        const started=options.onStarted(message.nodeVersion,cancellation.signal).catch(cause=>{
+          if(!stopping)void stop('failed',`Could not save worker startup: ${String(cause)}`);
+        }).finally(()=>outstandingReports.delete(started));
+        outstandingReports.add(started);
+      }
+    }
     else if (message.type === 'cdp.send') {
       if(process.env.BES_TEST_VERBOSE){const trace=JSON.parse(message.message);console.log('worker CDP',trace.id,trace.method,trace.method==='Runtime.callFunctionOn'?trace.params?.functionDeclaration?.slice(0,160):'');}
       const before = options.transport.snapshot().rejectedCommands;

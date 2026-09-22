@@ -2,6 +2,16 @@
 
 更新日期：2026-09-23，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## 验收记录持久化与恢复界面（2026-09-23）
+
+writer 修复已提交为 `7a6ef3f`。随后实现 worker 前登记、报告/终态提交与启动重建，增加可信 UI 存档检查、安全重开和中断验收查看。`npm.cmd run typecheck` 与 `npm.cmd test` **94/94 通过，0 失败、0 跳过**；其中验收恢复 12 项、存档恢复 4 项、Windows 原子替换故障注入 3 项。
+
+恢复单测覆盖孤立报告、目录丢失/损坏、报告 hash/身份/输入/版本不一致、checkpoint 材料不完整及正文缺失/修改、旧报告核验、目录写入失败、坏字段容错和启动期间取消。只有完整终态及对应材料通过检查才恢复原结论，目录中的 pass 不具备独立效力。
+
+真实 React/IPC 场景已通过：损坏锁保持原字节且无强制按钮；已退出 writer 可安全恢复；中断记录无 `result` 时仍显示原因与 checkpoint，并可准备新 run。截图 `output/desktop-1790095126782/ui-recovery-refused.png` 与 `ui-recovery-interrupted.png` 已视检，文本与操作入口可读。该目录的 `desktop-summary.json` 是首轮完整 19 进程通过报告；最终退出重入补强的复验另行记录。
+
+首轮桌面尝试 `output/desktop-1790094903971/desktop-summary.json` 因替换 `manifest.json` 返回 `EPERM` 而失败，随后正常清理写入同一文件成功；没有证据确认具体占用来源。`atomicFile` 现仅对 Windows 的 EPERM/EACCES/EBUSY 有界重试：最多 7 次、总等待 1175 ms，重复 rename 同一已 sync 临时文件，不删除旧目标。永久失败保留旧目标并抛错；故障注入及后续桌面运行通过。
+
 ## writer 所有权与异常恢复（2026-09-23）
 
 在 `10f8f5d` 之后补齐 writer 锁。`npm.cmd run typecheck` 通过；`node --import tsx --test test/unit/writer-lock.test.ts test/unit/evidence.test.ts` **21/21 通过，0 失败、0 跳过**。运行组合仍为 Node 24.21.0 / npm 11.19.0，Node 内置 libuv 1.52.1；未修改依赖和锁文件。
