@@ -2,6 +2,33 @@
 
 更新日期：2026-09-23，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## 前端重构与窗口 IPC 修复（2026-09-23）
+
+先完成 [frontend-refactor.md](frontend-refactor.md)，再实施紧凑左右布局、默认亮色/可切暗色、可拖动主分界与保存点/元素/执行/证据分界。项目/profile 创建、存档恢复与完整证据阅读使用 Dialog；移除首字装饰图标和多层卡片。主题与布局保存在独立 `userData/ui-preferences.json`，不写入 run 证据。录制、控制权、部分采集、回放、验收、人工评审和恢复继续使用既有业务接口。
+
+实际执行环境为 **Node 24.21.0 / npm 11.19.0 / Electron 44.4.3**，不限 Node 版本管理工具。shadcn CLI 4.21.0 `add` 未完成且原因未确认，停止后改从官方 `new-york-v4` registry 手动引入 13 个组件源码，并保留 MIT 许可与来源说明。没有把 CLI 尝试计为安装成功。实际新增组合为 Tailwind / Vite 插件 **4.3.3**、Radix UI **1.6.7**、react-resizable-panels **4.13.2**、Lucide **1.47.0**、class-variance-authority **0.7.1**、clsx **2.1.1**、tailwind-merge **3.7.0**、tw-animate-css **1.4.0**；原 Electron/React/Vite 版本未升级。本次锁文件实际字节 SHA-256 为 `aaeca20cd2ca57f8d6bbac8c9e67a03c35bbfacc8d49b5acfe6d39de445b2c9c`。
+
+| 命令 / 场景 | 实际结果与材料 |
+| --- | --- |
+| `npm.cmd run typecheck` | 通过，日志 `output/frontend-typecheck-final.log` |
+| `npm.cmd test` | **102/102 通过，0 失败、0 跳过**；日志 `output/frontend-unit-final.log`。新增可信 IPC 销毁/身份边界、偏好校验/写失败恢复及 UI 专用接口隔离检查 |
+| `npm.cmd run test:integration` | Vite 构建及 **19 个 Electron 进程**矩阵通过，`output/desktop-1790104067949/desktop-summary.json` 为 passed=true；主阶段 PID **6540**、profile 重启 PID **31992** |
+| `npm.cmd run start`，独立 `BES_DATA` / `BES_TEST=1` | Forge 开发模式完整主阶段通过，PID **42952**，报告 `output/frontend-forge-verified-1790103892599/test-result.json`；包括此前失败的首次截图/普通点击、被拒 UI 导航、布局、业务与恢复场景。随后尺寸观察器重绑修复另由最终生产矩阵覆盖 |
+| `npm.cmd run start`，另设 `BES_TEST_PHASE=exit-app-quit` | 最终源码的开发启动、首次完整 checkpoint 和连续退出专项通过；`output/frontend-forge-exit-final-1790104259777`，PID **37036**，`exit-reentry-verified` 确认两份材料与一次清理，`shutdown-complete` / exitCode 0 |
+| `npm.cmd run build` | 开发模式专项结束后重新生成生产产物成功，日志 `output/frontend-build-final.log`；无后续源代码修改 |
+
+19 进程保留原主阶段/profile 重启、五种强杀边界各三进程、连续关窗与 app.quit 两项。布局场景增加默认亮色、亮暗切换与偏好重载、真实 Electron `sendInputEvent` 的指针/键盘调整、已确认发生的原生失焦、1100 × 760/最大化、恢复默认布局后内容自身改变尺寸，以及被拒导航保留原文档。原生视图与蒙版对 DOM 边界误差不超过 2 CSS px；布局/主题不改变页面身份、controller 或 lease。弹层/拖动遮挡分开合成，采集中仍能取消；普通 Puppeteer 点击在设置弹层打开时继续执行，关闭弹层不会解除 agent/checkpoint 输入锁。新项目/profile 由真实 React 表单创建，新项目不再显示旧项目的保存点或启用旧证据入口。
+
+本轮定位与修复：
+
+- 用户报告的 `Object has been destroyed` 来自 `studio:bounds` 对已失效 window/frame 的访问。可信 IPC 检查先核对存活，再读取精确 sender/mainFrame/URL，并捕获销毁访问异常；退出期间忽略迟到 bounds。最终矩阵包括窗口重载、业务 renderer 崩溃、页面销毁及连续退出，未再出现该主进程异常。
+- 开发尝试曾出现首次截图 `UnknownVizError`（DOM 已保存）及普通点击超时，不能因 Forge 外层返回 0 而算通过。`output/frontend-forge-navigation-1790103744543/exit-capture-diagnostics.json` 记录 `did-start-navigation → will-navigate → did-stop-loading`、无提交，旧 UI 仍在，但提前清空的就绪状态令浏览器持续隐藏。现仅在 `did-navigate` 实际提交后重置，拒绝导航保留旧布局；完整开发主阶段及最终退出专项均通过。诊断中重试截图成功不抵消首轮失败，临时重试代码已删除。
+- 恢复布局会重建 DOM 占位，现同时重绑 ResizeObserver；布局恢复后工具栏内容改变高度的回归通过。清除重复原生 bounds/visibility 设置，避免逐帧不必要的原生更新；拖动失焦后不会通过迟到消息抢回焦点。
+
+最终截图目录为 `output/desktop-1790104067949`，已视检亮/暗录制、最小窗口、空项目、材料阅读与恢复界面。`ui-light.png`、`ui-dark.png`、`ui-minimum-dark.png`、`ui-evidence.png` 是限定当前测试窗口的真实媒体帧，包含原生视图；该方式后续取帧超时时，保存明确标注的 `*.renderer.png` 与可用的 `*.browser.png`，`*.capture.json` 记录 `separate-surfaces` / `compositeAvailable:false`，不将分层图片拼接冒充整窗截图。空项目、暗色材料和亮/暗恢复截图可按这些文件名查看。
+
+**范围限制：** `sendInputEvent` 直接投递到 Electron renderer，不等同于 Windows 物理鼠标从分隔条跨入原生视图的命中路由，后者仍待人工体验检查。未重跑 20 分钟长测、独立 Edge 五变体、重新打包/生成 ZIP 或真实账号流程。构建仍有上游 `use client`、source map、chunk >500 kB 与 Forge `inlineDynamicImports` 提示，未据此声明体积优化完成。历史 ESM 专项和历史包的验证结果不替代本节的新界面验收。
+
 ## ESM 模块迁移（2026-09-23）
 
 根包改为 `"type": "module"`，Forge 与 Vite 配置迁至 `.ts` 并纳入类型检查；main、runner worker 和 renderer 输出 ESM。Electron sandboxed preload 仍从 TS ESM 源码打包为单文件 `preload.cjs`。运行时资源/worker 位置使用 `import.meta.dirname`，登记脚本使用原生动态 `import()`；桌面启动器和故障测试子进程也改用 ESM。未降低 sandbox/contextIsolation。

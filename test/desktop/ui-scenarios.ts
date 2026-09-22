@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Studio } from '../../src/main/services/studio';
+import { captureUiFrame, runUiLayoutScenarios, setUiTheme } from './ui-layout';
 
 /** Exercise persisted judgments and project-scoped comparisons using a completed synthetic validation. */
 export async function runReviewUiScenarios(studio: Studio): Promise<void> {
@@ -34,12 +35,13 @@ export async function runReviewUiScenarios(studio: Studio): Promise<void> {
     throw new Error(`Review UI timed out: ${label}; ${diagnostics}`);
   }
   async function click(label: string, scope = 'document') {
-    await waitFor(() => evaluate<boolean>(`(() => {const button=Array.from((${scope})?.querySelectorAll('button') || []).find(node=>node.textContent.trim()===${JSON.stringify(label)});if(!button||button.disabled)return false;button.click();return true;})()`), Boolean, label);
+    await waitFor(() => evaluate<boolean>(`(() => {const button=Array.from((${scope})?.querySelectorAll('button') || []).find(node=>node.textContent.trim()===${JSON.stringify(label)});if(!button||button.disabled)return false;if(button.getAttribute('role')==='tab'){button.focus();button.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,button:0,ctrlKey:false}));button.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,button:0}));}button.click();return true;})()`), Boolean, label);
   }
   async function openReport() {
-    await waitFor(() => evaluate<boolean>(`(() => {const button=Array.from(document.querySelectorAll('.project-list button')).find(node=>node.textContent.includes(${JSON.stringify(project.name)}));if(!button||button.disabled)return false;button.click();return true;})()`), Boolean, 'select validation project');
-    await waitFor(() => evaluate<string>(`document.querySelector('.workspace-heading h1')?.textContent || ''`), value => value === project.name, 'project selected');
-    const visibleRuns = studio.runs.filter(run => run.projectId === project.id).slice(0, 15);
+    await waitFor(() => evaluate<boolean>(`(() => {const select=document.querySelector('select[aria-label="项目"]');if(!select||select.disabled||!Array.from(select.options).some(option=>option.value===${JSON.stringify(project.id)}))return false;select.value=${JSON.stringify(project.id)};select.dispatchEvent(new Event('change',{bubbles:true}));return true;})()`), Boolean, 'select validation project');
+    await waitFor(() => evaluate<string>(`document.querySelector('select[aria-label="项目"]')?.value || ''`), value => value === project.id, 'project selected');
+    await click('存档', `document.querySelector('.panel-tabs')`);
+    const visibleRuns = studio.runs.filter(run => run.projectId === project.id);
     await waitFor(() => evaluate<number>(`document.querySelectorAll('.run-list button').length`), count => count === visibleRuns.length, 'fresh project archive list');
     const index = visibleRuns.findIndex(run => run.id === record.runId);
     assert(index >= 0);
@@ -49,6 +51,25 @@ export async function runReviewUiScenarios(studio: Studio): Promise<void> {
     await evaluate<void>(`document.querySelector('.validation-list button').click()`);
     await waitFor(() => evaluate<number>(`document.querySelectorAll('.review-history .review-entry').length`), count => count === 20, 'initial bounded review page');
   }
+  await waitFor(() => evaluate<boolean>(`!!document.querySelector('.native-browser.inactive') && !document.querySelector('select[aria-label="项目"]')?.disabled`), Boolean, 'sealed run reaches the empty workspace');
+  await evaluate<void>(`document.querySelector('button[aria-label="新建项目"]').click()`);
+  await waitFor(() => evaluate<string>(`document.querySelector('.overlay-heading h2')?.textContent || ''`), value => value === '新建项目', 'new project dialog');
+  await evaluate<void>(`(() => {const input=document.querySelector('[placeholder="例如：订单采集验收"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'UI 新建项目');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await click('创建项目', `document.querySelector('[role="dialog"]')`);
+  await waitFor(() => evaluate<boolean>(`!document.querySelector('[role="dialog"]') && document.querySelector('select[aria-label="项目"]')?.selectedOptions[0]?.textContent === 'UI 新建项目'`), Boolean, 'project created and selected through UI');
+  await evaluate<void>(`document.querySelector('button[aria-label="添加环境"]').click()`);
+  await waitFor(() => evaluate<boolean>(`!!document.querySelector('input[aria-label="新环境名称"]')`), Boolean, 'new profile dialog');
+  await evaluate<void>(`(() => {const input=document.querySelector('input[aria-label="新环境名称"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'UI 合成环境');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await click('添加', `document.querySelector('[role="dialog"]')`);
+  await waitFor(() => evaluate<boolean>(`!document.querySelector('[role="dialog"]') && document.querySelector('select[aria-label="登录环境"]')?.selectedOptions[0]?.textContent === 'UI 合成环境'`), Boolean, 'profile created and selected through UI');
+  const createdProject = studio.projects.find(item => item.name === 'UI 新建项目');
+  assert(createdProject && studio.profiles.some(item => item.name === 'UI 合成环境' && item.projectId === createdProject.id), 'New profile retains the project binding');
+  assert(await evaluate<boolean>(`document.querySelectorAll('.checkpoint-card').length === 0 && Array.from(document.querySelectorAll('.evidence-strip button')).every(button=>button.disabled)`), 'New project cannot display or open the previous project\'s workspace evidence');
+  await setUiTheme(studio, 'light');
+  await captureUiFrame(studio, 'ui-empty-light.png');
+  await setUiTheme(studio, 'dark');
+  await captureUiFrame(studio, 'ui-empty-dark.png');
+  await setUiTheme(studio, 'light');
   await openReport();
   const candidates = await evaluate<string[]>(`Array.from(document.querySelector('[aria-label="同项目人工示范"]').options).map(option=>option.value)`);
   assert(candidates.includes(ownRunId)); assert(!candidates.includes(foreignRunId), 'An identical checkpoint key from another project must not be selectable');
@@ -62,7 +83,7 @@ export async function runReviewUiScenarios(studio: Studio): Promise<void> {
   await waitFor(() => evaluate<string>(`document.querySelector('.review-history')?.textContent || ''`), text => text.includes(reason), 'saved judgment visible immediately');
   assert.equal(JSON.stringify(record.result), machineBefore);
   await click('返回工作台', `document.querySelector('.overlay-heading')`);
-  await waitFor(() => evaluate<boolean>(`!document.querySelector('.overlay')`), Boolean, 'report closed');
+  await waitFor(() => evaluate<boolean>(`!document.querySelector('[role="dialog"]')`), Boolean, 'report closed');
   await openReport(); await click('下一页人工判定', `document.querySelector('.review-history')`);
   await waitFor(() => evaluate<string>(`document.querySelector('.review-history')?.textContent || ''`), text => text.includes(reason) && text.includes('有条件例外接受') && text.includes(key), 'reopened persisted judgment');
   assert.equal(JSON.stringify((await studio.validation(record.id)).result), machineBefore, 'Human exception leaves machine failure intact');
@@ -76,10 +97,15 @@ export async function runReviewUiScenarios(studio: Studio): Promise<void> {
   })()`);
   await delay(160);
   assert(await evaluate<boolean>(`document.querySelector('.review-history')?.textContent.includes(${JSON.stringify(reason)})`), 'Review screenshot retains the reopened judgment');
-  const reviewScreenshot = await ui.capturePage();
-  assert.equal(reviewScreenshot.isEmpty(), false, 'Review screenshot contains an actual rendered frame');
-  await writeFile(path.join(studio.root, 'ui-reviews.png'), reviewScreenshot.toPNG());
+  await captureUiFrame(studio, 'ui-reviews.png');
   await click('返回工作台', `document.querySelector('.overlay-heading')`);
+  await setUiTheme(studio, 'dark'); await openReport();
+  await click('下一页人工判定', `document.querySelector('.review-history')`);
+  await waitFor(() => evaluate<string>(`document.querySelector('.review-history')?.textContent || ''`), text => text.includes(reason), 'dark review retains saved judgment');
+  await evaluate<void>(`document.querySelector('.review-history').scrollIntoView({block:'center'})`);
+  await captureUiFrame(studio, 'ui-reviews-dark.png');
+  await click('返回工作台', `document.querySelector('.overlay-heading')`);
+  await setUiTheme(studio, 'light');
   console.log('M5 review UI PASS: append/read/page/reopen, preserved machine failure, project-scoped demonstration comparison');
 }
 
@@ -103,7 +129,8 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
     // The renderer polls main state every 2 s. A main-side transition may have
     // completed while the old label or disabled state is still on screen.
     // Retry observation only; issue the action exactly once when it is ready.
-    await waitFor(() => evaluate<{ clicked: boolean; reason?: string }>(`(() => { const root = ${scope}; if(!root)return {clicked:false,reason:'scope-not-mounted'}; const button = Array.from(root.querySelectorAll('button')).find(node => node.textContent.trim() === ${JSON.stringify(text)}); if (!button) return {clicked:false,reason:'label-not-mounted'}; if(button.disabled)return {clicked:false,reason:'disabled'}; const rect=button.getBoundingClientRect();if(!rect.width||!rect.height)return {clicked:false,reason:'hidden'};button.click(); return {clicked:true}; })()`), result => result.clicked, `clickable UI button: ${text}`);
+    // Radix tabs activate on focus/primary mousedown, not HTMLElement.click().
+    await waitFor(() => evaluate<{ clicked: boolean; reason?: string }>(`(() => { const root = ${scope}; if(!root)return {clicked:false,reason:'scope-not-mounted'}; const button = Array.from(root.querySelectorAll('button')).find(node => node.textContent.trim() === ${JSON.stringify(text)}); if (!button) return {clicked:false,reason:'label-not-mounted'}; if(button.disabled)return {clicked:false,reason:'disabled'}; const rect=button.getBoundingClientRect();if(!rect.width||!rect.height)return {clicked:false,reason:'hidden'};if(button.getAttribute('role')==='tab'){button.focus();button.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,button:0,ctrlKey:false}));button.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,button:0}));}button.click(); return {clicked:true}; })()`), result => result.clicked, `clickable UI button: ${text}`);
   }
   async function waitIdle() {
     await waitFor(() => evaluate<string>(`document.querySelector('.statusbar')?.textContent || ''`), text => !text.includes('正在处理'), 'UI action completion');
@@ -122,9 +149,7 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
     // explicit paint interval before capturePage reads the composed surface.
     await delay(160);
     assert.equal(await evaluate<boolean>(ready), true, `${filename} DOM must still describe the intended view`);
-    const screenshot = await ui.capturePage();
-    assert.equal(screenshot.isEmpty(), false, `${filename} must contain an actual rendered frame`);
-    await writeFile(path.join(studio.root, filename), screenshot.toPNG());
+    await captureUiFrame(studio, filename);
   }
   await waitFor(() => evaluate<boolean>(`!!document.querySelector('.app-shell') && typeof window.studio?.call === 'function'`), Boolean, 'React/isolated preload ready');
   assert.equal(await evaluate<string>(`document.querySelector('.brand strong').textContent`), 'Browser Evidence Studio');
@@ -135,10 +160,20 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
     const expected = await evaluate<{ x: number; y: number; width: number; height: number }>(`(() => { const r=document.querySelector('.native-browser').getBoundingClientRect(); return {x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}; })()`);
     assert(expected.width > 350 && expected.height > 180, 'Native browser has usable layout bounds');
     await waitFor(() => studio.current().view.getBounds(), actual => (['x', 'y', 'width', 'height'] as const).every(field => Math.abs(actual[field] - expected[field]) <= 2), 'native bounds follow renderer ResizeObserver');
+    await runUiLayoutScenarios(studio);
     await click('暂停页面输入');
     await waitFor(() => run.locked, Boolean, 'UI locks native input');
     assert.equal(studio.window.mask.getVisible(), true);
     await waitIdle();
+    const pausedLease = run.leaseEpoch;
+    await setUiTheme(studio, 'dark');
+    await click('连接与环境');
+    await waitFor(() => studio.current().view.getVisible(), value => !value, 'paused dialog hides the native view');
+    await click('返回工作台');
+    await waitFor(() => studio.current().view.getVisible(), Boolean, 'paused dialog close restores native view');
+    assert.equal(run.controller, 'human'); assert.equal(run.leaseEpoch, pausedLease); assert.equal(run.locked, true);
+    assert.equal(studio.window.mask.getVisible(), true, 'Closing a presentation dialog retains the existing input lock');
+    await setUiTheme(studio, 'light');
     await waitFor(() => evaluate<string>(`document.querySelector('.browser-toolbar').textContent`), text => text.includes('恢复人工输入'), 'pause button updates');
     await click('恢复人工输入');
     await waitFor(() => run.locked, value => !value, 'UI restores native input');
@@ -147,6 +182,29 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
     await waitFor(() => run.controller, value => value === 'agent', 'UI grants explicit agent control');
     assert.equal(studio.window.mask.getVisible(), true);
     await waitIdle();
+    const agentLease = run.leaseEpoch;
+    await setUiTheme(studio, 'dark'); await click('连接与环境');
+    await waitFor(() => studio.current().view.getVisible(), value => !value, 'agent dialog hides native view');
+    const managed = studio.current();
+    const clicksBeforeDialogAction = await managed.page.$eval('#action-count', element => Number(element.textContent));
+    // Ordinary Puppeteer click includes its visibility/IntersectionObserver path.
+    // Keep the real dialog open throughout; no DOM click or CSS workaround.
+    let actionDeadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        studio.action({ type: 'click', selector: '#increment', pageId: managed.pageId, generation: managed.navigationGeneration, leaseEpoch: agentLease }),
+        new Promise<never>((_resolve, reject) => { actionDeadline = setTimeout(() => reject(new Error('Puppeteer click stalled while a trusted dialog hid the native browser')), 10000); }),
+      ]);
+    } finally { clearTimeout(actionDeadline); }
+    assert.equal(await managed.page.$eval('#action-count', element => Number(element.textContent)), clicksBeforeDialogAction + 1, 'Ordinary agent action progresses while the native view is hidden');
+    assert.equal(managed.view.getVisible(), false, 'The action cannot uncover the browser below the dialog');
+    assert(await evaluate<boolean>(`document.querySelector('.overlay-heading h2')?.textContent==='连接与已验证环境'`), 'The dialog remains open during hidden-view execution');
+    assert.equal(run.controller, 'agent'); assert.equal(run.leaseEpoch, agentLease);
+    await click('返回工作台');
+    await waitFor(() => studio.current().view.getVisible(), Boolean, 'agent dialog close restores native view');
+    assert.equal(run.controller, 'agent'); assert.equal(run.leaseEpoch, agentLease);
+    assert.equal(studio.window.mask.getVisible(), true, 'Presentation changes retain agent input protection');
+    await setUiTheme(studio, 'light');
     await waitFor(() => evaluate<string>(`document.querySelector('.browser-toolbar').textContent`), text => text.includes('收回人工控制'), 'control button updates');
     await click('收回人工控制');
     await waitFor(() => run.controller, value => value === 'human', 'UI revokes agent control');
@@ -158,14 +216,14 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
   if (run) await waitFor(() => studio.current().view.getVisible(), value => !value, 'overlay hides native business view');
   assert.equal(studio.window.mask.getVisible(), false, 'Hidden native view cannot cover the trusted dialog');
   await click('返回工作台');
-  await waitFor(() => evaluate<boolean>(`!document.querySelector('.overlay')`), Boolean, 'close dialog');
+  await waitFor(() => evaluate<boolean>(`!document.querySelector('[role="dialog"]')`), Boolean, 'close dialog');
   if (run) await waitFor(() => studio.current().view.getVisible(), Boolean, 'native view restored');
 
-  await click('执行 / 验收');
+  await click('执行', `document.querySelector('.panel-tabs')`);
   await waitFor(() => evaluate<string>(`document.querySelector('.panel-heading h2')?.textContent || ''`), text => text === '受控复跑', 'validation tab');
   assert(await evaluate<boolean>(`!!Array.from(document.querySelectorAll('button')).find(button => button.textContent === '登记脚本目录')`));
   await click('保存点');
-  await captureUi('ui.png', `!document.querySelector('.overlay') && document.querySelector('.panel-heading h2')?.textContent === '保存关键结果' && document.querySelector('.panel-tabs button.selected')?.textContent === '保存点'`);
+  await captureUi('ui.png', `!document.querySelector('[role="dialog"]') && document.querySelector('.panel-heading h2')?.textContent === '保存关键结果' && document.querySelector('.panel-tabs button.selected')?.textContent === '保存点'`);
 
   if (run) {
     await click('打开证据时间线');
@@ -180,8 +238,17 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
       await captureUi('ui-evidence.png', `(() => { const image=document.querySelector('.artifact-view img');return document.querySelector('.overlay-heading h2')?.textContent==='证据与验收存档' && document.querySelector('.archive-tabs button.selected')?.textContent==='Checkpoint' && !!image && image.complete && image.naturalWidth>0; })()`);
     }
     await click('返回工作台');
-    await waitFor(() => evaluate<boolean>(`!document.querySelector('.overlay')`), Boolean, 'archive overlay unmounted');
+    await waitFor(() => evaluate<boolean>(`!document.querySelector('[role="dialog"]')`), Boolean, 'archive overlay unmounted');
     await waitFor(() => studio.current().view.getVisible(), Boolean, 'archive close restores business view');
+
+    await setUiTheme(studio, 'dark'); await click('打开证据时间线');
+    await waitFor(() => evaluate<boolean>(`!!document.querySelector('.checkpoint-archive-list button')`), Boolean, 'dark archive checkpoints');
+    await evaluate<void>(`document.querySelector('.checkpoint-archive-list button').click()`);
+    await click('screenshot', `document.querySelector('.artifact-actions')`);
+    await captureUi('ui-evidence-dark.png', `(() => {const image=document.querySelector('.artifact-view img');return !!image&&image.complete&&image.naturalWidth>0&&document.documentElement.classList.contains('dark');})()`);
+    await click('返回工作台');
+    await waitFor(() => studio.current().view.getVisible(), Boolean, 'dark archive close restores native view');
+    await setUiTheme(studio, 'light');
 
     await click('DOM 回放');
     await waitFor(() => evaluate<string>(`document.querySelector('.overlay-heading h2')?.textContent || ''`), text => text === 'DOM 基础回放', 'real rrweb replay overlay');
@@ -212,7 +279,7 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
     assert.deepEqual(await readReplay(), pausedReplay, 'Paused playback must stop recorded DOM mutation while site scripts remain disabled');
     await captureUi('replay.png', `document.querySelector('.overlay-heading h2')?.textContent==='DOM 基础回放' && !!document.querySelector('.replay-toolbar .badge.paused') && !!document.querySelector('.replay-stage iframe')?.contentDocument?.querySelector('#orders [data-order-id="SYN-001"]')`);
     await click('返回工作台');
-    await waitFor(() => evaluate<boolean>(`!document.querySelector('.overlay') && !document.querySelector('.replay-stage iframe')`), Boolean, 'replayer and sandbox iframe removed on close');
+    await waitFor(() => evaluate<boolean>(`!document.querySelector('[role="dialog"]') && !document.querySelector('.replay-stage iframe')`), Boolean, 'replayer and sandbox iframe removed on close');
     await waitFor(() => studio.current().view.getVisible(), Boolean, 'replay close restores live business view');
   }
   console.log('UI PASS: real React/IPC, native bounds, explicit control, archive screenshot, sandboxed rrweb play/pause and replay screenshot');

@@ -8,6 +8,7 @@ import { ensure } from '../shared/errors';
 import { makeDispatch } from './services/dispatch';
 import { startApi, type ApiHandle } from './api/server';
 import { LifecycleLog } from './lifecycle-log';
+import { isTrustedUiSender } from './ui-ipc';
 
 const dataRoot=process.env.BES_DATA||path.join(app.getPath('appData'),app.isPackaged?'BrowserEvidenceStudio':'BrowserEvidenceStudio-dev');
 app.setPath('userData',dataRoot);
@@ -34,10 +35,10 @@ else app.whenReady().then(async()=>{
     return new Response(source.body,{headers:{'Content-Type':'image/png','X-Content-Type-Options':'nosniff','Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'; sandbox; frame-ancestors 'none'"}});
   }catch{return new Response('Artifact unavailable',{status:404});}});
   ipcMain.handle('studio:call',async(event,method,body)=>{
-    ensure(event.sender===window.window.webContents&&event.senderFrame===window.window.webContents.mainFrame&&event.senderFrame.url===window.uiUrl,'Untrusted UI sender',403);
+    ensure(!quitting&&isTrustedUiSender(event,window),'Untrusted or closing UI sender',403);
     return dispatch(method,body,'ui');
   });
-  ipcMain.on('studio:bounds',(event,rect)=>{if(event.sender===window.window.webContents&&event.senderFrame===window.window.webContents.mainFrame&&event.senderFrame.url===window.uiUrl)window.bounds(rect);});
+  ipcMain.on('studio:bounds',(event,rect)=>{if(!quitting&&isTrustedUiSender(event,window))window.bounds(rect);});
   await window.load();
   await lifecycle.record('ui-ready');
   window.window.on('close',event=>{event.preventDefault();void shutdown('window-close');});

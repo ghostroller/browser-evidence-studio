@@ -6,6 +6,20 @@ import { inspectRunRecovery, recoverRun } from './run-recovery';
 const READ=new Set(['state','projects','project','profiles','workflows','runs','run','pages','snapshot','checkpoints','summary','gaps','events','artifacts','artifact','artifactContent','handoffs','validations','validation','reviews','history','replay']);
 export function makeDispatch(studio:Studio){
   return async function dispatch(method:string,body:any={},source:'api'|'ui'='ui',context:{signal?:AbortSignal}={}):Promise<any>{
+    // Presentation never enters the run queue: a capture can take seconds while
+    // trusted dialogs and resize gestures still need to hide native surfaces.
+    if(['presentation','uiPreferences','showBrowser'].includes(method)){
+      ensure(source==='ui','UI presentation is available in the trusted client only',403);
+      ensure(body&&typeof body==='object'&&!Array.isArray(body),'Invalid UI presentation request');
+      if(method==='uiPreferences')return studio.window.uiPreferences(body);
+      if(method==='showBrowser'){
+        ensure(typeof body.visible==='boolean','Browser visibility must be a boolean');
+        studio.window.setBrowserVisible(body.visible);return {};
+      }
+      ensure(body.reason==='overlay'||body.reason==='layout','Unknown UI presentation reason');
+      ensure(typeof body.hidden==='boolean','UI presentation hidden must be a boolean');
+      studio.window.setPresentation(body.reason,body.hidden);return {};
+    }
     const execute=async()=>{
     if(method==='checkpoint')context.signal?.throwIfAborted();
     const runMethods=new Set(['action','checkpoint','control','pauseOperations','pauseCapture','seal','inspect','selectPage','requestHuman','replyHuman','cancelHandoff','startValidation','stopRunner','saveProfile']);
@@ -39,7 +53,6 @@ export function makeDispatch(studio:Studio){
       case 'history':return studio.history(body.runId);case 'summary':return studio.reader(body.runId).summary(body);case 'events':return studio.reader(body.runId).events(body);case 'gaps':return studio.reader(body.runId).gaps(body);case 'checkpoints':return studio.reader(body.runId).checkpoints(body);case 'artifacts':return studio.reader(body.runId).artifacts(body);
       case 'artifact':{ensure(body.runId,'runId query required');const result=await studio.reader(body.runId).artifact(body.artifactId||body.id,body);return source==='ui'?{...result,url:`bes-artifact://${body.runId}/${body.artifactId||body.id}`}:result;}
       case 'artifactContent':{ensure(body.runId,'runId query required');const result=await studio.reader(body.runId).artifactFile(body.artifactId||body.id);ensure(result.artifact.capturedBytes<=16*1024*1024,'Use bounded artifact reads for content above16MiB',413);return {binary:await readFile(result.path),mediaType:result.artifact.mediaType};}
-      case 'showBrowser':studio.window.setBrowserVisible(!!body.visible);return {};
       case 'syntheticSite':return studio.syntheticSite();case 'replay':ensure(source==='ui','Replay is a trusted UI view',403);return studio.replay(body);
       case 'validate':case 'startValidation':return studio.validate(body);case 'validation':return studio.validation(source==='api'?body.validationId:body.id||body.validationId);case 'validations':return {items:studio.state().validations.filter(v=>!body.runId||v.runId===body.runId)};case 'review':return studio.review({...body,id:source==='api'?body.validationId:body.id||body.validationId});
       case 'reviews':return studio.reviews(source==='api'?body.validationId:body.id||body.validationId,body);

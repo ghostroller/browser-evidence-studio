@@ -3,6 +3,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Studio } from '../../src/main/services/studio';
 import { makeDispatch } from '../../src/main/services/dispatch';
+import { setUiTheme } from './ui-layout';
 
 async function waitUntil<T>(read:()=>T|Promise<T>,accept:(value:T)=>boolean,label:string,timeoutMs=30000):Promise<T>{
   const deadline=Date.now()+timeoutMs;
@@ -32,7 +33,17 @@ export async function runCheckpointScenarios(studio:Studio,url:string){
     if(process.env.BES_SKIP_UI)await dispatch('cancelCheckpoint',{runId:run.id,operationId});
     else{
       const ui=studio.window.window.webContents;
-      await ui.executeJavaScript(`Array.from(document.querySelectorAll('.panel-tabs button')).find(button=>button.textContent==='保存点')?.click()`);
+      const leaseBeforePresentation=run.leaseEpoch,controllerBeforePresentation=run.controller;
+      await setUiTheme(studio,'dark');
+      await ui.executeJavaScript(`Array.from(document.querySelectorAll('button')).find(button=>button.textContent.trim()==='连接与环境')?.click()`);
+      await waitUntil(()=>page.view.getVisible(),visible=>!visible,'checkpoint dialog hides native view without waiting for capture',5000);
+      assert.equal(run.locked,true);assert.equal(run.checkpointTask?.id,operationId);
+      await ui.executeJavaScript(`Array.from(document.querySelectorAll('.overlay-heading button')).find(button=>button.textContent.trim()==='返回工作台')?.click()`);
+      await waitUntil(()=>page.view.getVisible(),Boolean,'checkpoint dialog restores native view',5000);
+      assert.equal(studio.window.mask.getVisible(),true,'Closing the dialog cannot release an active checkpoint input lock');
+      assert.equal(run.leaseEpoch,leaseBeforePresentation);assert.equal(run.controller,controllerBeforePresentation);
+      await setUiTheme(studio,'light');
+      await ui.executeJavaScript(`(()=>{const button=Array.from(document.querySelectorAll('.panel-tabs button')).find(button=>button.textContent==='保存点');if(!button)return;button.focus();button.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,button:0,ctrlKey:false}));button.dispatchEvent(new MouseEvent('mouseup',{bubbles:true,cancelable:true,button:0}));button.click();})()`);
       await waitUntil(()=>ui.executeJavaScript(`!!document.querySelector('.checkpoint-progress button:not(:disabled)')`),Boolean,'React checkpoint cancel button',5000);
       assert.equal(await ui.executeJavaScript(`(()=>{const button=document.querySelector('.checkpoint-progress button:not(:disabled)');if(!button)return false;button.click();return true;})()`),true);
     }

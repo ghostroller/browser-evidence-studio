@@ -28,6 +28,23 @@ async function eventual<T>(read: () => Promise<T>, predicate: (value: T) => bool
   throw new Error('Asynchronous operation did not reach its expected state.');
 }
 
+test('UI preferences and presentation have no public HTTP routes or capabilities', async () => {
+  const dispatched: string[] = [];
+  const fixture = await setup(method => { dispatched.push(method); return {}; });
+  try {
+    const capabilities = (await fixture.call('GET', '/v1/capabilities')).json;
+    assert(!capabilities.operations.some((entry: { operation: string }) => ['uiPreferences', 'presentation', 'showBrowser'].includes(entry.operation)));
+    for (const endpoint of ['uiPreferences', 'ui-preferences', 'presentation', 'showBrowser', 'show-browser']) {
+      for (const method of ['GET', 'POST']) {
+        const response = await fixture.call(method, `/v1/${endpoint}`, method === 'POST' ? { theme: 'dark', reason: 'layout', hidden: false, visible: true } : undefined);
+        assert.equal(response.status, 404);
+        assert.equal(response.json.error.code, 'NOT_FOUND');
+      }
+    }
+    assert.deepEqual(dispatched, [], 'UI presentation never reaches an HTTP-dispatched service');
+  } finally { await fixture.cleanup(); }
+});
+
 test('checkpoint job cancellation binds to the queued job and retains partial evidence for an active job', async () => {
   let queue: Promise<unknown> = Promise.resolve(), finishFirst!: () => void;
   const started: string[] = [];
