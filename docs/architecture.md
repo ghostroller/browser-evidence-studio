@@ -119,6 +119,16 @@ requestHuman 在闸门确认关闭后进入 await，正常交还经真实状态�
 
 宿主视图必须真正覆盖或移开业务原生视图。锁定键盘/鼠标/滚轮/快捷导航，明确处理新窗口、拖放与系统对话框，不依赖网页自己实现的遮罩。
 
+### 3.4 内嵌浏览器兼容策略
+
+`src/main/browser/environment.ts` 在 app ready、session 和 WebContents 创建前设置 `chrome-compatible-v1`：通过 Electron 原生 `app.userAgentFallback` 使用实际 Chromium 主版本的桌面缩减 UA，保留原生操作系统信息，移除应用名与 Electron 产品标记。策略覆盖首次导航和原生弹窗，不等待 Puppeteer 接管后再修改 UA。启动时禁用 Blink `AutomationControlled`，避免内部动态调试端口使人工浏览页面的原生 `navigator.webdriver` 为 true；普通 Puppeteer/CDP 连接及其控制闸门继续工作。
+
+保留原生 Chromium Client Hints、语言、时区和硬件属性，不注入 navigator 属性补丁，不声明 Google Chrome 品牌，也不拦截请求补造 Client Hints。Electron 与 Chrome 的网络提示支持仍有差异，实际验证及限制见 [验证记录](verification.md)。此策略不是完整 Chrome 环境，也不能证明真实站点已接受请求。
+
+每个新 run 的 manifest 保存 `browserEnvironment`（策略名、session UA、实际 Chromium 版本、原生 Client Hints 策略、启动特性状态），用于前后对照；旧 run 不回填当前配置。profile 分区、权限处理和 `sandbox/contextIsolation/webSecurity` 边界保持原有策略。
+
+兼容诊断另有独立 `src/main/browser/baseline.ts` 入口，通过 `npm run browser:baseline` 单独构建启动。仅共享上述原生环境策略，保持 WebContentsView 的安全和权限设置，使用全新 userData/sessionData；在首次导航前完全不初始化 Studio、调试端口、Puppeteer 或 rrweb。它不是普通 run 的“暂停采集”，也不提供第二套 agent 控制协议；实际用法及对照边界见 [运行环境](environment.md#无采集浏览器对照)。
+
 ## 4. 录制流水线
 
 ### 4.1 开始与连续性

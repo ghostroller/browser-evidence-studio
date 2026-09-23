@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
 import { StudioWindow } from '../window';
 import { SocketTransport } from '../browser/connection';
+import { browserEnvironmentMetadata } from '../browser/environment';
 import { GateTransport } from '@/runner/gate';
 import { EvidenceStore } from '@/evidence/store';
 import { EvidenceReader } from '@/evidence/reader';
@@ -93,7 +94,7 @@ export class Studio {
     const profile=this.profiles.find(p=>p.id===body.profileId&&p.projectId===project.id);ensure(profile,'Profile must belong to project');
     const id=randomUUID();const browserSession=session.fromPartition(`persist:bes-${project.id}-${profile.id}`);
     browserSession.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false)); browserSession.setPermissionCheckHandler(()=>false);
-    const store=await EvidenceStore.create(path.join(this.root,'runs',id),{id,projectId:project.id,kind:body.kind==='validate'?'validate':'demonstrate',mode:process.env.BES_TEST?'synthetic':'local',objective:project.objective,profileId:profile.id,versions:this.state().versions,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId});
+    const store=await EvidenceStore.create(path.join(this.root,'runs',id),{id,projectId:project.id,kind:body.kind==='validate'?'validate':'demonstrate',mode:process.env.BES_TEST?'synthetic':'local',objective:project.objective,profileId:profile.id,versions:this.state().versions,browserEnvironment:browserEnvironmentMetadata(browserSession),appInstanceId:this.instanceId,browserSessionId:this.browserSessionId});
     const r:ActiveRun={id,projectId:project.id,profileId:profile.id,store,pages:new Map(),selectedPageId:'',session:browserSession,controller:'none',leaseEpoch:1,capture:'starting',execution:'ready',locked:true};this.active=r;this.runs.unshift(store.manifest);
     try{await this.manageDownloads(r);const page=await this.addPage(r);await this.navigate(String(body.url||'about:blank'),page,true);r.capture=[...r.pages.values()].some(p=>p.capture.health==='degraded')?'degraded':'recording';r.controller='human';r.locked=false;this.window.lock(false);await store.updateManifest({capture:r.capture,controller:'human',leaseEpoch:r.leaseEpoch});return this.state().active;}
     catch(error){r.capture='degraded';r.execution='failed';await store.appendEvent({type:'gap',source:'lifecycle',data:{reason:String(error)}});throw error;}

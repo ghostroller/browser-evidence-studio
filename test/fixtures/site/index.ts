@@ -20,6 +20,26 @@ function document(title: string, body: string, script = ''): string {
     </style></head><body><header><strong>Browser Evidence Studio · 合成验收站点</strong><p>全部订单、账号、二维码均为本地假数据</p><nav><a href="/orders">订单</a><a href="/login">人工登录</a><a href="/lab">证据实验</a><a href="/storage">持久状态</a></nav></header><main><h1>${title}</h1>${body}</main><script>${script}</script></body></html>`;
 }
 
+// Only allowlisted browser metadata is echoed; never copy cookies or auth headers.
+function browserEnvironmentHeaders(request: IncomingMessage) {
+  return Object.fromEntries(['user-agent', 'accept-language', 'sec-ch-ua', 'sec-ch-ua-mobile', 'sec-ch-ua-platform', 'sec-ch-ua-full-version-list', 'sec-ch-ua-platform-version', 'sec-ch-ua-arch', 'sec-ch-ua-bitness']
+    .map(name => [name, request.headers[name] ?? null]));
+}
+
+function browserEnvironmentPage(request: IncomingMessage, kind: string): string {
+  const navigation = { id: randomUUID(), kind, headers: browserEnvironmentHeaders(request) };
+  // This first parser-blocking script records native values before any body script.
+  return `<!doctype html><html><head><meta charset="utf-8"><title>合成浏览器环境</title><script>
+    const getter = name => { const descriptor = Object.getOwnPropertyDescriptor(Navigator.prototype, name); return { own: Object.prototype.hasOwnProperty.call(navigator, name), source: descriptor && descriptor.get ? Function.prototype.toString.call(descriptor.get) : null }; };
+    window.__browserEnvironment = { navigation: ${scriptJson(navigation)}, early: { userAgent: navigator.userAgent, webdriver: navigator.webdriver, platform: navigator.platform, language: navigator.language, languages: [...navigator.languages], userAgentData: navigator.userAgentData ? navigator.userAgentData.toJSON() : null, getters: { userAgent: getter('userAgent'), webdriver: getter('webdriver') }, node: { process: typeof process, require: typeof require } }, ready: false };
+  </script></head><body><h1>合成浏览器环境</h1><button id="environment-fetch">读取请求环境</button>${kind === 'main' ? '<button id="environment-popup">打开环境弹窗</button><iframe id="environment-frame" src="/browser-environment?kind=frame" title="环境 iframe"></iframe>' : ''}<script>
+    async function readEnvironment() { const result = window.__browserEnvironment; result.ready = false; result.fetch = await fetch('/api/browser-environment').then(response => response.json()); result.highEntropy = navigator.userAgentData ? await navigator.userAgentData.getHighEntropyValues(['architecture', 'bitness', 'fullVersionList', 'platformVersion']) : null; result.ready = true; }
+    document.querySelector('#environment-fetch').onclick = readEnvironment;
+    const popup = document.querySelector('#environment-popup'); if (popup) popup.onclick = () => window.open('/browser-environment?kind=popup', '_blank', 'width=600,height=420');
+    readEnvironment().catch(error => { window.__browserEnvironment.error = String(error); window.__browserEnvironment.ready = true; });
+  </script></body></html>`;
+}
+
 function ordersPage(url: URL): string {
   const page = Math.max(1, Math.min(3, Number(url.searchParams.get('page')) || 1));
   const variant = url.searchParams.get('variant') || 'normal';
@@ -91,6 +111,11 @@ export async function startFixture(options: { port?: number; qrTtlMs?: number } 
       const path = url.pathname;
       const session = !sessionRevoked && /(?:^|;\s*)synthetic_session=fake-account-001(?:;|$)/.test(request.headers.cookie || '');
       if (path === '/health') return json(response, { ready: true, synthetic: true });
+      if (path === '/browser-environment') {
+        response.setHeader('accept-ch', 'Sec-CH-UA-Full-Version-List, Sec-CH-UA-Platform-Version, Sec-CH-UA-Arch, Sec-CH-UA-Bitness');
+        return send(response, 200, browserEnvironmentPage(request, url.searchParams.get('kind') || 'main'));
+      }
+      if (path === '/api/browser-environment') return json(response, { headers: browserEnvironmentHeaders(request) });
       if (path === '/soak') return send(response, 200, document('连续录制负载', '<section><button id="soak-click-1">合成点击 1</button><output id="action-count">0</output><p>100 ms DOM 更新：<output id="tick">0</output></p></section>', `
         let count = 0, tick = 0;
         const button = document.querySelector('button'), output = document.querySelector('#action-count');

@@ -12,6 +12,7 @@ import { runRequestBodyScenarios } from './request-body-scenarios';
 import { runLifecycleScenarios } from './lifecycle';
 import { runApiScenarios } from './api-scenarios';
 import { runRecoveryUiScenarios } from './recovery-ui';
+import { runBrowserEnvironmentScenarios } from './browser-environment';
 export async function runDesktopTests(studio:Studio){
   const site=await startFixture();
   try{
@@ -50,6 +51,7 @@ export async function runDesktopTests(studio:Studio){
     await studio.saveProfile();await studio.seal();
     const readback=await reader.checkpoints({limit:20});assert.ok(readback.items.some((x:any)=>x.id===cp.id));
     console.log('M0/M1 PASS: exact target, navigation, concurrent gate, independent capture, checkpoint, seal/reopen');
+    await runBrowserEnvironmentScenarios(studio,site.url);
     await runRunnerScenarios(studio,site.url);
     if(!process.env.BES_SKIP_UI)await runReviewUiScenarios(studio);
     await runLifecycleScenarios(studio,site.url);

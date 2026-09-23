@@ -14,6 +14,7 @@
   "packageManager": "npm@11.19.0",
   "scripts": {
     "start": "electron-forge start",
+    "browser:baseline": "node scripts/browser-baseline.mjs",
     "build": "vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts && vite build --config vite.renderer.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/unit/*.test.ts test/fixtures/site/site.test.ts",

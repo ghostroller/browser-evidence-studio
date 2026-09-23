@@ -94,11 +94,16 @@ Electron 二进制下载与 npm 包下载是独立步骤。本次使用镜像取
 
 开发客户端默认使用 `%APPDATA%\BrowserEvidenceStudio-dev`；打包应用使用 `%APPDATA%\BrowserEvidenceStudio`。环境变量 `BES_DATA` 可指定独立数据根目录。profile、run 和 HTTP 连接文件在数据根目录下管理，运行数据不随源码或发行包提交。
 
+客户端启动时应用 `chrome-compatible-v1` 浏览器策略，详情见 [架构说明](architecture.md#34-内嵌浏览器兼容策略)。升级源码后需完全退出旧客户端，再用 `npm.cmd start` 启动；仅刷新页面无法更新启动配置。继续选择原项目/profile 即可保留客户端自己的登录环境。开发与打包应用的数据根不同，不能用旧 ZIP 验证新源码，也不要复制普通 Chrome 的 Cookie 或 profile。每次新录制的 manifest 会保存实际策略和 UA。
+
 HTTP 服务只供本机访问，地址和连接文件路径可在客户端“连接与环境”查看。连接文件位于 `connection/agent-connection.json`，包含本次启动的访问令牌；协议见 [HTTP API](api.md)。
 
 | 命令 | 检查范围 |
 | --- | --- |
 | `npm.cmd run typecheck` | 全项目类型检查 |
+| `npm.cmd run browser:baseline` | 独立无采集 Electron 对照窗口，默认打开京东；每次使用全新 profile |
+| `npm.cmd run browser:baseline -- --verify` | 仅访问本机合成站点，验证无调试端口的首次导航/刷新/iframe/弹窗、隔离和关闭 |
+| `npm.cmd run browser:baseline -- --recording` | 独立构建普通客户端并使用全新数据目录，作为开启采集的对照；项目/profile/run 仍通过原 UI/HTTP 创建 |
 | `npm.cmd test` | 单元测试和合成站点测试 |
 | `npm.cmd run test:integration` | 构建后执行桌面/profile 重启、五种强杀与两次重开，以及重复退出诊断，共 19 个 Electron 进程 |
 | `npm.cmd run test:desktop` | 与 `test:integration` 相同 |
@@ -108,6 +113,18 @@ HTTP 服务只供本机访问，地址和连接文件路径可在客户端“连
 | `npm.cmd run make` | Forge 生成 Windows ZIP |
 
 桌面测试自动使用 `output/desktop-<时间戳>/` 保存日志、run 和报告。`desktop-summary.json` 汇总各进程结果；首阶段失败时不会把未执行的重启检查算作通过。强杀/缺少完整报告的进程不会被标为普通测试通过，恢复案例由重开后的独立断言判定。诊断记录位于数据根目录 `diagnostics/`，含实例/PID、最后阶段和退出原因；20 分钟旧快照不证明进程仍在运行。Windows ZIP 与打包 EXE 两进程验证是历史记录，当前源码的最新通过范围与产物对应关系见 [验证记录](verification.md)。
+
+### 无采集浏览器对照
+
+`browser:baseline` 用相同 Electron、`chrome-compatible-v1`、WebContentsView、安全设置和权限拒绝策略，独立启动人工浏览窗口；不初始化 Studio、Puppeteer、CDP 调试端口、rrweb、业务 preload 或 HTTP 控制服务。菜单提供起始页、后退/前进、刷新和关闭；HTTP(S) 弹窗保留 opener 和同一 session。该入口用于诊断，不提供录制或 agent 接管。
+
+默认访问 `https://www.jd.com/`，其他站点可用 `npm.cmd run browser:baseline -- --url=https://example.com/`。`--verify` 不接受外站 URL。构建入口为 `src/main/browser/baseline.ts`，启动器直接调用锁定的 Vite，输出到本次 `output/browser-baseline-<时间戳>-<PID>/build/`，不覆盖 Forge 的 `.vite/build`。当前客户端不需要退出。
+
+`--recording` 与 `--verify`、`--url` 互斥，使用现有三份 Vite 配置另行构建正常客户端到 `output/browser-recording-<时间戳>-<PID>/`，全新数据根为其 `data/`。该模式包含正常调试/采集与原 HTTP 协议，需在 UI 或 HTTP 中创建项目、profile 和 run，不自动复制登录态，也不提供新的控制协议。
+
+每次启动在上述独立目录创建新的 `profile/` 和 `session-data`，不继承 `BES_DATA` 或现有登录环境；真实登录需人工完成。目录已被 Git 忽略，可能包含本地登录态，不应提交或分享。`build-modules.json` 保存依赖图，普通运行仅保存启动元数据 `ready.json` 和首次加载结果 `initial-load.json`，不保存网页正文、网络内容或账号信息。首次加载完成不等于登录或业务验收成功。合成模式另写 `verification.json`。
+
+这个对照同时去掉调试/采集初始化，并使用新 profile。若京东正常，还需与新 profile 的正常录制模式比较，不能直接宣布 rrweb 是根因；若仍异常，再评估 Electron 原生能力/session 和标准 Chrome/Edge 模式。详见 [对照记录](browser-compatibility-reference.md)。
 
 ## 升级要求
 

@@ -2,6 +2,106 @@
 
 更新日期：2026-09-23，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## 全新 profile 的普通录制：京东访问确认（2026-09-23）
+
+用户在上一节对照客户端中完成登录，反馈可查看订单并交出控制。通过该独立实例的 HTTP API 核对 PID **17540**、run `c797689d-8a86-4f46-b812-75ee472ebd94`、初始 controller=agent / leaseEpoch=2 / execution=ready。首页 page `b0758e17-6ad7-4c08-b2c1-71c2e37d3206` generation=2，当前订单 page `4b21d35c-d8ec-48a4-ab2c-a6503d729d11` generation=0；版本和 `chrome-compatible-v1` 与本轮兼容配置一致。全程未导航、刷新或点击订单操作。
+
+两页 HTTP snapshot 的前 80 个语义元素不足以覆盖订单正文，不能因返回 outputTruncated=false 就推断完整页面已检查。随后对当前订单页保存 checkpoint **`cp-000000007518`**，采集时间 **2026-09-23T07:03:57.985Z–07:03:58.058Z**，结果为 **complete / consistent**：截图 `art-000000007515`（198,427 字节）和 DOM `art-000000007517`（154,204 字节）均完整。实际查看已保存截图，确认订单中心、列表、金额和订单详情入口正常呈现，当前视口未出现先前异常浮层。未在文档中复制订单号、收件信息或账号内容；原件仍在 Git 忽略的运行目录。
+
+网络检查固定 **sequence 0–7518**，只投影 pageId、navigationGeneration 和状态码，有界续读完成。共 **841 条已记录的 network-response：828 个 HTTP 200、13 个 304、没有观察到 403**。首页 generation=2 为 261 个 200 和 6 个 304，订单页为 98 个 200。两页各有 capture-ready，且均有 rrweb-full-snapshot，说明普通采集确实运行；不是仅把 UI 标成录制。统计只覆盖已采到的响应，不承诺丢弃或接入前请求也完整。诊断摘要保存在 `output/browser-recording-1790146574793-28576/inspection.json` 和 `network-inspection.json`。
+
+采集健康仍为 **degraded**，与业务页面可用分开判定：
+
+- 固定区间有 5 条 gap：2 条 request-body-read-failed，以及弹窗的 response/completion-without-observed-request 和 popup-before-capture-ready。这些 gap 并不直接设置 degraded；请求正文副本读取失败也不等于请求发送失败。
+- 公开 GET run 返回的 captureHealthReason 缺失。只读代码确认该路由取 `studio.runs` 初始缓存，而 `EvidenceStore.updateManifest()` 替换了 store.manifest 对象，缓存未同步；summary/active state 也未暴露原因。这是独立的 API 元数据可见性缺口，本轮未修改代码。
+- 在已知 run 的磁盘 manifest 中仅读取健康元数据，确认 `captureHealthReason` 为 **`Capture queue reached its bounded budget`**。该标记由队列的条数或估算字节上限触发，首次置位后不会自动恢复；现有字段不足以分辨是哪项预算先触发或给出累计丢弃数。不能宣称本段录制完整，也不能把队列触顶当成旧京东 403 的已证实原因。
+
+结论：**当前 Electron + 正常 CDP/Puppeteer/rrweb 采集，在新工作区和新 profile 的这次会话中可正常登录、展示首页和订单。** 与旧环境失败、无采集新环境成功对照后，旧 profile/会话及当时运行状态更值得优先排查；不能断言旧 profile 已损坏或具体哪项站点存储导致拒绝，也没有依据据此停用 rrweb 或立即迁移浏览器。新旧实验还改变了进程、登录会话与时间，下一步在默认客户端使用新命名 profile 复验，不删除或复制旧 profile；采集预算和健康字段另行修复。
+
+检查收尾时控制代际已被更新，最初按 leaseEpoch=2 的交回操作在本地核验阶段停止，未发写请求。重新核对同一 run、订单页、agent / ready / leaseEpoch=5 后，仅交回 human，确认 **leaseEpoch=6**。保留页面、登录状态和正在录制的 run，未封存或关闭。本轮为实时核验与文档维护，没有执行代码回归或修改运行实现。
+
+## 独立无采集 Electron 对照（2026-09-23）
+
+用户授权执行前述最小对照。新增 `npm.cmd run browser:baseline`，在单独的构建输出和全新 userData/sessionData 中启动 WebContentsView；共享 `chrome-compatible-v1`、原生安全和权限策略，但不初始化 Studio、调试端口、Puppeteer、rrweb、业务 preload 或 agent API。未覆盖 Forge 主产物，也未接管原客户端或旧原型的页面。
+
+本批 Node **24.21.0** / npm **11.19.0**，Electron **44.4.3** / Chromium **152.0.7977.130**，依赖和锁文件未变。`node --check scripts/browser-baseline.mjs`、`npm.cmd run typecheck` 及 `git diff --check` 通过；首次类型检查发现 WebContents 没有公开 `close` 事件，已去掉该监听，使用 `destroyed` 清理宿主并覆盖 guest 主动关闭场景。
+
+`npm.cmd run browser:baseline -- --verify` 首次在执行沙箱中失败：GPU 子进程多次以 **-1073741515** 退出，合成主页面 `ERR_FAILED (-2)`；失败报告保留在 `output/browser-baseline-1790145914347-46808/verification.json`。未更改 GPU/安全参数，在正常桌面环境用相同命令重跑通过，报告为 `output/browser-baseline-1790145960606-21540/verification.json`，Electron PID **34456**，进程正常退出码 **0**。
+
+通过范围：
+
+- 页面自身通过 loopback HTTP 上报首次主文档、同源 iframe、原生弹窗、主文档刷新和 iframe 刷新共 **5 个上下文**；测试不使用 CDP、evaluate 或 executeJavaScript。合成服务器限制来源、随机路径、请求数、正文预算和等待期限。
+- 初始导航/早期脚本/fetch 的 UA 一致、webdriver=false、getter 保持原生、页面无 Node 能力；弹窗保留 opener，共享该独立 session 内的合成 cookie/localStorage。首次导航仍没有 UA-CH，fetch 携带 Chromium 152 原生提示，与前次有采集基线观察一致。
+- 两个业务视图保持 sandbox/contextIsolation/webSecurity，nodeIntegration=false，无 preload，debugger 未 attached。启动没有 remote-debugging-port/pipe，也未生成 DevToolsActivePort。构建模块清单只有 baseline、environment 和合成验证模块，无 Studio/采集/自动化库；主世界 recorder 属性检查仅是补充，不能单凭它证明不存在隔离世界代码。
+- 从 popup WebContents 发起关闭后，其宿主销毁且 opener 保留；随后关闭主宿主，两个业务 WebContents 均销毁。新 profile/sessionData 位于本次独立目录。
+
+随后第一次用 `npm.cmd run browser:baseline` 启动真实对照，输出 `output/browser-baseline-1790145989190-43940`，Electron PID **10224**。`ready.json` 确认无采集、human 控制和独立目录；`initial-load.json` 于 **2026-09-23T06:46:38.018Z** 记录初始 loadURL 完成。只读进程检查确认没有调试开关，NetworkService PID **35536** 当时有 **42 条 Established** 连接到 `127.0.0.1:7897`；这仍不证明每个京东请求的最终出口。
+
+用户反馈看不到窗口。该进程与桌面同属 Session 1，但 MainWindowHandle=0，Computer Use 也未列出该窗口，故不能将前述 ready/loaded 当作可操作交付。定位到启动器错误使用 `windowsHide: true`；改为交互浏览器的 `windowsHide: false`，核验进程路径与本次输出参数后只关闭 PID 10224，再次启动。新输出为 `output/browser-baseline-1790146250134-40572`，Electron PID **38996**，初始页面于 **2026-09-23T06:50:53.428Z** 加载完成。Computer Use 随后唯一定位到标题“Electron 无采集对照 · 京东…”的原生窗口并成功置前，未点击网页或操作登录。此修复后重新进行了独立构建及实际窗口显示检查，未在用户登录期间再打开合成窗口干扰操作。
+
+窗口可见后，用户明确反馈 **“首页和订单均正常”**。这是本次全新 profile、无调试/采集入口的人工验收观察；没有读取真实页面正文或自行判定接口全部通过。它证明该 Electron 组合在此条件下可以完成用户检查的登录后访问，不能笼统认定 Electron 必然不兼容京东。
+
+后续新增 `npm.cmd run browser:baseline -- --recording`，复用现有三份 Vite 配置独立构建普通客户端，不覆盖 `.vite`，创建全新数据目录。实际输出 `output/browser-recording-1790146574793-28576`，Electron PID **17540**；main/preload/renderer 构建完成，生命周期已到 ui-ready，版本为相同 Electron/Chromium、Puppeteer **25.11.0**、rrweb **2.1.6**。构建有既有 use-client、chunk 大小和 sourcemap 警告，未阻止启动；`node --check` 和 `git diff --check` 通过。
+
+依据项目技能，通过该新实例的 HTTP health/capabilities/state 确认空工作区后，创建项目 `ac3f112c-5bf4-4295-ac73-fcca02f51ca8`（JD fresh-profile recording comparison）、全新 profile `aad09e61-f05b-4a47-bad6-9744d07deb17`、run `c797689d-8a86-4f46-b812-75ee472ebd94` 并打开京东。返回 human / ready / leaseEpoch=1，未取得 agent 控制。初始 summary 已有采集事件和原件，但 active capture 标记 **degraded**，有界 gaps 当时为空，具体采集缺口尚未定位；不得宣称录制完整。
+
+定位正常录制窗口时，Computer Use 报告用户按物理 Escape 停止操作，已立即停止后续桌面输入。该普通录制对照的人工登录/首页/订单结果仍未知；无采集成功窗口保持用户控制。接续只读此新 run 的摘要/健康，真实页面写操作仍须遵守 human 控制边界。
+
+本批只新增诊断入口，没有重跑完整 19 进程回归、长测或生成新发行包。新 profile 与移除调试/采集同时变化；即使人工复测正常，也必须与新 profile 的普通录制模式再比较，不能直接将 rrweb/CDP 判为根因。真实 profile 只保存在 Git 忽略的本地输出中。
+
+## 京东兼容调整后的受控实测（2026-09-23）
+
+用户反馈新版仍异常，在客户端点击“交由 agent 控制”并授权测试。依据项目内 `skills/browser-evidence-studio/SKILL.md` 和 HTTP 协议，从原开发客户端连接文件读取凭据，仅在进程内使用；没有访问内部 CDP、注入任意脚本、复制 profile 或调整系统网络。实际客户端 PID **37360**，run `4a5799a0-d01f-4811-bbed-37d03acb6a15`，页面 `27b7c086-8454-4ee8-a3c2-ead5cd1c238f`。初始 controller=agent、leaseEpoch=2、generation=5、execution=ready；manifest 已记录 `chrome-compatible-v1`，实际请求 UA 也已是缩减 Chrome 格式，排除“仍在运行旧策略”这一解释。
+
+先读取 summary/gaps 和有限 snapshot。snapshot 中保留登录用户区域，但其前 80 个语义元素的范围没有覆盖异常浮层；不能据此判断页面正常。保存 checkpoint `cp-000000006205`，截图 `art-000000006203` 明确为“当前页面异常 / 请刷新或切换账户试试”。截至 sequence **6264** 的有界索引读取包含 **70 次 HTTP 403**；首页核心 GET 与 OPTIONS 200 分开统计，不能将预检成功算作业务成功。初始 capture=degraded，已见请求正文读取失败 gap；本轮不宣称整个录制无缺失。
+
+北京时间 **14:11:42.879** 经受控 action 对同一 `https://www.jd.com/` 执行一次 navigate，成功后的 generation=6；没有清缓存、切换账号或循环刷新。等待约 6 秒后保存 checkpoint `cp-000000007484`，截图 `art-000000007482` 与前一截图 SHA-256 相同，两份 checkpoint 都是 complete/consistent。读取固定区间 **6318–8363**：响应 **197 次 200、45 次 304、25 次 403**；核心 `qryCompositeMaterials`、`pchome_horizontalnav`、`pc_home_background`、`pchome_firstScreenSoa`、`pctradesoa_getStation`、`pc_home_feed` 的 GET 仍失败。该范围包含页面自身重试，只有一次 agent 导航。
+
+代表响应 `evt-000000006518` 与请求 `evt-000000006908` 按 requestKey 对齐：实际 UA 为 `Chrome/152.0.0.0` 格式，无 Electron/应用标记；请求携带原生 Chromium 152 低熵 UA-CH。响应为 **HTTP/2 403、TLS 1.3、securityState=secure、content-length=0**。另一个 `pc_home_feed` 响应 `evt-000000007023` 的正文事件 `evt-000000007139` 引用 `art-000000007026`，有界回读确认 **captureStatus=empty、0 字节、完整空串 SHA-256**，不是读取失败。部分其他请求后续为 ERR_ABORTED，其正文状态不能据该样本外推。
+
+与用户控制台日志分开核对：全 run 截至本轮网络失败读取，共 **39 条**（36 ERR_ABORTED、1 ERR_CONNECTION_CLOSED、2 ERR_BLOCKED_BY_ORB）。唯一连接关闭 `evt-000000005075`，北京时间 **14:06:09.268**，关联请求 `evt-000000004755` 的 `GET https://sso.jingbantong.com/sign`；无法把控制台所有握手日志都映射为这一个事件。首页已收到 HTTPS 403 的请求不是同一次握手失败。Chromium [错误枚举](https://chromium.googlesource.com/chromium/src/+/main/net/base/net_error_list.h) 中 -105 为 NAME_NOT_RESOLVED，-100 为 CONNECTION_CLOSED；STUN 域名解析失败不等于京东 API 域名解析失败。Forge/Vite 的 `inlineDynamicImports` 警告来自插件默认内联参数和 preload 的 `codeSplitting:false` 重复，构建和应用启动已成功，不是京东 HTTP 403 的证据。
+
+实际响应连接地址为 **127.0.0.1:7897**；在与客户端同一实际用户上下文只读核对，系统 ProxyEnable=1、ProxyServer=127.0.0.1:7897，监听程序为 **verge-mihomo**。沙箱进程的 HKCU 曾显示不同设置，未将其当作宿主配置。没有修改代理；普通 Chrome/参考内置浏览器的实际出口和代理规则尚未对照，不能直接认定代理导致拒绝。
+
+结论：第一轮 UA/AutomationControlled 调整确已应用，但未解决真实京东首页兼容性；用户区域存在与核心接口被拒同时发生，不能判断账号被封禁。后续有效对照应优先明确各浏览器实际网络路径，并区分录制器存在与否；仅暂停采集仍保留连接/注入，不能作为完全无录制器对照。本轮只测试和记录，没有修改运行中的产品源码、系统代理或证书策略。结束时通过 HTTP control 成功交还 human，leaseEpoch=3；保留正在录制的 run 和两份诊断 checkpoint，没有封存或退出用户客户端。
+
+## 浏览器兼容策略与原生环境对照（2026-09-23）
+
+用户要求先让客户端环境尽量靠近 Chrome，并补充 ChatGPT 内置浏览器可正常登录、访问京东的截图。该截图支持“内嵌浏览器不必然异常”，不能提供其底层完整配置；参考浏览器的只读接口未暴露 navigator，未取得可用于逐字段复制的环境数据。本轮未自动操作京东登录或复制账号/profile。
+
+新增 `src/main/browser/environment.ts`，在创建 session/WebContents 前使用 Electron 原生 `app.userAgentFallback` 配置实际 Chromium 主版本的缩减桌面 UA，并在启动时禁用 Blink `AutomationControlled`。实测 UA 为 `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36`。保持动态 loopback CDP、普通 Puppeteer、原生 getter、语言/UAData、profile 分区和安全隔离；不增加请求头改写或页面属性补丁。新 run 的 `browserEnvironment` 保存配置快照，包含 `clientHintsPolicy`，该字段描述策略，不表示 HTTP 各类 Client Hints 均受支持。
+
+实际环境为 Node **24.21.0** / npm **11.19.0** / Electron **44.4.3** / Chromium **152.0.7977.130** / Puppeteer **25.11.0**。日志目录 `output/chrome-compat-20260923`；`npm.cmd run typecheck`、`npm.cmd test` **107/107** 和 `npm.cmd run build` 通过；最终类型检查与构建日志为 `typecheck-final.log`、`build-final.log`。
+
+首轮合成桌面回归 `output/desktop-1790139265908`（PID **35056**）在“导航请求应带低熵 Client Hints”断言失败。页面 UA、原生 getter、webdriver=false、DOM 低/高熵 UAData 和安全隔离已符合预期，fetch 请求也有原生低熵提示；只有导航头缺失。该失败报告保留，未将其覆盖为通过。
+
+随后以同一 Electron、`remote-debugging-port=0`、相同安全参数、独立合成 profile 启动两个原生 WebContentsView 进程，对比未设置 UA 的基线（PID **2224**）与兼容配置（PID **2764**）。仅访问 loopback，两次连续导航均不携带低熵 UA-CH；fetch 低熵头和 JS 高熵信息完全一致，fetch 未随 `Accept-CH` 增加高熵头；`navigator.webdriver` 由 true 变为 false。报告为 `native-environment-baseline.json`、`native-environment-compatible.json`，可丢弃诊断脚本为同目录 `native-environment-probe.mjs`，两个进程均正常退出。由此确认导航提示缺失是该 Electron 基线行为，不是本次 UA 覆盖造成的退化。
+
+源码佐证：[Electron 44.4.3 BrowserContext](https://github.com/electron/electron/blob/v44.4.3/shell/browser/electron_browser_context.cc#L634-L637) 的 `GetClientHintsControllerDelegate()` 返回 nullptr；[WebContents UA 设置](https://github.com/electron/electron/blob/v44.4.3/shell/browser/api/electron_api_web_contents.cc#L3136-L3142) 已提供原生 metadata。依据独立对照结果，回归断言改为强校验导航/请求/DOM UA 一致、fetch 低熵及 JS 高熵提示保留，并显式登记导航头缺失限制。未通过全局补造请求头来声称已等同 Chrome；升级 Electron 时须重新核验此边界。
+
+兼容专项在 `output/desktop-1790139655977/browser-environment-result.json` 中通过，主进程 PID **42872**。分别核验首个主文档、同源 iframe、普通 Puppeteer 刷新和原生 `window.open` 弹窗的首个请求，HTTP/DOM UA 一致，页面首段脚本读到 webdriver=false；getter 无实例补丁，Node 全局不可见，sandbox/contextIsolation/webSecurity 均为 true，nodeIntegration=false；原生 fetch 低熵和 JS 高熵提示保留，采集仍处于 recording。独立读回该 run 的 `manifest.json`，环境配置与报告一致。尚未单独验证 worker、跨域 iframe、HTTPS 提示协商或第三方网站的全部环境特征。
+
+最终临时设置现有 `BES_SKIP_UI=1` 执行 `node test/desktop/launch.js`，退出码 **0**，`output/desktop-1790139655977/desktop-summary.json` 的 **19 进程矩阵通过**，日志 `desktop-final.log`。主阶段 PID **42872**、profile 重启 PID **3608**；普通 Puppeteer 操作/脚本、控制交接、采集/checkpoint、HTTP、五种强杀边界的两次重开和两个退出场景通过。该命令跳过 UI 专项且没有运行长测；导航 Client Hints 限制仍明确保留在兼容专项报告中。
+
+本轮仅重新构建开发客户端，没有重新打包 EXE/ZIP；先前产物不包含该策略。完全退出旧开发客户端后运行 `npm.cmd start`，继续选择原项目/profile 即可进行人工京东对照。真实京东接口是否恢复仍未验证，30 分钟长测和 UI 拖动的历史失败也没有被本次兼容专项覆盖。
+
+## 京东人工录制的只读诊断（2026-09-23）
+
+用户提供两段已封存的本地录制 `dcab5b41-dae4-4cb0-a126-f84f49c4816b`、`c3307a02-6522-4eca-9d45-05fcc7139602`，并反馈同机、同网络的常用 Chrome 正常，只有客户端异常。这是用户已有对照观察，未由 agent 重新登录验证。本批仅用 EvidenceReader 摘要/索引定位后读取有界证据及 checkpoint，未操作网站、重试登录、修改浏览器配置或运行测试。原件保留在本机开发数据目录，本节只登记脱敏诊断和引用，不复制真实录制、账号标识或登录数据到仓库。
+
+- 两段 run 均记录 Electron **44.4.3**、Chromium **152.0.7977.130**、Puppeteer **25.11.0**，来自 `BrowserEvidenceStudio-dev`。第一段的实际请求 User-Agent 包含 `BrowserEvidenceStudio/0.1.0` 与 `Electron/44.4.3`，UA-CH 含 `Chromium/152`；这是已观察到的环境差异，不单独证明拒绝原因。
+- 第一段扫码检查正文 `art-000000005916` 在北京时间 **11:53:12.950** 返回业务 `code=200`；`cp-000000010293` 的截图显示京东首页已出现登录用户区域。说明登录流程至少曾进入已登录界面，不能将后续异常直接等同于扫码始终未成功。
+- 第二段 `cp-000000006951`（北京时间 **11:59:30**；截图 `art-000000006949`、DOM `art-000000006950`）明确显示“当前页面异常 / 请刷新或切换账户试试”。对应 DOM 使用 `jd-main-risk-fallback` / `jd-main-risk-title` 类名；页面并未明确宣布账号被封禁。
+- 第二段首页接口实际返回 HTTP **403**，包括 `qryCompositeMaterials`、`pchome_horizontalnav`、`pc_home_background`、`pc_home_feed`、`pchome_firstScreenSoa` 等。首个已定位 403 为 `evt-000000000284`，北京时间 **11:57:59.896**，早于本次跳转登录页（11:58:05.489）；登录后及刷新后也再次出现。因此问题不应限定为登录完成瞬间。
+- 第二段已记录响应中共有 **64 次 403**（另有 715 次 200、78 次 304）；部分同名接口的 200 来自 OPTIONS 预检，不能算 GET 业务成功。`pchome_horizontalnav` 的代表响应 `evt-000000001215` / `evt-000000003621` / `evt-000000005628`，关联正文 `art-000000001232` / `art-000000003641` / `art-000000005632`：均有 `content-length: 0`，按 ID 核验为 `empty`、0 字节及正确空内容 hash，而非采集读取失败。正文没有业务错误码或具体拒绝原因。事件为 host-received 时间，异步请求正文落盘可能改变事件序号先后，不能用序号推导精确网络时序。
+- 首页脚本 `jd_home/0.0.190/static/js/index.chunk.js` 在 `evt-000000001225`、`evt-000000003623`、`evt-000000005627` 报 `AxiosError: Request failed with status code 403`；随后还有 `Timeout and no data return`。403 与风险兜底页面支持“客户端环境下首页请求被限制”的判断，但仅凭时间相关和 DOM 类名尚不能确定具体风控规则或唯一触发因素。
+
+采集限制单独记录：第二段有 9 条 gap，其中 `evt-000000006954` 于北京时间 **11:59:32.581** 记录背压丢弃计数 **1,485**，另有 1 条请求正文读取失败及 7 条停止时在途。上述具体 GET 403 的正文已单独核验，但不能将全部录制宣称完整；也没有证据证明采集背压导致京东拒绝请求。
+
+录制时的源码存在独立持久 profile（`studio.ts` 的 `session.fromPartition`）、始终建立的观察 CDP/Puppeteer 连接、`remote-debugging-port=0` 以及全部拒绝的站点权限处理；没有 UA 覆盖、请求改写或代理设置。UA、自动化相关特征、profile/站点存储和录制行为都属于待拆分的环境差异，不能把所有因素归为 UA。尚未实测这两段页面的 `navigator.webdriver`，也未证明站点曾请求被拒绝的权限。暂停录制保留观察连接/注入，不能充当无录制器对照。
+
+诊断判断：结合用户的普通 Chrome 正常对照，客户端环境或其独立会话更值得优先排查；账号本身被封禁没有证据。该只读诊断阶段未实施修复；用户随后授权的浏览器兼容调整另行记录，不能将真实京东兼容性标为通过。
+
 ## 本地重新打包与长测推进（2026-09-23）
 
 用户说明本地尚未重新编译打包，并要求先打包再推进长测。本批使用 Node **24.21.0** / npm **11.19.0**，没有升级依赖；锁文件 SHA-256 为 `aaeca20cd2ca57f8d6bbac8c9e67a03c35bbfacc8d49b5acfe6d39de445b2c9c`。日志汇总目录为 `output/package-soak-20260923`。

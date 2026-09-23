@@ -9,7 +9,9 @@ import { makeDispatch } from './services/dispatch';
 import { startApi, type ApiHandle } from './api/server';
 import { LifecycleLog } from './lifecycle-log';
 import { isTrustedUiSender } from './ui-ipc';
+import { configureBrowserEnvironment } from './browser/environment';
 
+configureBrowserEnvironment();
 const dataRoot=process.env.BES_DATA||path.join(app.getPath('appData'),app.isPackaged?'BrowserEvidenceStudio':'BrowserEvidenceStudio-dev');
 app.setPath('userData',dataRoot);
 app.commandLine.appendSwitch('remote-debugging-address','127.0.0.1');
