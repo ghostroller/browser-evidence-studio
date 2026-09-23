@@ -8,7 +8,7 @@ const root = path.resolve('output/desktop-' + Date.now());
 fs.mkdirSync(root, { recursive: true });
 const baseEnv = { ...process.env, BES_TEST: '1', BES_DATA: root };
 delete baseEnv.ELECTRON_RUN_AS_NODE;
-const soakArgument = process.argv.find(argument => argument.startsWith('--soak='));
+const soakArgument = process.argv.findLast(argument => argument.startsWith('--soak='));
 if (soakArgument) {
   const minutes = Number(soakArgument.slice('--soak='.length));
   if (!Number.isFinite(minutes) || minutes < 1 || minutes > 60) throw new Error('Soak duration must be 1–60 minutes');
@@ -87,8 +87,19 @@ async function main() {
     if (!Number.isSafeInteger(before.fixturePort) || before.fixturePort < 1 || before.fixturePort > 65535 || before.siteOrigin !== `http://127.0.0.1:${before.fixturePort}`) {
       throw new Error('The saved synthetic fixture origin/port is invalid.');
     }
+    let expectSoak;
+    if (soakMinutes > 0) {
+      const soak = JSON.parse(fs.readFileSync(path.join(root, 'soak-result.json'), 'utf8'));
+      assert.equal(soak.schemaVersion, 2); assert.equal(soak.passed, true);
+      assert.equal(soak.processId, summary.main.pid); assert.equal(soak.minutes, soakMinutes);
+      assert.ok(typeof soak.runId === 'string' && soak.runId.length > 0);
+      assert.ok(soak.elapsedMs >= soakMinutes * 60000, 'The first process must complete the requested soak duration');
+      assert.equal(soak.evidenceSnapshot?.runId, soak.runId);
+      assert.deepEqual(soak.evidenceSnapshot?.checkpointIds, soak.checkpointIds);
+      expectSoak = { processId: summary.main.pid, runId: soak.runId, minutes: soakMinutes };
+    }
     console.log(`Starting a second Electron process with the same BES_DATA and synthetic origin ${before.siteOrigin}.`);
-    const restarted = await launchPhase('profile-restart', 120000);
+    const restarted = await launchPhase('profile-restart', 120000, { extraEnv: { BES_EXPECT_SOAK: expectSoak ? JSON.stringify(expectSoak) : '' } });
     summary.profileRestart = { ...restarted, status: restarted.passed ? 'completed' : 'failed' };
     if (!restarted.passed) throw new Error('The second Electron process did not produce a successful fresh restart result.');
     const after = JSON.parse(fs.readFileSync(path.join(root, 'profile-restart-state.json'), 'utf8'));
@@ -96,6 +107,13 @@ async function main() {
         after.restartStatus !== 'passed' || after.originalProcessId !== summary.main.pid || after.restartProcessId !== restarted.pid ||
         after.siteOrigin !== before.siteOrigin || !after.restartVerifiedAt) {
       throw new Error('Restart result identity, fixture origin, or persisted verification state does not match both actual Electron processes.');
+    }
+    if (expectSoak) {
+      assert.equal(restarted.result.soak?.passed, true, 'The second process must explicitly verify the long-run evidence');
+      assert.equal(restarted.result.soak.originalProcessId, expectSoak.processId);
+      assert.equal(restarted.result.soak.processId, restarted.pid);
+      assert.equal(restarted.result.soak.runId, expectSoak.runId);
+      assert.equal(restarted.result.soak.minutes, expectSoak.minutes);
     }
     }
     // Keep each crash case in its own synthetic workspace. The main program is
@@ -136,7 +154,7 @@ async function main() {
   } finally {
     fs.writeFileSync(path.join(root, 'desktop-summary.json'), JSON.stringify(summary, null, 2));
     const phaseSummary = phase => phase && ({ phase: phase.phase, pid: phase.pid, passed: phase.passed, exitCode: phase.exitCode, signal: phase.signal, timedOut: phase.timedOut });
-    console.log(JSON.stringify({ passed: summary.passed, output: root, main: phaseSummary(summary.main), profileRestart: phaseSummary(summary.profileRestart),
+    console.log(JSON.stringify({ passed: summary.passed, output: root, main: phaseSummary(summary.main), profileRestart: phaseSummary(summary.profileRestart), soakRestart: summary.profileRestart.result?.soak,
       recovery: summary.recovery.map(entry => ({ stage: entry.stage, passed: entry.passed, crash: phaseSummary(entry.crash), reopened: phaseSummary(entry.reopened), repeated: phaseSummary(entry.repeated) })),
       exitDiagnostics: summary.exitDiagnostics.map(entry => ({ ...phaseSummary(entry), reason: entry.lifecycle?.details?.reason, reentry: entry.reentry })), error: summary.error }, null, 2));
     process.exitCode = summary.passed ? 0 : 1;

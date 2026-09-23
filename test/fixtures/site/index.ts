@@ -91,6 +91,19 @@ export async function startFixture(options: { port?: number; qrTtlMs?: number } 
       const path = url.pathname;
       const session = !sessionRevoked && /(?:^|;\s*)synthetic_session=fake-account-001(?:;|$)/.test(request.headers.cookie || '');
       if (path === '/health') return json(response, { ready: true, synthetic: true });
+      if (path === '/soak') return send(response, 200, document('连续录制负载', '<section><button id="soak-click-1">合成点击 1</button><output id="action-count">0</output><p>100 ms DOM 更新：<output id="tick">0</output></p></section>', `
+        let count = 0, tick = 0;
+        const button = document.querySelector('button'), output = document.querySelector('#action-count');
+        button.onclick = () => { output.textContent = String(++count); button.id = 'soak-click-' + (count + 1); button.textContent = '合成点击 ' + (count + 1); };
+        setInterval(() => document.querySelector('#tick').textContent = String(++tick), 100);
+      `));
+      if (path === '/api/soak') {
+        const runId = url.searchParams.get('runId') || '', sequence = url.searchParams.get('sequence') || '', bytes = Number(url.searchParams.get('bytes'));
+        if (!/^[a-f0-9-]{36}$/.test(runId) || !/^(?:regular|large)-\d+$/.test(sequence) || ![65536, 1048576].includes(bytes)) return json(response, { error: 'Invalid synthetic soak identity or byte size' }, 400);
+        const body = { source: 'soak-fixture', runId, sequence, payload: '', tailMarker: 'SOAK-END' };
+        body.payload = 'x'.repeat(bytes - Buffer.byteLength(JSON.stringify(body)));
+        return json(response, body);
+      }
       if (path === '/api/request-body') {
         if (request.method !== 'POST' && request.method !== 'GET') return json(response, { error: 'Only synthetic GET and POST are supported' }, 405);
         const limitBytes = 10 * 1024 * 1024;

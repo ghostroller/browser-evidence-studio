@@ -92,7 +92,8 @@ else app.whenReady().then(async()=>{
         const {startFixture}=await import('../../test/fixtures/site');
         const {runProfileRestartScenarios}=await import('../../test/desktop/lifecycle');
         const fixture=await startFixture({port:saved.fixturePort});
-        try{await runProfileRestartScenarios(studio,fixture.url);}finally{await fixture.close();}
+        const expectSoak=process.env.BES_EXPECT_SOAK?JSON.parse(process.env.BES_EXPECT_SOAK):undefined;
+        try{Object.assign(identity,await runProfileRestartScenarios(studio,fixture.url,expectSoak));}finally{await fixture.close();}
       }else if(phase.startsWith('recovery-')){
         const {runRecoveryCrash,verifyRecovery}=await import('../../test/desktop/recovery-scenarios');
         if(phase==='recovery-crash')await runRecoveryCrash(studio);

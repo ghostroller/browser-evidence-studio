@@ -102,7 +102,7 @@ HTTP 服务只供本机访问，地址和连接文件路径可在客户端“连
 | `npm.cmd test` | 单元测试和合成站点测试 |
 | `npm.cmd run test:integration` | 构建后执行桌面/profile 重启、五种强杀与两次重开，以及重复退出诊断，共 19 个 Electron 进程 |
 | `npm.cmd run test:desktop` | 与 `test:integration` 相同 |
-| `npm.cmd run test:soak` | 同一桌面入口，增加 20 分钟持续录制检查 |
+| `npm.cmd run test:soak` | 同一桌面入口，增加 30 分钟固定合成负载、性能与证据重开检查；`-- --soak=1` 为短预检 |
 | `npm.cmd run test:example` | 独立 Chrome 中执行示例；需设置 `BROWSER_EXECUTABLE_PATH`，缺少时跳过 |
 | `npm.cmd run package` | Forge 生成应用目录 |
 | `npm.cmd run make` | Forge 生成 Windows ZIP |

@@ -9,6 +9,7 @@ import { makeDispatch } from '@/main/services/dispatch';
 import type { Artifact, QueryPage } from '@/evidence/contracts';
 import type { EvidenceReader } from '@/evidence/reader';
 import { clickSyntheticHuman as nativeFixtureClick } from './native-input';
+import { verifySoakEvidenceSnapshot, type SoakEvidenceSnapshot } from './soak-evidence';
 
 async function waitFor<T>(read: () => Promise<T> | T, accept: (value: T) => boolean, label: string, timeoutMs = 15_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
@@ -253,7 +254,7 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
  * restart the synthetic fixture on state.fixturePort before calling this.
  * This function is deliberately not invoked by the first phase.
  */
-export async function runProfileRestartScenarios(studio: Studio, siteUrl: string): Promise<void> {
+export async function runProfileRestartScenarios(studio: Studio, siteUrl: string, expectSoak?: { processId: number; runId: string; minutes: number }) {
   const statePath = path.join(studio.root, 'profile-restart-state.json');
   const saved = JSON.parse(await readFile(statePath, 'utf8')) as RestartState;
   assert.equal(saved.schemaVersion, 1);
@@ -269,6 +270,24 @@ export async function runProfileRestartScenarios(studio: Studio, siteUrl: string
   assert.equal(isolated.localStorageAccount, null);
   assert.equal(isolated.indexedDbAccount, null);
   await studio.seal();
+  let soak;
+  if (expectSoak) {
+    const report = JSON.parse(await readFile(path.join(studio.root, 'soak-result.json'), 'utf8')) as {
+      schemaVersion: number; passed: boolean; processId: number; runId: string; minutes: number;
+      elapsedMs: number; checkpointIds: string[]; evidenceSnapshot: SoakEvidenceSnapshot;
+    };
+    assert.equal(report.schemaVersion, 2); assert.equal(report.passed, true);
+    assert.equal(report.processId, expectSoak.processId); assert.equal(report.processId, saved.originalProcessId);
+    assert.notEqual(process.pid, report.processId);
+    assert.equal(report.runId, expectSoak.runId); assert.equal(report.minutes, expectSoak.minutes);
+    assert.ok(report.elapsedMs >= report.minutes * 60_000, 'Only a completed-duration soak may be accepted after restart');
+    assert.equal(report.evidenceSnapshot.runId, report.runId);
+    assert.deepEqual(report.evidenceSnapshot.checkpointIds, report.checkpointIds);
+    soak = { ...await verifySoakEvidenceSnapshot(studio.reader(report.runId), report.evidenceSnapshot),
+      originalProcessId: report.processId, minutes: report.minutes };
+    console.log(`M6 soak restart PASS: sealed run ${report.runId}; ${soak.files} files and ${soak.checkpoints} checkpoints verified after a fresh process and index rebuild`);
+  }
   await writeFile(statePath, JSON.stringify({ ...saved, restartStatus: 'passed', restartProcessId: process.pid, restartVerifiedAt: new Date().toISOString() }, null, 2));
   console.log('M3 profile restart PASS: persistent cookie/localStorage/IndexedDB survive a different Electron process; isolated profile stays empty');
+  return { ...(soak ? { soak } : {}) };
 }

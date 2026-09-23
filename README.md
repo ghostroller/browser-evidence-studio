@@ -4,7 +4,7 @@
 
 人工操作网页并描述 checkpoint → 保存动作、网络、DOM 和截图证据 → agent 定向读取材料并编写普通 Puppeteer 代码 → 在客户端复跑并按需交还人工 → 按需求、数据契约和代码版本验收。
 
-**当前为可运行的开发版本。** M0–M5 核心流程已实现并有合成通过记录，Windows ZIP 与打包 EXE 的两进程通过结果属于历史版本；M6 的技能接续、性能目标、当前源码重新打包和真实业务验收仍有未完成项。当前进度、代码与产物的验证边界见 [进度与接续](docs/progress.md)，详细命令和证据见 [验证记录](docs/verification.md)。
+**当前为可运行的开发版本。** M0–M5 核心流程已实现并有合成通过记录；2026-09-23 已重新编译并生成 Windows 应用和 ZIP，类型检查与 107/107 测试通过。新增固定负载长测已运行 30 分钟，受核对证据及独立重开核验通过，但严格负载节奏未达标，页面私有内存持续增长，实际结果见 [验证记录](docs/verification.md)。M6 的长测整体验收、技能完整接续和真实业务验收仍未完成，接续事项见 [进度与接续](docs/progress.md)。
 
 ## 开发启动
 
@@ -47,7 +47,7 @@ npm.cmd start
 | `npm.cmd test` | 单元测试与合成站点测试 |
 | `npm.cmd run test:integration` | 构建后执行真实 Electron 场景、profile 重启、五种强杀恢复与再次重开，以及退出诊断 |
 | `npm.cmd run test:desktop` | `test:integration` 的别名 |
-| `npm.cmd run test:soak` | 在桌面场景中加入 20 分钟持续录制检查 |
+| `npm.cmd run test:soak` | 在桌面场景中加入 30 分钟固定合成负载、性能与证据重开检查；追加 `-- --soak=1` 可做短预检 |
 | `npm.cmd run test:example` | 独立 Chrome 中执行普通 Puppeteer 示例；需设置 `BROWSER_EXECUTABLE_PATH`，未设置时跳过 |
 | `npm.cmd run package` | 生成未签名的应用目录 |
 | `npm.cmd run make` | 生成 Windows ZIP 分发包 |

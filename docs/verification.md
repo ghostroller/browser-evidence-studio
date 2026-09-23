@@ -2,6 +2,55 @@
 
 更新日期：2026-09-23，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## 本地重新打包与长测推进（2026-09-23）
+
+用户说明本地尚未重新编译打包，并要求先打包再推进长测。本批使用 Node **24.21.0** / npm **11.19.0**，没有升级依赖；锁文件 SHA-256 为 `aaeca20cd2ca57f8d6bbac8c9e67a03c35bbfacc8d49b5acfe6d39de445b2c9c`。日志汇总目录为 `output/package-soak-20260923`。
+
+- 初始源码 `npm.cmd run typecheck` 与 `npm.cmd test` 通过，**102/102，0 失败、0 跳过**；日志 `typecheck-initial.log`、`unit-initial.log`。
+- 首次 `npm.cmd run make` 完成 Vite 编译，但写入 `%LOCALAPPDATA%/electron/Cache` 被沙箱以 EPERM 拒绝；`make-initial.log` 保留失败。经批准在沙箱外重跑同一命令成功，生成 Windows 应用目录和 ZIP，日志 `make-elevated.log`。没有更改系统防火墙或依赖版本。
+- 对新包执行 `node test/desktop/launch.js '--executable=out/Browser Evidence Studio-win32-x64/BrowserEvidenceStudio.exe'`，**19 进程矩阵通过**。报告 `output/desktop-1790127375834/desktop-summary.json`，主阶段 PID **24536**、profile 重启 PID **28176**，五种强杀边界的两次重开和两个退出场景均通过。
+- 初始包 `app.asar` SHA-256 为 `7d13f64dd6907581e9e2d8f80c6bfd9b1d51ed518ebe1508ab04395731113de1`；ZIP 为 **173,852,328 字节**，SHA-256 `f1a0c2276bd340916685aa4e9a784d1a361b343aed230ce35fe0ebe2c5432ec0`，元数据保存于 `package-initial.json`。这是长测增强前的产物，后续测试代码变化需要重新构建。
+
+本批长测负载与阈值已在 implementation-plan.md 预先登记。增强内容包括唯一动作/请求序列、浏览器确认正文与落盘 hash 比较、HTTP checkpoint 持久完成计时、固定预算查询、进程内存采样、独立原件 hash 与索引重建，以及第二进程对同一长 run 的显式核验。采集与产品协议没有变更；main 的调整仅位于桌面测试分支。`npm.cmd run typecheck`、`npm.cmd test` **107/107** 通过，包含新增分页/篡改/缺失原件测试，日志 `typecheck-final.log`、`unit-enhanced.log`。
+
+`npm.cmd run test:soak -- --soak=1` 完成 **60 次点击、61 个响应、1 个 checkpoint**，无跳过调度槽；checkpoint 完成 **110.33 ms**、摘要 P95 **34.34 ms**、HTTP 提交 **7.47 ms**。这里 checkpoint 与提交各只有一个样本，仅用于机制预检。报告 `output/desktop-1790127902654/desktop-summary.json` 的 19 进程矩阵通过；主进程 **26656**，新进程 **29048** 复核 **69 个文件 / 5,910,471 字节**和索引，重建 **532.73 ms**。预检构建之后补强了 response/body 事件 URL 与同 requestKey 请求 URL 的一致性断言，最终包包含该断言，类型检查通过。
+
+最终 `npm.cmd run make` 成功，日志 `make-final.log`。`app.asar` 为 **107,377,915 字节**，SHA-256 `24730d51417ad8dab335b2a30f397b608d20a75146f353abc26e3bbba6d1093d`；ZIP 为 **173,873,306 字节**，SHA-256 `fcb89b0c10b1108f447311cf87fd592db3874e73e138a20cd3473667dd36302d`。`package-final.json` 和 `source-final.json` 记录包与源码摘要；已从 ASAR 核对响应身份断言、耐久计时及内存检查确实存在。全部诊断结束后复核 **98 个源码/配置文件摘要，0 差异**，ASAR/ZIP 摘要也仍一致；后续只更新了文档。
+
+对最终包执行 `node test/desktop/launch.js '--executable=out/Browser Evidence Studio-win32-x64/BrowserEvidenceStudio.exe' --soak=30` 的前两次尝试均在 UI 拖动断言失败，长测尚未开始：`output/desktop-1790128231817`（PID **3792**）、`output/desktop-1790128259261`（PID **19932**）。两次 pointerdown 后都插入了 `buttons=0` 的额外 pointermove，分栏未移动；与此前记录的现象相同，来源未确认。本轮没有修改或放宽拖动断言，两次保留为失败。
+
+随后以同一最终包、同一命令，临时设置现有 `BES_SKIP_UI=1` 执行长测专项，跳过主阶段 UI 专项。报告目录为 `output/desktop-1790128308349`，日志 `soak-30min-focused.log`；主进程 PID **28776**，runId `f8782c11-11d2-4ba4-8e0a-42472ec9f8a2`。本轮达到 30 分钟且没有提前退出，但因固定负载节奏不达标，**整体失败、退出码 1**。启动器按现有断言停止，因此自动 profile/长 run 重开、强杀矩阵和退出专项均未运行；不能把前述短矩阵的通过外推到本轮。
+
+| 核验项 | 本轮实测与判定 |
+| --- | --- |
+| 持续负载 | 最后负载内存样本为 **1,801,115 ms**；完成 **1,799 / 1,800** 轮，漏 **1** 个调度槽，**363** 轮处理超过 1 秒，单轮最大 **1,564.57 ms**。严格节奏判定失败。最终 `elapsedMs=1,834,113` 包含尾部核验，不能作为纯负载时长。 |
+| 点击与网络 | **1,799** 次已确认点击、**1,830** 个唯一请求/响应正文全部匹配身份、次数、字节数和 SHA-256；正文合计 **150,405,120 字节**。其中有 31 次 1 MiB 请求：首轮保存一次，末轮跨过 30 分钟边界又触发一次。gap **0**；仅对这些受核对集合成立，不证明每个 DOM tick 都被 rrweb 收录。 |
+| checkpoint 完成 | **31** 个，HTTP 提交到 succeeded job 的 P95 **260.36 ms**，小于 2 s；包含耐久完成与最多 50 ms 查询轮询等待。100 ms 界面可见反馈没有测量。 |
+| HTTP 与摘要 | job 提交 **31** 个样本，P95 **9.73 ms**；运行期间摘要 **182** 个样本，P95 **26.72 ms**。分别低于本次 300/500 ms 阈值；摘要是不同历史规模的混合样本，不证明“已积累完整 30 分钟历史”的重复查询 P95。 |
+| 有界字段回读 | 初期/末期读取同一正文 `tailMarker`，预算均为 **1,024 字节**，实际均 **336 字节**，耗时 **12.66 / 17.80 ms**，值一致、无截断。 |
+| 原件与索引 | **1,919** 个封存文件，**178,146,522 字节**；事件 **10,991**、artifact **3,724**、checkpoint **31**、raw **28,968**，lastSequence **43,714**。本进程独立 hash 与索引重建通过，尾部核验共 **32,947.48 ms**。 |
+| 内存 | **182** 个样本；主进程 RSS 峰值 **246.23 MiB**，页面私有内存 **52.65 → 488.61 MiB**，未触及 1 GiB / 512 MiB 保护上限。去掉前 5 分钟后，主进程 RSS 斜率 **2.30 MiB/min**，页面私有内存 **13.30 MiB/min**；尚未证明增长受控或无泄漏。 |
+
+内存窗口（中位数，MiB）为：0–5 / 5–10 / 10–20 / 20–30 分钟，页面私有内存 **92.56 / 180.54 / 301.02 / 418.17**；主进程 RSS **170.18 / 184.15 / 199.25 / 227.37**。页面 JS heap 在约 3.7–7.2 MiB 间波动，没有同量级增长；主进程含夹具服务和测试逻辑，不能把其数值直接当纯产品开销。最后 30–60 分钟统计桶只有边界附近 2 个样本，不代表又运行了 30 分钟。
+
+只读分析将漏槽定位到第 1,080 轮（约 18 分钟）：command 到 rrweb 原始 click timestamp 等待约 **944 ms**，click 后约 **30 ms** 已保存 action；该轮的大正文/checkpoint 使下一轮跨过计划槽位。各 5 分钟窗口前 1,280 轮 command→action P95 约 **949–968 ms**。Puppeteer 点击前的可见性检查/页面调度是待验证候选，当前缺少各阶段计时及焦点、visibility、遮挡记录，不能确认因果或归因用户操作。采集 backlog、页面私有内存增长的根因也没有确认；多个 CDP Network 会话的缓冲值得单独对照验证，尚未修改其行为。
+
+原 `soak-result.json` 与 `desktop-summary.json` 保留失败。随后独立诊断启动同一 EXE，设置 `BES_TEST=1`、`BES_TEST_PHASE=profile-restart`、`BES_DATA` 为上述目录，且不传 `BES_EXPECT_SOAK`：新 Electron PID **6904** 的 profile 持久化/隔离检查通过并正常退出。再由新 Node PID **4140**（`node --import tsx --input-type=module`）执行 `verifySoakEvidenceSnapshot`，将长 run 与第一进程保存的 snapshot 比较；**1,919 个文件 / 178,146,522 字节 / 31 个 checkpoint** 全部通过，核验 **15,556.35 ms**，其中重建 **11,885.55 ms**。结果保存在同目录 `soak-diagnostic-reopen.json`，日志 `output/package-soak-20260923/soak-diagnostic-reopen.log`。这是“Electron 重启后由新 Node 进程独立复核长档案”的诊断，不是原自动第二阶段通过；原自动阶段仍为 `not-run`。
+
+本次明确遗留：严格每秒负载未达标；页面私有内存持续上升；最终包 UI 拖动两次失败；完整 30 分钟存量摘要 P95、100 ms 可见反馈和所有 rrweb 变更完整性尚未证明。下一轮先补点击分段计时、独立的负载结束时间，以及失败后仍可开展证据重开诊断的报告结构，再按实证定位瓶颈，不能降低原有阈值。启动器精简诊断仍读取旧 `saved.cycles` 字段，当前轮数以 schema 2 的 `load.completedCycles` 为准；本轮产物冻结后没有改写代码。
+
+## 进度核查与本地材料状态（2026-09-23）
+
+按进度总结请求，在 `main` / `7d011c8` 上读取设计、架构、实施计划、进度记录及现有源码；开始核查时工作树干净。`node --version` / `npm --version` 实际为 **24.21.0 / 11.19.0**。本轮没有运行类型检查、测试、构建或桌面应用，没有重新验收历史通过结果。
+
+- `Get-ChildItem output` 当前只列出 `desktop-1790079502939`、`desktop-1790079600870`。已读取这两份 `desktop-summary.json`，均为 `passed: true`，仅对应下方主目录迁移后的历史两进程回归。
+- 下节引用的 `output/desktop-1790105788982/desktop-summary.json` 及 `output/alias-validation-1790104668534` 不在当前目录，前端批报告目录也不在。最新 **102/102**、**19 进程**和打包主阶段通过保留为当时的文档记录，本轮无法从这些原始报告独立复核；未推断文件缺失原因，也不据此推翻历史记录。
+- `Get-FileHash -Algorithm SHA256` 核对现存 `out/Browser Evidence Studio-win32-x64/resources/app.asar` 为 `48c874871706afb770bec0beb9b0dd0320def477bcda3d14bcc423847e5a7daf`，不同于下节最新包的 `7a6b1381dd3cf6c1f0ccd0175961f9e041b771b1ccc529995de5d086ee637639`。
+- 现存 `out/make/zip/win32/x64/Browser Evidence Studio-win32-x64-0.1.0.zip` 为 **167,341,123 字节**，SHA-256 `ccde7da6f66467e4dd44820c69178be079f24a685f43830246b24b94542fb3fa`，与下方 `f8e6eb8` 历史 ZIP 完全一致。现存包不能作为当前源码交付物，发行前需重新建立源码、产物与报告的对应。
+- 静态核对长历史边界：`Studio.state()` 返回全部 run，前 100 条限制实际位于 dispatch 的 `runs` 列表接口；已修正 progress 的旧表述。checkpoint/gap 的 UI 续页、回放定位与示范基线持久关联仍未实现。
+
+本轮仅同步说明文档，没有修改功能或生成新的通过结论。
+
 ## 统一源码别名（2026-09-23）
 
 收到前端完成交接后，将根 paths 统一为 `@/* -> ./src/*`，三份 Vite 配置启用原生 `resolve.tsconfigPaths: true`，shadcn 五个 aliases 使用 `@/renderer/...`。源码/测试共 55 文件、125 处导入字面量改变，另外调整 5 份配置；独立复核确认每处仍指向原文件，其余源码逻辑、运行时路径及前端改动保持原样。package.json 和锁文件字节未变，后者 SHA-256 仍为 `aaeca20cd2ca57f8d6bbac8c9e67a03c35bbfacc8d49b5acfe6d39de445b2c9c`。未迁移 Vitest。
@@ -222,7 +271,7 @@ Electron ZIP 158,247,567 字节，SHA-256 为 `790a355b684d5c7cc8dc3cdd8c4cca7c4
 | R09 验收 | normal/duplicate 输出 7 条订单及关联详情并通过；wrong-image、missing、empty-middle 确实判失败。新增启动登记与终态证据重建；报告 hash/身份/输入/版本及 checkpoint 材料校验，未提交完整终态不恢复 pass。保留来源、实体 ID、覆盖和字段验收。 |
 | R10 项目技能 | 入口技能与按需引用的 HTTP/探索/验收说明已建立，skill-creator 的 quick_validate 已通过；未全局安装。独立接续检查只完成 capabilities/health/state 读取；进一步读取被自动审批拒绝，因此来源级接续未通过，未执行修改/复跑。 |
 | R11 长流程 | 两次 20 分钟尝试均未完成，最后一次仅有 18.19 分钟的阶段快照；无完整长测、最终封存/重建或该次重启通过结论。reader 的字节预算单测通过，但不能替代长负载验收。 |
-| R12 分发与真实验收 | 历史 `f8e6eb8` 在 D: 生成 Windows ZIP、打包 EXE 两进程桌面与 profile 重启通过，包含当时 reader 修复；当前源码未重新打包，未签名。真实拼多多演示、扫码及业务需求验收未执行。 |
+| R12 分发与真实验收 | 历史 `f8e6eb8` 的 Windows ZIP、打包 EXE 两进程桌面与 profile 重启通过。最新别名批文档记录了 package 与新包主阶段通过，但本次核查的本地包仍较旧，最新报告不在当前目录；未生成新分发 ZIP、未签名。真实拼多多演示、扫码及业务需求验收未执行。 |
 
 ## 本轮发现并修复的问题
 

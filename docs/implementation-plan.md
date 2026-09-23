@@ -180,7 +180,7 @@
 
 package.json 已提供常用入口：start、build、typecheck、test、test:integration、test:desktop、test:soak、test:example、package、make。命令实际运行结果见 verification.md。
 
-初始性能目标（在指定 Windows 测试机、固定夹具和 30 分钟 run 上测量，尚未达成）：
+初始性能目标（在指定 Windows 测试机、固定夹具和 30 分钟 run 上测量；2026-09-23 已有部分实测，整体尚未达成，范围见 verification.md）：
 - 保存 checkpoint 100 ms 内显示反馈；持久化图/DOM 的 P95 目标不超过 2 s。
 - 超过 2 s 显示具体进度；10 s 到达部分结果/可取消状态，不无限转圈。
 - 30 分钟历史摘要/索引查询 P95 目标不超过 500 ms，正文定向读取不扫描全部文件。
@@ -190,6 +190,10 @@ package.json 已提供常用入口：start、build、typecheck、test、test:int
 - 长 run 与短 run 的同一字段查询保持相同输出预算，不因录像变长而整体输出。
 
 先记录实际基线和瓶颈，再优化；不得靠减少所需证据或静默截断达标。离线字段回归应独立于真人扫码，减少人机等待和成本。
+
+2026-09-23 长测验收固定以下负载与判定，结果另记 verification.md：默认运行 30 分钟，每秒一轮唯一序列点击及 64 KiB JSON，每分钟追加 1 MiB JSON 和 HTTP checkpoint，页面持续 100 ms DOM 更新。记录实际轮数、调度延迟与超期，不能将慢处理后减少的轮数当作原负载达成。checkpoint 保存 P95 ≤2 s、摘要查询 P95 ≤500 ms、HTTP job 提交 P95 ≤300 ms；查询沿用固定字节预算。封存前后及新进程重开时独立核对动作/请求集合、正文和原件 hash、索引计数与 checkpoint 身份。此负载不代表任意站点的满负载，100 ms 界面可见反馈需单独测量。
+
+内存同时记录主进程 RSS/heap 和业务页面进程私有内存/JS heap，主进程数值包含合成夹具与测试逻辑。运行保护上限预先设为主进程 RSS 1 GiB、页面私有内存 512 MiB；它们是本次测试边界，不是产品 SLA。报告预热后窗口统计和变化斜率，不用有限时长或一次首尾差值证明永不增长。`npm run test:soak` 默认 30 分钟，`npm run test:soak -- --soak=1` 只做机制预检，`--soak=20` 可复跑原时长。
 
 ## 11. 后续任务的交接文本
 
