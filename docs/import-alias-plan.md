@@ -1,6 +1,6 @@
 # 源码导入别名方案与验证
 
-日期：2026-09-23。先完成只读研究；收到前端重构完成交接后，按用户要求实施隔离 CLI 实验和源码迁移。固定配置与实验结果如下，最终桌面、开发和打包运行记录集中在 [verification.md](verification.md)。Vitest 另有[选型评估](test-runner-assessment.md)，没有随路径迁移实施。
+日期：2026-09-23。先完成只读研究；收到前端重构完成交接后，按用户要求实施隔离 CLI 实验和源码迁移。固定配置与实验结果如下，最终桌面、开发和打包运行记录集中在 [verification.md](verification.md)。Vitest 没有随这次路径迁移实施；后续按[选型评估](test-runner-assessment.md)单独迁移，结果另记 [verification.md](verification.md)。
 
 ## 1. 已采用的定调
 

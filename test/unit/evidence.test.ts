@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
+import { test, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { EvidenceStore } from '@/evidence/store';
@@ -188,7 +188,7 @@ test('bounded event pages reject wrong directions and cursors and support missin
   } finally { await f.cleanup(); }
 });
 
-test('an index append after the read snapshot cannot overflow the page or lose its continuation', async (context) => {
+test('an index append after the read snapshot cannot overflow the page or lose its continuation', async () => {
   const f = await fixture();
   const originalOpen = fs.open.bind(fs);
   try {
@@ -198,7 +198,7 @@ test('an index append after the read snapshot cannot overflow the page or lose i
     // The original payload fits, but an unreserved cursor does not fit this small margin.
     const maxBytes = Buffer.byteLength(JSON.stringify({ ...full, maxBytes: 16000, responseBytes: 0, elapsedMs: 0 })) + 64;
     const ids = [first.id]; let appended = false;
-    const mock = context.mock.method(fs, 'open', async (file: Parameters<typeof fs.open>[0], flags: Parameters<typeof fs.open>[1], mode?: Parameters<typeof fs.open>[2]) => {
+    const mock = vi.spyOn(fs, 'open').mockImplementation(async (file: Parameters<typeof fs.open>[0], flags: Parameters<typeof fs.open>[1], mode?: Parameters<typeof fs.open>[2]) => {
       if (!appended && flags === 'r' && String(file).replaceAll('\\', '/').endsWith('/events.jsonl')) {
         appended = true;
         // This is a real writer append after stat, before the reader opens the index.
@@ -208,7 +208,7 @@ test('an index append after the read snapshot cannot overflow the page or lose i
       return originalOpen(file, flags, mode);
     });
     let page;
-    try { page = await f.reader.events({ maxBytes }); } finally { mock.mock.restore(); }
+    try { page = await f.reader.events({ maxBytes }); } finally { mock.mockRestore(); }
     assert.equal(appended, true);
     assert.ok(page.nextCursor, 'Newly appended evidence must remain reachable');
     const seen: string[] = []; let reads = 0;
@@ -221,7 +221,7 @@ test('an index append after the read snapshot cannot overflow the page or lose i
       page = await f.reader.events({ maxBytes, cursor: page.nextCursor });
     }
     assert.deepEqual(seen, ids);
-  } finally { context.mock.restoreAll(); await f.cleanup(); }
+  } finally { vi.restoreAllMocks(); await f.cleanup(); }
 });
 
 test('long event metadata and projected fields paginate within full envelope budgets', async () => {

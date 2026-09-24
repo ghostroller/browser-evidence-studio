@@ -1,4 +1,4 @@
-import test from 'node:test';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -143,7 +143,8 @@ test('cancelling during checkpoint capture aborts the hook and drains pending re
     parentPort.postMessage({ type:'reporter', id:1, method:'checkpoint', args:['orders', { title:'Pending synthetic checkpoint' }] });
     setInterval(() => {}, 100);
   `, async (directory, workerPath, transport) => {
-    const resume = t.mock.method(transport, 'resume');
+    const resume = vi.spyOn(transport, 'resume');
+    t.onTestFinished(() => resume.mockRestore());
     let entered!: () => void;
     const hookEntered = new Promise<void>(resolve => { entered = resolve; });
     let releaseForCleanup: (() => void) | undefined;
@@ -190,7 +191,7 @@ test('cancelling during checkpoint capture aborts the hook and drains pending re
       assert.equal(result.validation.executionVerdict, 'fail');
       assert.equal(result.validation.overall, 'fail');
       assert.deepEqual(result.checkpoints, [], 'An aborted checkpoint cannot count as covered');
-      assert.equal(resume.mock.callCount(), 0, 'Cancellation must never briefly reopen browser operations');
+      assert.equal(resume.mock.calls.length, 0, 'Cancellation must never briefly reopen browser operations');
       assert.equal(transport.snapshot().state, 'closed');
     } finally {
       if (deadline) clearTimeout(deadline);
@@ -293,10 +294,11 @@ test('remote transport failure retains close identity and fails without waiting 
 
 test('late worker errors during termination cannot replace cancellation or the first transport failure', async t => {
   const terminate=Worker.prototype.terminate;
-  t.mock.method(Worker.prototype,'terminate',function(this:Worker){
+  const terminateSpy = vi.spyOn(Worker.prototype,'terminate').mockImplementation(function(this:Worker){
     this.emit('error',new Error('synthetic late worker cleanup error'));
     return terminate.call(this);
   });
+  t.onTestFinished(() => terminateSpy.mockRestore());
   await withWorker('setInterval(() => {}, 100);',async(directory,workerPath,transport)=>{
     const handle=await startWorkflow({directory,workerPath,transport,targetId:'explicit-target',input:{},hooks});
     await handle.cancel('original cancellation');

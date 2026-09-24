@@ -11,7 +11,7 @@
 - 录制：CDP 网络/导航/错误 + rrweb 稳定版 DOM 过程 + 显式 checkpoint 截图/DOM。rrweb 不是执行器或网络正文记录器。
 - 对外协议：仅本机 HTTP/JSON，长任务用 jobId；增量轮询带 cursor。首版不另建 CLI/MCP/WS 公共接口。
 - 本地存储：原始分块文件 + JSONL 规范事件 + 可重建的轻量增量索引。P0 不引入数据库服务或 ORM；性能实测有必要时再采用 SQLite。
-- 自动化测试：合成站点 + 核心契约测试；Playwright stable 可测 UI，但 Electron/CDP 支持边界先验证，不成为产品录制依赖。
+- 自动化测试：合成站点 + 核心契约测试。普通单元与模块测试使用独立 `vitest.config.ts` 的 Node 环境，renderer 组件测试按文件启用 jsdom；真实 Electron 启动、preload、WebContentsView、强杀恢复、打包和长测仍由桌面入口验收。Playwright stable 可测 UI，但 Electron/CDP 支持边界先验证，不成为产品录制依赖。
 
 现代 Electron/Puppeteer 的 Chromium 不一定完全同版。M0 验证当前稳定组合，仅调整当代稳定依赖；不实现旧版本兼容矩阵。
 
@@ -29,7 +29,7 @@
 
 preload 是明确的运行时例外：Electron 的 sandboxed preload 没有 ESM 上下文，包级 `"type": "module"` 也不会改变其加载方式。因此保留 `sandbox: true`、`contextIsolation: true`，构建时将 ESM 源码及本地依赖打包为单文件 CJS，仅使用 Electron 提供的有限 `require` 能力；不能为了统一产物格式削弱隔离。[Electron 官方 ESM 边界](https://www.electronjs.org/docs/latest/tutorial/esm)
 
-TypeScript 保持 `module: "preserve"` / `moduleResolution: "bundler"`，与 Vite 构建和 tsx 测试加载方式对应，不承诺全部 `.ts` 可由 Node 原生直接执行。Node 直接执行的 JS 入口使用完整相对路径扩展名；Node 内置模块带 `node:` 前缀。main / worker 的相邻资源基于 `import.meta.url` 或 `import.meta.dirname` 定位，不使用 `__dirname`、`require.resolve` 或工作目录猜测运行时位置。ESM 主进程中必须在 Electron `ready` 前完成的初始化应显式等待，不能依赖未等待的动态导入时序。
+TypeScript 保持 `module: "preserve"` / `moduleResolution: "bundler"`，与 Vite/Vitest 的 TS 加载及仍由 tsx 执行的独立 Node 子进程对应，不承诺全部 `.ts` 可由 Node 原生直接执行。Node 直接执行的 JS 入口使用完整相对路径扩展名；Node 内置模块带 `node:` 前缀。main / worker 的相邻资源基于 `import.meta.url` 或 `import.meta.dirname` 定位，不使用 `__dirname`、`require.resolve` 或工作目录猜测运行时位置。ESM 主进程中必须在 Electron `ready` 前完成的初始化应显式等待，不能依赖未等待的动态导入时序。
 
 这次调整固定模块规范，不升级 Node/npm 或依赖版本。配置加载、开发启动、worker、preload 桥接及打包的实际通过范围仍以 [verification.md](verification.md) 为准，历史 CommonJS 构建的通过记录不能替代 ESM 版本验收。
 
@@ -40,6 +40,8 @@ TypeScript 保持 `module: "preserve"` / `moduleResolution: "bundler"`，与 Vit
 main、preload、renderer 三份 Vite 配置均启用 Vite 8 原生 `resolve.tsconfigPaths: true`，不再另写一份 renderer alias。shadcn 的 `components.json` 五个 aliases 全部位于 `@/renderer/...`，包括 components、ui、lib、hooks 和 utils；新增组件时也要同时核对落盘位置与实际生成的导入。具体配置、CLI 实验与开源参考见 [import-alias-plan.md](import-alias-plan.md)。
 
 别名只负责源码解析，不提供进程或权限隔离。renderer 不得因此直接引入 main、capture、evidence 或 runner 的宿主能力；共享契约使用 type-only 导入，运行时 shared 模块须适用于浏览器。preload 的 sandbox 边界不变。worker/preload 产物、测试子进程入口、外部业务脚本仍使用真实文件路径或 URL，不能把 `@/` 放进 `new URL()` 或原生 Node 的运行时入口。
+
+Vitest 的源码解析只作用于其测试进程。显式启动的原生 Node 子进程、桌面入口和独立示例仍按各自运行方式加载；`vitest.config.ts` 纳入独立类型检查，测试通过不能代替构建或真实 Electron 回归。迁移的实际验证范围见 [verification.md](verification.md)。
 
 ## 2. 模块与进程
 

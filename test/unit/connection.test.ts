@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
-import test, { type TestContext } from 'node:test';
+import { test, type TestContext } from 'vitest';
 import WebSocket, { WebSocketServer } from 'ws';
 import { SocketTransport } from '@/main/browser/connection';
 import { transportCloseInfo, type TransportCloseInfo } from '@/runner/transport-diagnostics';
@@ -11,7 +11,7 @@ import { transportCloseInfo, type TransportCloseInfo } from '@/runner/transport-
 async function pair(t: TestContext) {
   const server = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await once(server, 'listening');
-  t.after(async () => {
+  t.onTestFinished(async () => {
     for (const peer of server.clients) peer.terminate();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   });
@@ -74,7 +74,7 @@ test('close before consumer registration is retained and delivered once', { time
 test('failed handshake rejects with bounded structured error instead of swallowing the socket error', { timeout: 5000 }, async t => {
   const server = createServer((_request, response) => { response.writeHead(403); response.end(); });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  t.after(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
+  t.onTestFinished(() => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())));
   await assert.rejects(SocketTransport.connect(`ws://127.0.0.1:${(server.address() as AddressInfo).port}/sensitive?token=never-log`), (error: any) => {
     assert.equal(error.transportCloseInfo.source, 'error'); assert.match(error.message, /403/);
     assert(!JSON.stringify(error).includes('never-log')); return true;
@@ -84,9 +84,9 @@ test('failed handshake rejects with bounded structured error instead of swallowi
 
 test('aborted handshake cleans up while consuming termination errors', { timeout: 5000 }, async t => {
   const server = createServer();
-  const upgraded = new Promise<void>(resolve => server.once('upgrade', (_request, socket) => { t.after(() => socket.destroy()); resolve(); }));
+  const upgraded = new Promise<void>(resolve => server.once('upgrade', (_request, socket) => { t.onTestFinished(() => { socket.destroy(); }); resolve(); }));
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
-  t.after(() => { server.closeAllConnections(); server.close(); });
+  t.onTestFinished(() => { server.closeAllConnections(); server.close(); });
   const controller = new AbortController();
   const connecting = SocketTransport.connect(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`, controller.signal);
   const rejected = assert.rejects(connecting, /synthetic cancellation/);

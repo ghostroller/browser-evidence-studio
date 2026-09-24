@@ -3,7 +3,7 @@ import { promises as fs } from 'node:fs';
 import { request } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
+import { test } from 'vitest';
 import { startApi, ApiOptions } from '@/main/api/server';
 import { makeDispatch } from '@/main/services/dispatch';
 import type { Studio } from '@/main/services/studio';

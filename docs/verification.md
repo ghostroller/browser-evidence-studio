@@ -2,6 +2,34 @@
 
 更新日期：2026-09-24，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## 前端行为测试与存档切换竞态（2026-09-24）
+
+在 Vitest 迁移基础上新增 3 个 jsdom/React Testing Library 文件、8 项行为测试：存档 A/B 乱序返回、关闭后旧材料迟到；验收对照拒绝跨项目或错误 run 的历史，以及 A/B 乱序示范；材料视图区分明确的 JSON `null` 与字段缺失、标示输出预算截断，并核对定向 JSON 路径与游标请求。测试只使用合成的 IPC 响应，没有读取真实录制。
+
+存档乱序测试先在原实现上复现：打开 A 后立刻打开 B，B 先返回、A 后返回时，B 弹窗会被 A 的历史覆盖。现按所选 run 和请求代际接收历史、材料及事件响应；关闭存档使旧请求失效，工作区背景刷新也不会覆盖已选存档。旧材料响应迟到不能写入新存档。验收对照与材料视图的新增测试在原实现上已通过，没有为它们另改产品代码。
+
+实际环境为 Windows x64、Node **24.21.0** / npm **11.19.0**。`npm.cmd run typecheck`、`npm.cmd run build` 均通过；`npm.cmd test` 最终 **25 个文件 / 142 项通过，0 失败**，包括迁移后的原有测试和本次 8 项。首次全量运行是 141/142：新增存档用例在异步材料更新完成前检查 DOM，随后将断言改为等待该更新，专项 2/2 与全量 142/142 均通过。
+
+同一构建在正常桌面进程环境执行 `node test/desktop/launch.js`，**19 进程矩阵整体通过**，报告 `output/desktop-1790252717308/desktop-summary.json`。实际覆盖 React/preload/IPC、存档材料与回放、profile 跨进程、主流程、五处强杀与恢复及退出生命周期。自窗口合成截图仍超时；UI 专项分别记录 renderer 与原生视图，不能据此声称取得了完整合成窗口截图。本批未运行 30 分钟长测、发行包或真实账号流程。
+
+## Vitest 测试框架迁移（2026-09-24）
+
+按[选型评估](test-runner-assessment.md)将现有 20 个 unit 文件与 1 个合成站点测试文件从 `node:test` 注册迁至 Vitest；原断言保留 `node:assert/strict`。`TestContext` 的完成清理、fs/Worker mock 恢复、超时与 Windows 条件跳过已逐项转换。原 `soak-evidence` 的两个子场景现在分别由 `test.each` 收集，真实文件、HTTP、worker、强杀与显式 `--import tsx` 子进程仍实际执行。新增一个 jsdom/React Testing Library 组件测试，验证布局偏好写入和重置按持久化顺序更新界面。独立 `vitest.config.ts` 使用根 TS paths，仅收集上述普通测试、默认 Node 环境，组件文件单独声明 jsdom；文件串行并保持隔离，以免已有 OS 资源测试在并行时相互影响。`npm test` 为一次性运行，`test:watch` 为持续反馈入口；桌面矩阵与独立示例保持原生入口。
+
+实际组合：Windows x64，Node **24.21.0**、npm **11.19.0**、Vite **8.3.0**、Vitest **5.0.1**、jsdom **29.1.1**、React Testing Library **16.3.3**、tsx **4.23.15**；安装与传递依赖已写入 `package-lock.json`。迁移前同一工作区的 `npm.cmd test` 为 **134/134** 通过，Node 测试器报告 15.33 秒。旧计数包括一个父测试及其两个子项；迁移后的 134 项包括新增组件测试，两个故障子场景仍各自执行，不能只看总数推断逐项对应。
+
+| 命令或证据 | 实际结果 |
+| --- | --- |
+| `npm.cmd run typecheck`、`npm.cmd run build` | 均通过；`tsconfig.json` 已纳入 Vitest 配置与 TSX 测试。构建保留原有 module directive、chunk 和 sourcemap 提示 |
+| `npm.cmd test` | **22 个文件 / 134 项通过，0 失败、0 跳过**；Vitest 报告 34.69 秒。包括真实子进程、文件和 worker 测试，不能从耗时比较单独推断 watch 反馈更快 |
+| `npm.cmd run test:watch -- --run test/renderer/theme-provider.test.tsx` | 组件专项 **1/1** 通过，单次 1.31 秒；这是以 `--run` 验证入口，未测文件修改后的自动重跑延迟 |
+| `node test/desktop/launch.js` | 在正常桌面进程环境中 **19 进程矩阵整体通过**，报告 `output/desktop-1790251429178/desktop-summary.json`；含真实 Electron、preload、原生视图、profile 跨进程及五处强杀/恢复 |
+| 设置 `BROWSER_EXECUTABLE_PATH` 为本机 Chrome 路径后执行 `npm.cmd run test:example` | 正常桌面进程环境下独立脚本合成回归 **1/1** 通过；继续使用原生 `node --import tsx --test`，不依赖 Vitest 加载业务脚本 |
+
+先在受限执行沙箱中运行 `npm.cmd run test:integration`，构建通过，但 Electron GPU/renderer 子进程以 `-1073741515` 退出并触发文件页 `ERR_FAILED`；该次报告 `output/desktop-1790251405737/desktop-summary.json` 为失败，不计桌面通过。随后使用同一构建在正常桌面进程环境运行上述 `node test/desktop/launch.js`，完整矩阵通过。独立示例在未设置浏览器路径时按设计跳过；沙箱内设置本机 Chrome 后等待页面 30 秒超时，正常桌面进程环境重跑 1/1 通过。上述差异只说明本次受限环境不能代替桌面进程验收，未修改浏览器安全配置或放宽测试期限。
+
+本轮未运行 30 分钟长测、发行包或真实账号流程；这些历史结果与未验收项不因更换普通测试器而改变。没有对 Vitest 与原测试器做同负载性能基准，也没有宣称 watch 性能提升。
+
 ## 一次性授权 Agent 启动验收（2026-09-24）
 
 已实现可信 UI 的“允许 Agent 启动一次”与“撤销启动授权”。grant 在内存中保留 120 秒，绑定当前 run/project/profile/workflow/lease、目录、代码与锁文件指纹、规范化输入及页面/target/导航代际。HTTP 仅认证读取 grant，并在原 `/v1/runs/:runId/validations` 中通过 `startGrantId` 一次消费；不能从 HTTP 签发授权、传任意脚本目录，或借 grant 绕过普通 actions/control 的 human guard。具体请求及当前实例发现步骤见 [API 契约](api.md#人工控制下授权-agent-启动验收)。

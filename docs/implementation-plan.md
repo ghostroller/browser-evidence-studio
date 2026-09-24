@@ -178,7 +178,7 @@
 
 ## 10. 统一测试和性能目标
 
-package.json 已提供常用入口：start、build、typecheck、test、test:integration、test:desktop、test:soak、test:example、package、make。命令实际运行结果见 verification.md。
+package.json 已提供常用入口：start、build、typecheck、test、test:watch、test:integration、test:desktop、test:soak、test:example、package、make。`test` 使用 Vitest 一次性运行普通测试，`test:watch` 用于本地持续反馈；桌面和独立示例入口仍执行真实进程。命令实际运行结果见 verification.md。
 
 初始性能目标（在指定 Windows 测试机、固定夹具和 30 分钟 run 上测量；2026-09-23 已有部分实测，整体尚未达成，范围见 verification.md）：
 - 保存 checkpoint 100 ms 内显示反馈；持久化图/DOM 的 P95 目标不超过 2 s。

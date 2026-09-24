@@ -53,6 +53,10 @@ export function App() {
   const [rangeEnd, setRangeEnd] = useState('');
   const browserBox = useRef<HTMLDivElement>(null);
   const addressInput = useRef<HTMLInputElement>(null);
+  const historyRequest = useRef(0);
+  const historySelection = useRef(0);
+  const selectedHistoryRun = useRef('');
+  const artifactRequest = useRef(0);
   const { preferences, revision, setTheme, resetLayout, clearError: clearPreferenceError, error: preferenceError } = usePreferences();
   const active = state.active;
   const projects = items(state.projects);
@@ -81,7 +85,15 @@ export function App() {
     finally { setBusy(''); }
   }, [refresh]);
   const perform = (action: () => Promise<any>) => { void action().catch(failure => setError(failure instanceof Error ? failure.message : String(failure))); };
-  const loadHistory = useCallback(async (id: string) => { const result = await window.studio.call('history', { runId: id }); setHistory(result); setHistoryRunId(id); return result; }, []);
+  const loadHistory = useCallback(async (id: string, selection?: number) => {
+    if (selection === undefined && selectedHistoryRun.current) return null;
+    const request = ++historyRequest.current;
+    const result = await window.studio.call('history', { runId: id });
+    if (request !== historyRequest.current || (selection === undefined
+      ? !!selectedHistoryRun.current
+      : selection !== historySelection.current || selectedHistoryRun.current !== id)) return null;
+    setHistory(result); setHistoryRunId(id); return result;
+  }, []);
   useEffect(() => { void refresh().catch(failure => setError(String(failure))); const timer = setInterval(() => void refresh().catch(failure => setError(String(failure))), 2000); return () => clearInterval(timer); }, [refresh]);
   useEffect(() => { if (!projectId && projects.length) setProjectId(projects[0].id); }, [projects, projectId]);
   useEffect(() => { if (active?.projectId && active.projectId !== projectId) setProjectId(active.projectId); }, [active?.projectId, projectId]);
@@ -91,24 +103,58 @@ export function App() {
   useEffect(() => { if (!active && state.fixtureUrl && url === 'about:blank') { setUrl(state.fixtureUrl); setInputJson(JSON.stringify({ baseUrl: state.fixtureUrl }, null, 2)); } }, [state.fixtureUrl, active, url]);
   useEffect(() => { if (active?.id) { void loadHistory(active.id).catch(() => undefined); const timer = setInterval(() => { if (!overlay) void loadHistory(active.id).catch(() => undefined); }, 6000); return () => clearInterval(timer); } }, [active?.id, loadHistory, overlay]);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(''), 6500); return () => clearTimeout(timer); }, [notice]);
-  const openHistory = async (runId: string) => { await loadHistory(runId); setArtifact(null); setSelectedCheckpoint(null); setHistoryTab('checkpoints'); setOverlay('evidence'); };
-  const openArtifact = async (id: string, options: any = {}) => { const result = await call('artifact', { runId: historyRunId || active?.id, id, ...options }); setArtifact(result); };
+  const openHistory = async (runId: string) => {
+    const selection = ++historySelection.current;
+    selectedHistoryRun.current = runId;
+    ++artifactRequest.current;
+    try {
+      if (!await loadHistory(runId, selection)) return false;
+      setArtifact(null); setSelectedCheckpoint(null); setHistoryTab('checkpoints'); setOverlay('evidence');
+      return true;
+    } catch (failure) {
+      if (selection !== historySelection.current) return false;
+      selectedHistoryRun.current = ''; ++historyRequest.current;
+      throw failure;
+    }
+  };
+  const openArtifact = async (id: string, options: any = {}) => {
+    const runId = historyRunId || active?.id;
+    const selection = historySelection.current;
+    const request = ++artifactRequest.current;
+    const result = await call('artifact', { runId, id, ...options });
+    if (request === artifactRequest.current && selection === historySelection.current && selectedHistoryRun.current === runId) setArtifact(result);
+  };
   const openValidation = async (id: string) => {
-    const record = await call('validation', { id }); setValidation(record); setHistory(null); setHistoryRunId(record.runId); setHistoryTab('validation'); setOverlay('evidence');
-    try { await loadHistory(record.runId); } catch (failure) { setHistory({ error: String(failure), checkpoints: { items: [] } }); }
+    const selection = ++historySelection.current;
+    ++historyRequest.current; ++artifactRequest.current;
+    const record = await call('validation', { id });
+    if (selection !== historySelection.current) return;
+    selectedHistoryRun.current = record.runId;
+    setValidation(record); setArtifact(null); setHistory(null); setHistoryRunId(record.runId); setHistoryTab('validation'); setOverlay('evidence');
+    try { await loadHistory(record.runId, selection); }
+    catch (failure) { if (selection === historySelection.current) setHistory({ error: String(failure), checkpoints: { items: [] } }); }
+  };
+  const closeOverlay = () => {
+    if (overlay === 'evidence') {
+      ++historySelection.current; ++historyRequest.current; ++artifactRequest.current;
+      selectedHistoryRun.current = '';
+    }
+    setOverlay(null); setArtifact(null);
   };
   const openRecovery = (runId: string) => { setRecoveryRunId(runId); setOverlay('recovery'); };
   const prepareRetry = (record: any) => {
     if (active) return;
     if (projects.some(project => project.id === record.projectId)) setProjectId(record.projectId);
     if (items(state.profiles).some(profile => profile.id === record.profileId && profile.projectId === record.projectId)) setProfileId(record.profileId);
-    setOverlay(null); setPanel('validation'); setNotice('已打开执行面板。核对登录环境、脚本和输入后新建验收运行；旧控制权与执行栈不恢复。');
+    closeOverlay(); setPanel('validation'); setNotice('已打开执行面板。核对登录环境、脚本和输入后新建验收运行；旧控制权与执行栈不恢复。');
   };
   const queryEvents = async (cursor?: string) => {
     const from = checkpoints.find((entry: any) => entry.id === rangeStart);
     const to = checkpoints.find((entry: any) => entry.id === rangeEnd);
-    const page = await call('events', { runId: historyRunId, fromSequence: from?.sequence, toSequence: to?.sequence, cursor, limit: 50, maxBytes: 16000 });
-    setHistory((current: any) => ({ ...current, events: page }));
+    const runId = historyRunId;
+    const selection = historySelection.current;
+    const page = await call('events', { runId, fromSequence: from?.sequence, toSequence: to?.sequence, cursor, limit: 50, maxBytes: 16000 });
+    if (selection === historySelection.current && selectedHistoryRun.current === runId) setHistory((current: any) => ({ ...current, events: page }));
   };
   const synthetic = async () => { const result = await call('syntheticSite'); const address = result.url || state.fixtureUrl; setUrl(address); setInputJson(JSON.stringify({ baseUrl: address }, null, 2)); if (active) await call('navigate', { url: address }); };
   const saveCheckpoint = async () => {
@@ -138,7 +184,7 @@ export function App() {
       {active?.handoff?.status === 'needs-attention' && <div className="banner error"><strong>人工协助未完成</strong><span>超时、取消或连接结束后，没有推断操作成功。当前材料仍保留，请停止后重新开始明确的尝试。</span></div>}
 
       <Tabs value={panel} onValueChange={setPanel} className="inspector"><TabsList className="panel-tabs">{[['checkpoints','保存点'],['selection','元素'],['validation','执行'],['archives','存档']].map(([key,name]) => <TabsTrigger key={key} value={key} className={panel === key ? 'selected' : ''}>{name}</TabsTrigger>)}</TabsList><div className="panel-content" role="tabpanel">
-      {panel === 'checkpoints' && <SplitPane name="checkpoints" orientation="vertical" label="调整保存点表单与列表高度" initial={58} minFirst="200px" minSecond="72px" first={<div className="pane-scroll form-stack"><div className="panel-heading"><h2>保存关键结果</h2></div><Label>标题<Input value={checkpointTitle} onChange={event => setCheckpointTitle(event.target.value)} placeholder="例如：订单已加载到最后一页" /></Label><Label>结果与范围<Textarea rows={3} value={checkpointDescription} onChange={event => setCheckpointDescription(event.target.value)} placeholder="数据范围、关键字段、页面含义与未确认项" /></Label><Collapsible className="advanced"><CollapsibleTrigger asChild><Button variant="ghost" className="advanced-trigger">稳定标识与需求对应</Button></CollapsibleTrigger><CollapsibleContent className="form-stack"><Label>Checkpoint key<Input value={checkpointKey} onChange={event => setCheckpointKey(event.target.value)} placeholder="orders-complete" /></Label><Label>需求 ID（空格或逗号分隔）<Input value={requirementIds} onChange={event => setRequirementIds(event.target.value)} placeholder="orders-complete" /></Label></CollapsibleContent></Collapsible><Button variant="default" className="primary full" disabled={!active || !!busy || !!active.checkpoint || active.controller === 'agent'} onClick={() => perform(saveCheckpoint)}>{busy === 'checkpoint' ? active?.checkpoint?.phase === 'saving' ? '正在持久化已获取材料…' : '正在采集（最长 10 秒）…' : '保存 checkpoint'}</Button>{active?.checkpoint && <div className="checkpoint-progress"><p role="status">{active.checkpoint.phase === 'saving' ? '采集已结束，正在完成证据写入。' : active.checkpoint.phase === 'draining' ? '正在等待操作连接停止写入…' : '正在获取截图和 DOM，可取消并保留已取得材料。'}</p>{active.checkpoint.phase !== 'saving' && <Button disabled={cancellingCheckpoint} onClick={() => perform(cancelCheckpoint)}>{cancellingCheckpoint ? '正在取消…' : '取消采集'}</Button>}</div>}<p className="hint">短暂锁定输入，保存截图、DOM 和采集时间范围。部分失败也会保留成功材料。</p></div>} second={<div className="pane-scroll"><div className="section-label">已保存 <span>{workspaceCheckpoints.length}</span></div>{workspaceCheckpoints.length ? [...workspaceCheckpoints].reverse().map((checkpoint: any, index: number) => <Button className="checkpoint-card" key={checkpoint.id} onClick={() => perform(async () => { await openHistory(workspaceRunId); setSelectedCheckpoint(checkpoint); })}><span><strong>{checkpoint.title || checkpoint.key}</strong><small>{time(checkpoint.savedAt)} · {label(checkpoint.captureConsistency)} · {label(checkpoint.metadata?.captureStatus || 'unknown')}</small><p>{short(checkpoint.description || '没有补充说明', 80)}</p></span></Button>) : <div className="empty compact">尚未保存关键结果。<br />{active ? '连续录制独立进行，可随时保存关键结果。' : '开始录制后可保存关键结果。'}</div>}</div>} />}
+      {panel === 'checkpoints' && <SplitPane name="checkpoints" orientation="vertical" label="调整保存点表单与列表高度" initial={58} minFirst="200px" minSecond="72px" first={<div className="pane-scroll form-stack"><div className="panel-heading"><h2>保存关键结果</h2></div><Label>标题<Input value={checkpointTitle} onChange={event => setCheckpointTitle(event.target.value)} placeholder="例如：订单已加载到最后一页" /></Label><Label>结果与范围<Textarea rows={3} value={checkpointDescription} onChange={event => setCheckpointDescription(event.target.value)} placeholder="数据范围、关键字段、页面含义与未确认项" /></Label><Collapsible className="advanced"><CollapsibleTrigger asChild><Button variant="ghost" className="advanced-trigger">稳定标识与需求对应</Button></CollapsibleTrigger><CollapsibleContent className="form-stack"><Label>Checkpoint key<Input value={checkpointKey} onChange={event => setCheckpointKey(event.target.value)} placeholder="orders-complete" /></Label><Label>需求 ID（空格或逗号分隔）<Input value={requirementIds} onChange={event => setRequirementIds(event.target.value)} placeholder="orders-complete" /></Label></CollapsibleContent></Collapsible><Button variant="default" className="primary full" disabled={!active || !!busy || !!active.checkpoint || active.controller === 'agent'} onClick={() => perform(saveCheckpoint)}>{busy === 'checkpoint' ? active?.checkpoint?.phase === 'saving' ? '正在持久化已获取材料…' : '正在采集（最长 10 秒）…' : '保存 checkpoint'}</Button>{active?.checkpoint && <div className="checkpoint-progress"><p role="status">{active.checkpoint.phase === 'saving' ? '采集已结束，正在完成证据写入。' : active.checkpoint.phase === 'draining' ? '正在等待操作连接停止写入…' : '正在获取截图和 DOM，可取消并保留已取得材料。'}</p>{active.checkpoint.phase !== 'saving' && <Button disabled={cancellingCheckpoint} onClick={() => perform(cancelCheckpoint)}>{cancellingCheckpoint ? '正在取消…' : '取消采集'}</Button>}</div>}<p className="hint">短暂锁定输入，保存截图、DOM 和采集时间范围。部分失败也会保留成功材料。</p></div>} second={<div className="pane-scroll"><div className="section-label">已保存 <span>{workspaceCheckpoints.length}</span></div>{workspaceCheckpoints.length ? [...workspaceCheckpoints].reverse().map((checkpoint: any, index: number) => <Button className="checkpoint-card" key={checkpoint.id} onClick={() => perform(async () => { if (await openHistory(workspaceRunId)) setSelectedCheckpoint(checkpoint); })}><span><strong>{checkpoint.title || checkpoint.key}</strong><small>{time(checkpoint.savedAt)} · {label(checkpoint.captureConsistency)} · {label(checkpoint.metadata?.captureStatus || 'unknown')}</small><p>{short(checkpoint.description || '没有补充说明', 80)}</p></span></Button>) : <div className="empty compact">尚未保存关键结果。<br />{active ? '连续录制独立进行，可随时保存关键结果。' : '开始录制后可保存关键结果。'}</div>}</div>} />}
       {panel === 'selection' && <SplitPane name="inspection" orientation="vertical" label="调整元素操作与详情高度" initial={28} minFirst="135px" minSecond="100px" first={<div className="pane-scroll form-stack"><div className="panel-heading"><h2>检查与定位记录</h2><p>检查模式下点击只选中元素，不执行网站动作。</p></div><Button variant="default" className="primary full" disabled={!active || !!busy || active.controller !== 'human'} onClick={() => perform(async () => { await call('inspect', { enabled: !inspecting }); setInspecting(!inspecting); })}>{inspecting ? '结束检查模式' : '进入元素检查'}</Button></div>} second={<div className="pane-scroll">{active?.selection ? <><div className="selection-header"><Badge value="complete" text="已记录元素" /></div><JsonView value={active.selection} /></> : <div className="empty compact">进入元素检查后，在业务页面选择元素。<br />保存文本、角色、候选定位器及 frame 来源。</div>}<p className="hint">定位记录不依赖易失效坐标。首版不修改、隐藏或删除业务页面元素。</p></div>} />}
       {panel === 'validation' && <SplitPane name="validation" orientation="vertical" label="调整脚本输入与执行结果高度" initial={68} minFirst="240px" minSecond="90px" first={<div className="pane-scroll form-stack"><div className="panel-heading"><h2>受控复跑</h2></div><Label>脚本目录<Input value={scriptDirectory} onChange={event => setScriptDirectory(event.target.value)} placeholder="包含 workflow.json 的绝对目录" /></Label><Button className="full" disabled={!projectId || !scriptDirectory.trim() || !!busy} onClick={() => perform(() => call('updateProject', { projectId, scriptDirectory }, '已登记此项目的脚本目录，Agent 可执行这里的 workflow.json。'))}>登记脚本目录</Button><Label>输入 JSON<Textarea className="code-input" rows={7} value={inputJson} onChange={event => setInputJson(event.target.value)} spellCheck={false} /></Label><Button variant="default" className="primary full" disabled={!!validationDisabledReason} title={validationDisabledReason || undefined} onClick={() => perform(async () => { const input = JSON.parse(inputJson); const result = await call('validate', { projectId: validationProjectId, profileId: validationProfileId, input }, '已提交受控执行，执行结果与验收分开记录。'); setValidation(result); })}>运行脚本并验收</Button>
 <Button className="full" disabled={!!validationDisabledReason || !active || active.controller !== 'human' || active.locked} onClick={() => perform(() => call('authorizeValidationStart', { runId: active.id, projectId: active.projectId, profileId: active.profileId, leaseEpoch: active.leaseEpoch, input: JSON.parse(inputJson) }, '已允许 Agent 在两分钟内启动一次当前脚本和输入。'))}>允许 Agent 启动一次</Button>
@@ -155,8 +201,8 @@ export function App() {
         </section>} /></main>
     <footer className="statusbar"><span role="status">{busy ? '正在处理：' + busy : notice || '就绪'}{active ? ' · ' + label(active.controller) : ''}</span><span>录制完成 ≠ 需求通过</span></footer>
     {(error || preferenceError) && <Alert variant="destructive" className="workspace-error"><AlertDescription><strong>操作未完成</strong><span>{error || preferenceError}</span><Button variant="ghost" onClick={() => {setError('');clearPreferenceError();}}>关闭</Button></AlertDescription></Alert>}
-    <Dialog open={!!overlay} onOpenChange={open => { if (!open) {setOverlay(null);setArtifact(null);} }}><DialogContent className={'overlay-panel ' + (['setup','recovery','project','profile'].includes(overlay || '') ? 'narrow' : '')} showCloseButton={false}>
-      <div className="overlay-heading"><DialogTitle>{overlay === 'evidence' ? '证据与验收存档' : overlay === 'replay' ? 'DOM 基础回放' : overlay === 'recovery' ? '检查与恢复存档' : overlay === 'project' ? '新建项目' : overlay === 'profile' ? '添加登录环境' : '连接与已验证环境'}</DialogTitle><Button onClick={() => {setOverlay(null);setArtifact(null);}}>返回工作台</Button></div>
+    <Dialog open={!!overlay} onOpenChange={open => { if (!open) closeOverlay(); }}><DialogContent className={'overlay-panel ' + (['setup','recovery','project','profile'].includes(overlay || '') ? 'narrow' : '')} showCloseButton={false}>
+      <div className="overlay-heading"><DialogTitle>{overlay === 'evidence' ? '证据与验收存档' : overlay === 'replay' ? 'DOM 基础回放' : overlay === 'recovery' ? '检查与恢复存档' : overlay === 'project' ? '新建项目' : overlay === 'profile' ? '添加登录环境' : '连接与已验证环境'}</DialogTitle><Button onClick={closeOverlay}>返回工作台</Button></div>
       {error && <Alert variant="destructive"><AlertDescription>{error}<Button variant="ghost" onClick={() => setError('')}>关闭错误</Button></AlertDescription></Alert>}
       <DialogDescription className="sr-only">{overlay === 'project' ? '设置项目名称与业务目标' : overlay === 'profile' ? '创建按项目隔离的命名登录环境' : '读取本地存档、连接信息或已保存材料'}</DialogDescription>
       {overlay === 'project' && <form className="overlay-body form-stack" onSubmit={event => {event.preventDefault();perform(async () => {const result = await call('createProject', {name:newProject,objective});setProjectId(result.id || result.project?.id);setNewProject('');setObjective('');setOverlay(null);});}}><Label>项目名称<Input autoFocus value={newProject} onChange={event => setNewProject(event.target.value)} placeholder="例如：订单采集验收" /></Label><Label>业务目标<Textarea value={objective} onChange={event => setObjective(event.target.value)} placeholder="要取得什么数据，如何判断完成" rows={3} /></Label><Button variant="default" type="submit" className="primary" disabled={!!active || !newProject.trim() || !!busy}>创建项目</Button></form>}

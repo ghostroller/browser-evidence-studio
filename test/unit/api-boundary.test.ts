@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer, Socket } from 'node:net';
-import { test } from 'node:test';
+import { test } from 'vitest';
 import { makeDispatch } from '@/main/services/dispatch';
 import type { Studio } from '@/main/services/studio';
 import { SocketTransport } from '@/main/browser/connection';

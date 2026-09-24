@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { test } from 'node:test';
+import { test } from 'vitest';
 import { EvidenceReader } from '@/evidence/reader';
 import { EvidenceStore } from '@/evidence/store';
 import { buildSoakEvidenceSnapshot, verifySoakEvidenceSnapshot } from '../desktop/soak-evidence';
@@ -37,19 +37,17 @@ test('soak evidence audit pages all checkpoints and matches a freshly reopened i
   } finally { await f.cleanup(); }
 });
 
-test('soak evidence audit rejects changed raw data and missing captured blobs', async t => {
-  for (const change of ['raw', 'blob'] as const) await t.test(change, async () => {
-    const f = await fixture();
-    try {
-      const snapshot = await buildSoakEvidenceSnapshot(f.reader);
-      if (change === 'raw') {
-        const name = (await readdir(path.join(f.directory, 'raw', 'rrweb')))[0];
-        const file = path.join(f.directory, 'raw', 'rrweb', name);
-        await writeFile(file, (await readFile(file, 'utf8')).replace('"type":3', '"type":4'));
-      } else await unlink(path.join(f.directory, f.artifact.path!));
-      await assert.rejects(verifySoakEvidenceSnapshot(f.reader, snapshot));
-    } finally { await f.cleanup(); }
-  });
+test.each(['raw', 'blob'] as const)('soak evidence audit rejects %s changes', async change => {
+  const f = await fixture();
+  try {
+    const snapshot = await buildSoakEvidenceSnapshot(f.reader);
+    if (change === 'raw') {
+      const name = (await readdir(path.join(f.directory, 'raw', 'rrweb')))[0];
+      const file = path.join(f.directory, 'raw', 'rrweb', name);
+      await writeFile(file, (await readFile(file, 'utf8')).replace('"type":3', '"type":4'));
+    } else await unlink(path.join(f.directory, f.artifact.path!));
+    await assert.rejects(verifySoakEvidenceSnapshot(f.reader, snapshot));
+  } finally { await f.cleanup(); }
 });
 
 test('soak evidence audit refuses corrupt sealed raw records even when a startup rebuild hid them', async () => {

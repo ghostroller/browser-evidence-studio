@@ -1,6 +1,6 @@
 # 环境与依赖
 
-更新日期：2026-09-23。开发与验收基线为 Windows x64、Node 24 LTS 和 npm。客户端源码、依赖、精确锁文件和构建入口已经落地；实际通过的场景与尚未完成的验收以 [验证记录](verification.md) 为准。
+更新日期：2026-09-24。开发与验收基线为 Windows x64、Node 24 LTS 和 npm。客户端源码、依赖、精确锁文件和构建入口已经落地；实际通过的场景与尚未完成的验收以 [验证记录](verification.md) 为准。
 
 ## 锁定的组合
 
@@ -13,6 +13,9 @@
 | rrweb | 2.1.6 | 页面录制与回放 |
 | Electron Forge / Vite 插件 | 7.11.2 | 开发启动与分发包装 |
 | Vite | 8.3.0 | main、preload、renderer 和 worker 构建 |
+| Vitest | 5.0.1 | 普通单元、模块及 renderer 组件测试 |
+| jsdom / React Testing Library | 29.1.1 / 16.3.3 | 按文件启用的组件行为测试环境 |
+| Testing Library DOM | 10.4.2 | React Testing Library 的 DOM 查询依赖 |
 | TypeScript | 7.0.2 | 独立类型检查 |
 | React / React DOM | 19.3.0 | 客户端界面 |
 | Ajv | 8.20.0 | 输入和输出 schema 校验 |
@@ -63,7 +66,7 @@ agent 的固定发现入口是仓库下的 **`output/dev/latest.json`**。先读
 
 正常关闭应用会记录退出结果并刷出日志。终端 `Ctrl+C` 会记录取消信号并终止该次 Forge 进程；Windows 同时终止该次启动的子进程树，因此应优先在应用中正常关闭以完成录制保存。强制杀死 launcher、系统断电或文件系统失败可能留下最后的 `running` 状态，不能仅凭该文件断定进程仍存活。控制台包含进程实际输出，可能含本地路径或站点错误信息；这些日志均位于 Git 已忽略的 `output/`，不要当作可公开分享的脱敏材料。
 
-合成入口回归为 `node --import tsx --test test/unit/agent-dev-launch.test.ts`，覆盖日志/终端输出、UTF-8 分块、非零退出、启动失败、数据路径和并发入口归属，不会启动真实客户端或读取账号数据。
+合成入口回归位于 `test/unit/agent-dev-launch.test.ts`，由普通测试入口 `npm.cmd test` 收集；覆盖日志/终端输出、UTF-8 分块、非零退出、启动失败、数据路径和并发入口归属，不会启动真实客户端或读取账号数据。迁移前使用 `node --import tsx --test` 的结果保留在[历史验证记录](verification.md)。
 
 ## ESM 与 Vite 构建边界
 
@@ -77,17 +80,17 @@ agent 的固定发现入口是仓库下的 **`output/dev/latest.json`**。先读
 - `vite.preload.config.ts` 将 TS ESM 源码打包为单文件 `.vite/build/preload.cjs`。
 - `vite.renderer.config.ts` 构建浏览器 ESM 到 `.vite/renderer/main_window/`。
 - `test/desktop/launch.js` 按根包 ESM 执行；普通独立示例保留 `.mjs`，仍是 ESM，无需为了统一扩展名改名。
-- Vite 负责转译，`npm run typecheck` 单独运行 `tsc --noEmit`，覆盖源码、TS 测试以及根目录 Forge/Vite 配置。构建成功不等于类型检查通过。
+- Vite 负责客户端转译，Vitest 负责普通测试转译；`npm run typecheck` 单独运行 `tsc --noEmit`，覆盖源码、TS 测试以及根目录 Forge/Vite/Vitest 配置。构建或测试成功不等于类型检查通过。
 
 preload 的 CJS 产物是 Electron sandbox 的运行边界。sandboxed preload 不支持 ESM imports，并且忽略包级 `"type": "module"`；本项目保留 `sandbox` 和 `contextIsolation`，不为了统一扩展名关闭它们。preload 源码照常使用 `import` / `export`，本地依赖由 Vite 打包；运行时不要求加载额外 ESM 文件。[Electron 官方说明](https://www.electronjs.org/docs/latest/tutorial/esm)
 
-`tsconfig.json` 使用 `module: "preserve"` / `moduleResolution: "bundler"`：客户端由 Vite 构建，TS 测试由 `node --import tsx` 加载，不把所有 TS 文件都当作 Node 原生可执行入口。Node 内置模块使用 `node:`；运行时相邻文件通过 `import.meta.url` / `import.meta.dirname` 解析。模块迁移不改变上方锁定的依赖版本，迁移后实际验证结果及尚未重跑的范围见 [验证记录](verification.md)。
+`tsconfig.json` 使用 `module: "preserve"` / `moduleResolution: "bundler"`：客户端由 Vite 构建，普通 TS 测试由 Vitest 加载；显式启动的原生 Node 子进程仍按其入口使用 tsx，不把所有 TS 文件都当作 Node 原生可执行入口。Node 内置模块使用 `node:`；运行时相邻文件通过 `import.meta.url` / `import.meta.dirname` 解析。模块迁移时的依赖版本和结果属于历史记录；当前测试框架迁移后的组合与验证范围见 [验证记录](verification.md)。
 
 Forge Vite 插件为锁定的非预发布版本；其官方集成说明的成熟度提示仍需结合本项目开发启动、生产构建、桌面测试和包装结果判断。初期 TS7 与 ts-loader 的编译接口不兼容已通过改用 Vite 的构建方案消除，不保留双构建链。配置依据见 [Forge Vite 插件文档](https://www.electronforge.io/config/plugins/vite)。
 
 ## 源码导入别名与 shadcn
 
-根 `tsconfig.json` 的 `@/*` 统一指向 `./src/*`；跨职责导入使用 `@/main/...`、`@/renderer/...` 等完整目录前缀。三份 Vite 配置启用原生 `resolve.tsconfigPaths: true`，tsx 测试读取同一根配置。shadcn 的五个 aliases 均配置为 `@/renderer/...`；CSS 路径仍相对项目根。不要恢复旧的 `@/* -> ./src/renderer/*` 映射，也不要只改编辑器 paths 而遗漏构建配置。
+根 `tsconfig.json` 的 `@/*` 统一指向 `./src/*`；跨职责导入使用 `@/main/...`、`@/renderer/...` 等完整目录前缀。三份 Vite 配置启用原生 `resolve.tsconfigPaths: true`，Vitest 使用独立配置读取同一根映射；显式启动的 tsx 子进程仍读取根配置。shadcn 的五个 aliases 均配置为 `@/renderer/...`；CSS 路径仍相对项目根。不要恢复旧的 `@/* -> ./src/renderer/*` 映射，也不要只改编辑器 paths 而遗漏构建配置。
 
 Windows 隔离实验已验证固定 shadcn CLI 4.21.0 的路径解析、实际生成组件及 Vite 构建。CLI 直接访问 registry 在本机代理环境下未通过；实验通过本机转发取得未经改写的官方响应，具体方法和限制见 [路径方案](import-alias-plan.md)。该版本 tooltip 的终端提示示例仍写 `@/components/ui/tooltip`，生成文件则遵循配置；使用提示示例时需调整为本项目的 `@/renderer/components/ui/tooltip`。这些观察不代表已经确认用户以前的报错原因。
 

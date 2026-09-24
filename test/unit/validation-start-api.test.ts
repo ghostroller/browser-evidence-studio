@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import { test } from 'vitest';
 import { startApi, type ApiOptions } from '@/main/api/server';
 import { makeDispatch } from '@/main/services/dispatch';
 import type { Studio } from '@/main/services/studio';

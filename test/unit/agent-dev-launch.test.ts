@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
-import test, { type TestContext } from 'node:test';
+import { test, type TestContext } from 'vitest';
 import { setTimeout as delay } from 'node:timers/promises';
 // Direct Node ESM entry, intentionally outside the Vite/TypeScript source graph.
 // @ts-expect-error .mjs development launcher is exercised through subprocess tests.
@@ -11,7 +11,7 @@ import { developmentDataRoot, startAgentDevelopment } from '../../scripts/start-
 
 async function fixture(t: TestContext) {
   const workspace = await mkdtemp(path.join(os.tmpdir(), 'bes-agent-launch-'));
-  t.after(async () => {
+  t.onTestFinished(async () => {
     assert(path.isAbsolute(workspace) && path.dirname(workspace) === os.tmpdir());
     await rm(workspace, { recursive: true, force: true });
   });

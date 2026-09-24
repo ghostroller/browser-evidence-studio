@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import { test } from 'vitest';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { captureCheckpointMaterials } from '@/capture/checkpoint';
 
@@ -79,7 +79,7 @@ test('cancellation preserves a completed channel and consumes a late rejection',
   dom.reject(new Error('Late browser rejection after cancellation'));
   await nextTurn();
   assert.deepEqual(result, original);
-  // node:test fails the test if the late rejection is left unhandled.
+  // The test runner fails the test if the late rejection is left unhandled.
 });
 
 test('a cancelled or exhausted request never starts either capture provider', async () => {
