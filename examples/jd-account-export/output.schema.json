@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["selectedRange", "counts", "pagination", "deletedOrdersState", "assertions"],
+  "additionalProperties": false,
+  "properties": {
+    "selectedRange": {
+      "type": "object",
+      "required": ["startDate", "endDate"],
+      "properties": { "startDate": { "type": "string" }, "endDate": { "type": "string" } }
+    },
+    "counts": {
+      "type": "object",
+      "required": ["profileRows", "addressRows", "orderRows", "deletedOrderRows", "detailRows"],
+      "properties": {
+        "profileRows": { "type": "integer", "minimum": 1 },
+        "addressRows": { "type": "integer", "minimum": 0 },
+        "orderRows": { "type": "integer", "minimum": 0 },
+        "deletedOrderRows": { "type": "integer", "minimum": 0 },
+        "detailRows": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "pagination": {
+      "type": "object",
+      "required": ["pages", "complete"],
+      "properties": { "pages": { "type": "integer", "minimum": 0 }, "complete": { "type": "boolean" } }
+    },
+    "deletedOrdersState": { "enum": ["explicit-empty", "rows-observed"] },
+    "assertions": {
+      "type": "object",
+      "required": ["profileComplete", "identityComplete", "addressComplete", "ordersValid", "uniqueOrders", "paginationComplete", "deletedValid", "detailComplete"],
+      "properties": {
+        "profileComplete": { "type": "boolean" },
+        "identityComplete": { "type": "boolean" },
+        "addressComplete": { "type": "boolean" },
+        "ordersValid": { "type": "boolean" },
+        "uniqueOrders": { "type": "boolean" },
+        "paginationComplete": { "type": "boolean" },
+        "deletedValid": { "type": "boolean" },
+        "detailComplete": { "type": "boolean" }
+      }
+    }
+  }
+}

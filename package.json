@@ -24,6 +24,7 @@
     "test:startup": "node test/desktop/launch.js --startup-only --dev",
     "test:soak": "npm run build && node test/desktop/launch.js --soak=30",
     "test:example": "node --import tsx --test examples/orders/standalone.test.mjs",
+    "example:jd-account": "node examples/jd-account-export/standalone.mjs",
     "package": "electron-forge package",
     "make": "electron-forge make"
   },

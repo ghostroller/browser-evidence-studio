@@ -32,17 +32,23 @@
 - 本地 worker 关闭立即关闸，但最多等待1秒接收原始失败或退出；没有终态明确失败，不能恢复执行或产生通过。成功完成清理、取消、真正远端关闭分别处理。迟到 worker error 不覆盖已确定的取消或首次传输故障。
 - SocketTransport 区分 local / remote / error，记录时间、可取得的关闭码/原因及错误标识；error 后的 close 不重复通知或覆盖首个错误，握手和 abort 的迟到 error 也被消费。原因/消息有界并处理常见 URL、地址和凭据字符串，不记录 endpoint、页面正文或 CDP 参数。
 - Gate 保存关闭前状态、在途数及至多16个方法名；追加 `operation-transport-closed` 事件，报告增加 `errorSource`、有界 `errorStack` 和 `operationTransportClose`。异常关闭摘要也写到控制台，`start:agent` 可直接回读。
+- 京东示例的 profile、identity、addresses、orders、details、deletedOrders 各阶段完成后立即 await emitData，并在对应阶段发断言。同名仍只发一次，字段/来源/分页规则未改。后续错误保留此前完成材料，未完成阶段不补空占位；已有部分数据不代表整个执行通过。
 
 验证环境仍为 Node 24.21.0 / npm 11.19.0、Electron 44.4.3 / Chromium 152.0.7977.130。
 
 | 命令 | 实际结果 |
 | --- | --- |
 | `npm.cmd run typecheck`、`npm.cmd run build` | 通过；最后的迟到 error 保护后再通过类型检查并重建 main/worker |
+| `node --import tsx --test test/unit/gate.test.ts test/unit/validation.test.ts test/unit/connection.test.ts examples/jd-account-export/run.test.mjs` | 32/32 通过；包含7项真实 loopback WebSocket 测试和6项纯合成示例故障场景 |
 | `npm.cmd test` | 首轮 **121/123**：evidence、request-body 各一项因 `WRITER_IDENTITY_UNAVAILABLE` 失败，其他项通过；日志 `output/transport-unit.log`。未修改 writer 锁或放宽身份检查 |
 | `node --import tsx --test --test-concurrency=1 test/unit/*.test.ts test/fixtures/site/site.test.ts` | 加入迟到 worker error 回归后 **124/124** 通过；日志 `output/transport-unit-serial.log`。该串行通过不抹去首轮默认并发失败，也不证明其环境原因 |
 | `$env:BES_SKIP_UI='1'; node test/desktop/launch.js` | 19进程矩阵整体通过，`output/desktop-1790222346829/desktop-summary.json`；真实 worker 短时 waitForSelector 超时保留原始异常和 worker 关闭来源，主动 disconnect 不返回仍失败；两者均保留先前的数据/checkpoint、页面及人工控制，正常完成/取消/崩溃恢复继续通过 |
 
-桌面矩阵之后补的迟到 error 优先级保护由真实 Worker 注入终止期 error 的单测覆盖，未重复跑完整矩阵。只读旧 run 期间没有读取数据集/订单 DOM 或截图正文。本轮未主动重启当前用户客户端、重跑真实流程或生成发行包；原始真实异常仍需在新实现生效后的授权复验中获取。
+桌面矩阵之后补的迟到 error 优先级保护由真实 Worker 注入终止期 error 的单测覆盖，未重复跑完整矩阵。示例测试直接运行入口，在 Puppeteer 边界使用合成值，覆盖订单阶段、第二笔详情、回收站和最终 checkpoint 的故障，以及成功和分页上限语义，不代表京东页面解析或真实账号通过。只读旧 run 期间没有读取数据集/订单 DOM 或截图正文。本轮未主动重启当前用户客户端、重跑真实流程或生成发行包；原始真实异常仍需在新实现生效后的授权复验中获取。
+
+随后 run `c149aa9b-38ef-4bb3-ab7f-abd9f824ea7d` 使用新错误保留逻辑，人工登录无须触发；执行错误被准确记录为 `The visible order-year filter was not found`，栈定位到示例 `selectYear`。该运行含登录、个人信息、身份和地址 checkpoint；profile/identity/address 数据已按阶段提交，但字段断言失败且地址列表返回 0 条；订单阶段没有开始。此前页面材料中订单范围触发器显示“近3个月订单”，示例定位器只识别“今年内订单”或具体年份标签，现加入“近 N 个月/年订单”触发器匹配。尚未在真实页面验证菜单选项能否选择目标年份，也未重跑验证；个人资料字段缺失和地址列表为空是独立的解析问题，不能因订单筛选修复而判为通过。
+
+随后 run `19c62128-4e78-491f-9819-43b89b5df45a` / validation `722fca4f-4e18-4888-8b6a-fcc16e5b0893` 的结构化报告将原始错误保留为 worker 异常 `The requested order-year option was not visible`；`operationTransportClose.trigger=worker`、source=`local`、`inFlight=0`、`rejectedCommands=0`，不是人工交接或操作传输断线。当前版本匹配。4 个 consistent checkpoint（login-confirmed、profile-complete、identity-complete、addresses-complete）保留；订单列表尚未形成 checkpoint，覆盖未运行。机器断言另显示 profile、identity、addresses 不通过，为独立字段/列表解析缺口。基于此前已见的“近3个月订单”触发器和当年默认日期范围，推断菜单打开后当年选项可能标成“今年内订单”；修正 `selectYear` 让当年也能匹配该标签，并在选择后接受该标签作为页面确认。此修正尚未在真实页面复验；其他字段缺失仍未修复，不能视为端到端通过。
 
 ## Agent 开发入口与人工交接修复（2026-09-24）
 
@@ -94,6 +100,36 @@
 排查时另有两项非产品通过记录：沙箱内首轮 Electron renderer/GPU launch-failed（`output/startup-before-1790213711009`），随后在正常桌面环境验证；中间测试 `output/desktop-1790214302601` 的热启动文档身份断言失败，原因是测试尚未等待 Forge 首次 HMR 真实提交，后改为观察提交及有效边界后才开始拒绝导航断言，最终矩阵通过。没有通过固定睡眠跳过断言。
 
 范围：修复并验证的是上述导航拦截路径，不能用合成注入证明用户原始模块为何失败。`inlineDynamicImports` 警告在成功和失败场景均存在，没有证据将其作为这次超时原因；构建原有指令/source map/chunk 提示仍在。未重跑完整 19 进程业务矩阵、长测、真实账号流程或生成新发行 ZIP；本轮构建文件专项不代替发行验收。
+
+## Luna 首次任务交接的连接观察（2026-09-23）
+
+用户要求以最少提示检验人工录制后直接交接 agent 的使用场景。新任务“京东示范交接：可重复逻辑编写与复现验证”（`01a0cd4d-f04d-7af2-97e1-18bf011d8478`）使用 **gpt-6-luna / max**，初始提示只给项目技能入口、目标 run、业务编写/复现目标及用户认可推断和脱敏值的范围，没有给具体业务接口或定位规则，也没有提供连接文件绝对路径。
+
+用户反馈似乎不会连接后，只读检查该任务消息和工具调用：它已明确理解本机 HTTP、连接文件、token 和有界读取，但转去用桌面工具寻找客户端展示的路径；`cua.listWindows()`、`cua.listApps()` 两次调用失败，`Get-CimInstance` 拒绝访问，随后向用户询问连接文件完整路径。截至本次检查，尚未尝试读取连接文件或调用 `/v1/health`，因此不能据此判断其 HTTP 协议理解、证据还原或业务编写能力失败，也没有证据说明 token ACL 已阻断它。
+
+当前 SKILL、API 引用和主 API 文档均要求“从客户端显示的位置读取”，没有提供 UI 不可用时的连接发现方式；仅应用源码定义了默认数据根与 `BES_DATA` 规则。这是首次交接入口信息缺口，窗口工具选用错误和进程权限失败又增加了绕行。原任务使用已知路径独立调用 health，实际 **HTTP 200 / ready / PID 35448**，应用服务仍可连接。
+
+此外，新任务执行了读取 `docs/progress.md`、`docs/verification.md` 的命令，两份文档包含此前人工存档审查摘要。输出有截断，无法断言模型实际接收了其中所有内容，但本轮已不能作为严格隔离既有分析的盲测。项目开发约定使其同时阅读大量客户端工程文档，后续应区分业务技能使用者与客户端开发任务的入口。
+
+建议的最小改进为交接连接文件绝对路径（不传 token）或在技能中提供确定的发现规则，再核验实例与目标 run；连接基础信息不等于业务解题提示。本轮只检查、记录，没有向新任务发送纠正提示、修改技能、重启应用或接管其业务实现。
+
+## 京东主流程封存录制检查（2026-09-23）
+
+按用户要求只读检查 `efc0c4e5-e9b0-470a-8f0b-0ec5636f1c4f`，未开始业务 agent 编写。全局 17,848 条保存记录编号连续，44 份源 JSONL、索引、引用及封存清单 743 个文件的 hash 核验通过；14 个 checkpoint 的截图/DOM 均 complete、consistent。但 68 个 gap 中明确包含共 **5,939 个采集任务丢弃**，因此保存完整不等于无缺口采集。
+
+登录、个人信息、实名认证、地址、普通订单筛选/翻页、空回收站和单笔详情具备线索，足以开始主流程初版编写；末页/历史年份、非空回收站、详情变体和身份字段语义仍待补充。新 profile 在同一 Forge 实例完成本次主线；已记录响应未见 403，但不外推为无遗漏网络成功。范围、证据 ID、字段空值/遮罩和后续最小补录见 [存档评估](recording-review-efc0c4e5.md)。
+
+## 再次异常后的启动方式核对（2026-09-23）
+
+用户再次反馈异常，要求核对当前启动方式。本轮仅查询进程父链、客户端 health/state 及已知 run 的 manifest 元数据，没有导航、刷新、点击或读取 Cookie；本次页面异常为用户观察，未重新核验截图或 HTTP 403。
+
+当前客户端主进程为 **PID 35448**，北京时间 **15:16:57** 启动。Windows 进程父链明确为 `npm-cli.js run start` → `electron-forge.js start` → `electron-forge-start.js` → 项目 `node_modules/electron/dist/electron.exe .`，因此当前是 **`npm run start` 的 Forge 开发模式**。HTTP health 的 processId 与此一致，连接文件和当前 run 位于 `%APPDATA%/BrowserEvidenceStudio-dev`。
+
+当前 run `0c8002d1-2f3e-450b-a68c-f0cc104bec18` 于北京时间 **15:18:02** 创建，沿用项目 `0b86d029-b4e0-4e8e-8951-3c3314dedfce`、profile `1a88eaa6-2ebf-452e-95b1-bea37c287413`。该项目/profile 与此前异常的 `dcab5b41-dae4-4cb0-a126-f84f49c4816b`、`c3307a02-6522-4eca-9d45-05fcc7139602`、`4a5799a0-d01f-4811-bbed-37d03acb6a15` 一致。新建 run 会复用同项目/profile 的持久 session，不会自动生成全新登录环境。当前 manifest 已记录 **chrome-compatible-v1 / Chrome 152 缩减 UA / AutomationControlled disabled-at-startup**，兼容策略已启用。
+
+此前成功的普通录制对照由 `npm run browser:baseline -- --recording` 启动，使用 `output/browser-recording-1790146574793-28576/data` 和另一个全新 profile `aad09e61-f05b-4a47-bad6-9744d07deb17`。代码对照确认两种方式运行同一 app/Studio、业务 WebContentsView、持久分区及 CDP/Puppeteer/rrweb；独立入口主要改变数据根、进程环境和宿主 UI 加载方式（构建文件而非 Vite 开发服务）。因此当前观察是回到原开发环境并复用旧 profile 后再次报告异常，尚不能证明 Forge 或旧 profile 是唯一原因。下一步有效对照仍是在同一个开发客户端使用新命名 profile，再与旧 profile 比较。
+
+当前 capture=degraded，磁盘 manifest 原因为 `Capture queue reached its bounded budget`；与此前成功对照同样存在的采集问题分开记录。本轮没有修改代码、重跑测试、重启客户端或变更控制权。
 
 ## 全新 profile 的普通录制：京东访问确认（2026-09-23）
 
@@ -492,3 +528,17 @@ Electron ZIP 158,247,567 字节，SHA-256 为 `790a355b684d5c7cc8dc3cdd8c4cca7c4
 真实账号与拼多多业务闭环需要用户完成演示和扫码，不能以合成测试代替。自动更新、代码签名、多机 profile 迁移、外部浏览器接管、完整跨域 iframe/Canvas/媒体回放不在本次通过声明中。
 
 性能目标中的 100 ms 界面反馈、30 分钟全负载、HTTP P95 300 ms 等需各自实测；不能从一次短路径或命令成功外推。长期内存和数据损失结论以指定合成负载与保存边界为限。
+
+## 京东参考插件提交前检查（2026-09-24）
+
+环境为 Node 24.21.0 / npm 11.19.0。执行 `node --import tsx --test examples/jd-account-export/run.test.mjs`，结果 **4/6 通过、2 项失败**，退出码 1。当前实现从列表行派生订单摘要；旧测试的 `details` 故障依赖第二笔详情导航，而实现已不再访问详情页，因此没有触发预期失败；成功路径测试仍要求 `screenshotCheckpointId` 和 `telephone`，也与当前摘要字段不一致。此前逐笔详情版本的六项通过记录不适用于当前版本。提交保留该已知测试缺口，未改业务或放宽断言。
+
+`node --check examples/jd-account-export/run.mjs` 与 `node --check examples/jd-account-export/standalone.mjs` 均通过，`git diff --check` 通过。测试只使用合成 Puppeteer 边界，没有启动浏览器或访问真实账号；没有重跑客户端整套回归或确认真实主流程通过。
+
+提交前静态核对另发现：入口第 2、3 次登录交接使用 `jd-login-retry-2` / `jd-login-retry-3`，workflow 仅声明 `jd-login`；受管 runner 的声明检查会拒绝这两次重试。该确定的契约不匹配已记入示例 README，尚未修改或实跑验证。文件内容核对未发现真实录制正文、Cookie、凭据或真实账号个人信息；存档 UUID、证据 ID、统计及公开页面结构仅用作诊断引用。
+
+## 一次性授权启动后的京东地址导航失败（2026-09-24）
+
+受管 run `0435ff23-307f-4ec7-8c6f-c77a1abebf27` 经 UI 一次性授权成功启动，validation `f247f25a-9c5d-45a9-863b-9ff2978d6c8d` 返回 worker 失败。run 导航事件显示页面从个人信息页到达 `https://www.jd.com/`；脚本随后等待 `[id^="addresssDiv-"]` 20 秒超时，地址及后续数据集没有发出。此前 run `19c62128-4e78-491f-9819-43b89b5df45a` 也出现主页导航和空地址数据。该证据将本次失败定位在京东地址路由/页面解析阶段；授权获取、校验、消费和 validation 启动本身成功。
+
+脚本现从个人信息页解析可见的“收货地址 / 地址管理”链接，并在识别到首页落点时立即报错，避免再空等 20 秒或把首页保存为地址 checkpoint。Node `v24.21.0` 的入口语法检查通过；没有使用已消费的一次性授权重跑，因此动态链接修正及真实地址字段解析仍未验收。复跑需要用户在可信界面重新点击一次性授权。

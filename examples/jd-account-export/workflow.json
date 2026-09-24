@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "workflowId": "jd-account-export",
+  "entry": "./run.mjs",
+  "exportName": "run",
+  "driver": "puppeteer",
+  "inputSchema": "./input.schema.json",
+  "outputSchema": "./output.schema.json",
+  "requirements": [
+    {
+      "id": "profile-complete",
+      "checkpointKey": "profile-complete",
+      "description": "Read the visible JD user ID, login name, nickname, gender, birthday and email fields.",
+      "dataset": "profile",
+      "rules": [
+        { "type": "min-rows", "count": 1 },
+        { "type": "required", "field": "userId" },
+        { "type": "required", "field": "loginName" },
+        { "type": "required", "field": "nickname" },
+        { "type": "required", "field": "gender" },
+        { "type": "required", "field": "birthday" },
+        { "type": "required", "field": "email" },
+        { "type": "field-type", "field": "gender", "valueType": "string" },
+        { "type": "field-type", "field": "birthday", "valueType": "string" },
+        { "type": "field-type", "field": "email", "valueType": "string" }
+      ]
+    },
+    {
+      "id": "identity-complete",
+      "checkpointKey": "identity-complete",
+      "description": "Read visible real-name and bound-phone fields, preserving the masking shown by JD.",
+      "dataset": "identity",
+      "rules": [
+        { "type": "min-rows", "count": 1 },
+        { "type": "required", "field": "realName" },
+        { "type": "required", "field": "boundPhone" }
+      ]
+    },
+    {
+      "id": "addresses-complete",
+      "checkpointKey": "addresses-complete",
+      "description": "Read each address card, default marker, recipient, region, street address, mobile, landline and email.",
+      "dataset": "addresses",
+      "rules": [
+        { "type": "min-rows", "count": 1 },
+        { "type": "unique", "field": "addressOrdinal" },
+        { "type": "field-type", "field": "isDefault", "valueType": "boolean" },
+        { "type": "required", "field": "recipient" },
+        { "type": "required", "field": "region" },
+        { "type": "required", "field": "streetAddress" },
+        { "type": "required", "field": "mobile" },
+        { "type": "required", "field": "telephone" },
+        { "type": "required", "field": "email" }
+      ]
+    },
+    {
+      "id": "orders-complete",
+      "checkpointKey": "orders-list-page",
+      "description": "Collect visible order fields and product/image links within the requested inclusive date range, and observe each year's pagination end.",
+      "dataset": "orders",
+      "rules": [
+        { "type": "min-rows", "count": 1 },
+        { "type": "required", "field": "orderId" },
+        { "type": "unique", "field": "orderId" },
+        { "type": "required", "field": "placedAt" },
+        { "type": "required", "field": "items" },
+        { "type": "required", "field": "shopName" },
+        { "type": "required", "field": "shippingSummary" },
+        { "type": "required", "field": "status" },
+        { "type": "field-type", "field": "amount", "valueType": "number" },
+        { "type": "required", "field": "paymentType" },
+        { "type": "pagination-complete", "minPages": 1 }
+      ]
+    },
+    {
+      "id": "deleted-orders-complete",
+      "checkpointKey": "deleted-orders-complete",
+      "description": "Read recycle-bin rows, or record an explicitly rendered empty state as an empty dataset.",
+      "dataset": "deletedOrders"
+    },
+    {
+      "id": "details-complete",
+      "checkpointKey": "orders-list-page",
+      "description": "Derive an order summary from each visible order-list row and preserve its source checkpoint; no detail-page fields are claimed.",
+      "dataset": "details",
+      "rules": [
+        { "type": "min-rows", "count": 1 },
+        { "type": "unique", "field": "orderId" },
+        { "type": "required", "field": "sourceOrderId" },
+        { "type": "required", "field": "sourceCheckpointId" },
+        { "type": "reference", "field": "orderId", "dataset": "orders", "targetField": "orderId" },
+        { "type": "same-entity", "field": "orderId", "equalsField": "sourceOrderId" }
+      ]
+    }
+  ],
+  "humanPoints": [
+    { "id": "jd-login", "description": "Open the recorded dedicated page at passport.jd.com/uc/login. Return control after scanning or if the QR code expires. The workflow checks the visible profile page first and retries up to three times only when authentication is not confirmed." }
+  ]
+}

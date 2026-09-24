@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "startDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "endDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+    "maxPages": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
+    "maxOrders": { "type": "integer", "minimum": 1, "maximum": 20000, "default": 2000 }
+  },
+  "dependencies": {
+    "startDate": ["endDate"],
+    "endDate": ["startDate"]
+  }
+}
