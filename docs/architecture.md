@@ -89,6 +89,8 @@ test/
 
 2026-09-23 界面改用 renderer 内的 shadcn/ui 源码组件与 Tailwind 4。证据/回放/评审阅读拆至 `components/evidence-view.tsx`；主题和分栏使用 `components/theme-provider.tsx`、`components/split-pane.tsx`。可信 UI 的 `uiPreferences` / `presentation` 请求绕开业务串行队列且不向 HTTP 开放：偏好单独保存到 `userData/ui-preferences.json`，弹层和拖动遮挡按原因合成，不改变业务输入锁或 lease。`browser-presentation.tsx` 将 DOM 边界同步到原生视图及输入蒙版，布局重置后重新绑定尺寸观察；文档真正提交或 renderer 崩溃时清理旧显示状态，等待新文档的有效边界。被拒绝的导航保留旧文档状态；失效 frame 的迟到 IPC 被忽略。详情见 [前端重构方案](frontend-refactor.md)。
 
+2026-09-24 修正可信窗口导航策略：允许与 `uiUrl` 完全一致的文档刷新，使 Forge/Vite 的首次 HMR 与模块失效恢复能够提交；同源其他路径、查询参数变化和外部地址继续拒绝。刷新真正提交后仍清理旧显示状态，并等待新文档上报有效浏览器边界；被拒导航不清理旧状态。启动加载失败时在生命周期日志追加 `ui-startup-failed`，只保存文档/DOM/边界计数、就绪状态、preload 失败标记及 renderer 退出码，不记录 URL、DOM、业务正文或凭据。
+
 Electron main 管生命周期、页面和控制权；可信 renderer 只管界面。捕获/索引重活和脚本执行放到独立 worker/utility process，防止堵塞主线程。写文件仅由 evidence store 负责，避免 CLI 多进程抢锁模型。
 
 脚本 worker 与捕获职责隔离：脚本崩溃时仍应保留最后页面与已落盘证据。固定少量进程即可，不发展成本地微服务。

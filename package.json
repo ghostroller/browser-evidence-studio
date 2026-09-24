@@ -20,6 +20,7 @@
     "test": "node --import tsx --test test/unit/*.test.ts test/fixtures/site/site.test.ts",
     "test:integration": "npm run build && node test/desktop/launch.js",
     "test:desktop": "npm run test:integration",
+    "test:startup": "node test/desktop/launch.js --startup-only --dev",
     "test:soak": "npm run build && node test/desktop/launch.js --soak=30",
     "test:example": "node --import tsx --test examples/orders/standalone.test.mjs",
     "package": "electron-forge package",

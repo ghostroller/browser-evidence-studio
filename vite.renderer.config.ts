@@ -3,6 +3,8 @@ import path from 'node:path';
 import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   root:'src/renderer',base:'./',
+  // Desktop regressions must not reuse or invalidate a developer's dependency cache.
+  ...(process.env.BES_TEST && process.env.BES_DATA ? { cacheDir:path.join(process.env.BES_DATA,'vite-cache') } : {}),
   plugins:[tailwindcss()],
   resolve:{tsconfigPaths:true},
   build:{outDir:path.resolve('.vite/renderer/main_window'),emptyOutDir:true,sourcemap:true},

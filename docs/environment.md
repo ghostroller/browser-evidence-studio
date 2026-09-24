@@ -42,9 +42,14 @@ npm.cmd start
 npm.cmd run typecheck
 npm.cmd test
 npm.cmd run build
+npm.cmd run test:startup
 ```
 
 不要混用其他包管理器锁文件。常规复现使用 `npm ci`；版本升级应作为独立变更修改锁文件并重跑相关验证。不需要全局安装 Electron、Puppeteer 或测试 CLI。`puppeteer-core` 不自带独立 Chrome：客户端使用 Electron，独立示例通过可执行文件路径选择测试浏览器。验证记录统一使用通用 Node/npm 命令，复现只需准备相同版本的运行时。
+
+`test:startup` 使用现有桌面启动器，连续运行 Forge 冷启动、热启动、首次 UI 模块失败后的真实 Vite 刷新恢复，以及持续模块失败的负例。测试数据与 Vite 缓存放在同一个新建 `output/desktop-*` 目录，不复用开发账号环境；检查 Electron 报告和生命周期，不仅检查 Forge 外层退出码。报告为 `startup-summary.json`。生产构建入口的对应专项为 `npm.cmd run build` 后执行 `node test/desktop/launch.js --startup-only`。
+
+出现 UI 启动失败时，查看当前 `BES_DATA`（默认 `%APPDATA%/BrowserEvidenceStudio-dev`）下 `diagnostics/lifecycle-*.jsonl` 的 `ui-startup-failed` 记录。`documentReady: true`、`needsBounds: true`、`boundsReports: 0` 表示可信文档已提交但没有有效布局上报；`preloadFailed` 和 `rendererExitCode` 可区分 preload/进程故障。该记录本身不能证明具体模块为何失败。20 秒布局期限保留，不以扩大超时或无限刷新代替排查。
 
 ## ESM 与 Vite 构建边界
 

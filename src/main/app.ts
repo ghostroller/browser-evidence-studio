@@ -41,12 +41,14 @@ else app.whenReady().then(async()=>{
     return dispatch(method,body,'ui');
   });
   ipcMain.on('studio:bounds',(event,rect)=>{if(!quitting&&isTrustedUiSender(event,window))window.bounds(rect);});
-  await window.load();
+  const startupReload = testPhase==='startup-reload'||testPhase==='startup-failed' ? (await import('../../test/desktop/startup')).prepareStartupReload(window,testPhase==='startup-failed') : undefined;
+  try{await window.load();}
+  catch(error){await lifecycle.record('ui-startup-failed',window.startupStatus());throw error;}
   await lifecycle.record('ui-ready');
   window.window.on('close',event=>{event.preventDefault();void shutdown('window-close');});
   if(process.env.BES_TEST){
     const phase=process.env.BES_TEST_PHASE||'main';
-    const allowedPhases=['main','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit'];
+    const allowedPhases=['main','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
     ensure(allowedPhases.includes(phase),'Unknown desktop test phase');
     const resultFile=phase==='main'?'test-result.json':`${phase}-result.json`;
     const identity:Record<string,unknown>={phase,processId:process.pid,startedAt:new Date().toISOString()};
@@ -84,7 +86,11 @@ else app.whenReady().then(async()=>{
         }finally{releaseClose();}
         await shutdownTask;return;
       }
-      if(phase==='profile-restart'){
+      if(phase.startsWith('startup-')){
+        const {verifyStartup}=await import('../../test/desktop/startup');
+        const reload=startupReload?.();
+        Object.assign(identity,{layout:await verifyStartup(window),reload});
+      }else if(phase==='profile-restart'){
         const saved=JSON.parse(await readFile(path.join(dataRoot,'profile-restart-state.json'),'utf8'));
         ensure(saved.schemaVersion===1&&saved.restartStatus==='not-run','A fresh first-process profile restart checkpoint is required');
         ensure(Number.isSafeInteger(saved.fixturePort)&&saved.fixturePort>0&&saved.fixturePort<=65535,'Invalid saved fixture port');

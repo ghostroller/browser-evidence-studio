@@ -1,6 +1,30 @@
 # 实际验证记录
 
-更新日期：2026-09-23，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
+更新日期：2026-09-24，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
+
+## 开发启动布局超时修复（2026-09-24）
+
+用户报告 `npm run start` 偶发 `Trusted UI did not report a usable browser layout within 20 seconds`。仅只读核对原数据根的生命周期：PID 15948 于北京时间 09:23:56 启动，工作区读取在 09:24:51 完成，09:25:12 以 startup-failed / 1 退出，没有 ui-ready。工作区读取约 55 秒与随后约 20 秒的布局等待是两个阶段，不能合并解释为布局定时器过短。该次日志没有 renderer 模块错误，原事件的具体首次失败原因仍不能确定。
+
+代码及合成复现发现：可信窗口的 `will-navigate` 一律 `preventDefault()`，也拦截 `location.reload()`；锁定的 Forge Vite 插件在 preload 构建完成时发送 full-reload，Vite 将无客户端时的消息留至首次 HMR 连接。首次 renderer 模块加载失败时，这个恢复刷新被拒绝，React 不会挂载，最终报同样的 20 秒超时。修复前的确定性注入（取消首次 `index.tsx` 请求并发起刷新）日志为 `output/startup-reload-before-1790213931528/forge.log`，记录 `STARTUP RELOAD: prevented=true` 和原始同文超时。修复后的最终开发回归取消首次模块请求后直接使用真实 Vite full-reload，没有手工补刷新，观察 **1 次刷新请求、2 次文档提交**，有效布局恢复。
+
+修复仅放行与 `uiUrl` 完全相同的目标。新文档提交后仍隐藏原生 view，等新边界再恢复；同源不同路径、额外查询参数与外部导航继续拒绝且保留旧文档/布局。没有调整依赖、超时期限、sandbox 或 contextIsolation。加载失败新增有界 `ui-startup-failed` 生命周期状态，便于区分文档已提交但无边界、preload 失败、renderer 退出；不保存 URL、页面内容或凭据。
+
+实际环境为 Node **24.21.0** / npm **11.19.0**；Electron **44.4.3** / Chromium **152.0.7977.130**。全部新测试使用独立合成数据根，Vite 缓存也隔离在测试数据根。
+
+| 命令 | 实际结果 |
+| --- | --- |
+| `npm.cmd run typecheck` | 通过，包含新启动回归 TS 与 Vite 配置 |
+| `npm.cmd test` | **107/107** 通过 |
+| `npm.cmd run test:startup` | Forge 冷启动、热启动、首次模块失败恢复三项通过；持续模块失败负例按原 20 秒期限退出 1、没有 ui-ready 且诊断正确。报告 `output/desktop-1790214359798/startup-summary.json` |
+| `npm.cmd run build` | main、worker、sandbox preload 和 renderer 构建通过 |
+| `node test/desktop/launch.js --startup-only` | 构建文件入口同样三项通过及一个正确失败负例，报告 `output/desktop-1790214426083/startup-summary.json` |
+
+成功场景还检查 preload 桥接、非零浏览器布局、三类拒绝导航不替换文档、可信刷新提交时原生 view 隐藏及新边界恢复。开发负例的诊断为 commits=2、domReady=2、boundsReports=0、documentReady=true、needsBounds=true，且 shutdown exitCode=1；Forge 外层返回 0 不作为成功依据。新入口复用 `test/desktop/launch.js`，持续故障的 `passed:false` 与 `expectedFailureVerified:true` 是预期结果，不能将其称为 UI 启动成功。
+
+排查时另有两项非产品通过记录：沙箱内首轮 Electron renderer/GPU launch-failed（`output/startup-before-1790213711009`），随后在正常桌面环境验证；中间测试 `output/desktop-1790214302601` 的热启动文档身份断言失败，原因是测试尚未等待 Forge 首次 HMR 真实提交，后改为观察提交及有效边界后才开始拒绝导航断言，最终矩阵通过。没有通过固定睡眠跳过断言。
+
+范围：修复并验证的是上述导航拦截路径，不能用合成注入证明用户原始模块为何失败。`inlineDynamicImports` 警告在成功和失败场景均存在，没有证据将其作为这次超时原因；构建原有指令/source map/chunk 提示仍在。未重跑完整 19 进程业务矩阵、长测、真实账号流程或生成新发行 ZIP；本轮构建文件专项不代替发行验收。
 
 ## 全新 profile 的普通录制：京东访问确认（2026-09-23）
 

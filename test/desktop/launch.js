@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -16,6 +16,9 @@ if (soakArgument) {
 }
 const executableArgument = process.argv.find(argument => argument.startsWith('--executable='));
 const executable = executableArgument ? path.resolve(executableArgument.slice('--executable='.length)) : electron;
+const development = process.argv.includes('--dev');
+const startupOnly = process.argv.includes('--startup-only');
+if (development && (!startupOnly || executableArgument)) throw new Error('--dev requires --startup-only and cannot use --executable');
 
 function launchPhase(phase, timeoutMs, { dataRoot = root, extraEnv = {}, terminateAtReady = false } = {}) {
   return new Promise(resolve => {
@@ -23,7 +26,8 @@ function launchPhase(phase, timeoutMs, { dataRoot = root, extraEnv = {}, termina
     const resultName = phase === 'main' ? 'test-result.json' : `${phase}-result.json`;
     const logName = phase === 'main' ? 'desktop.log' : `${phase}.log`;
     const log = fs.createWriteStream(path.join(dataRoot, logName), { flags: 'wx' });
-    const child = spawn(executable, executableArgument ? [] : ['.'], {
+    const launchedAt = Date.now();
+    const child = spawn(development ? process.execPath : executable, development ? [path.resolve('node_modules/@electron-forge/cli/dist/electron-forge.js'), 'start'] : executableArgument ? [] : ['.'], {
       env: { ...baseEnv, BES_DATA: dataRoot, BES_TEST_PHASE: phase, ...(phase !== 'main' ? { BES_SOAK_MINUTES: '0' } : {}), ...extraEnv },
       stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
@@ -44,7 +48,8 @@ function launchPhase(phase, timeoutMs, { dataRoot = root, extraEnv = {}, termina
     const timeout = setTimeout(() => {
       timedOut = true;
       console.error(`Desktop phase ${phase} exceeded ${timeoutMs} ms; terminating its own Electron process.`);
-      child.kill();
+      if (development && process.platform === 'win32' && child.pid) spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true });
+      else child.kill();
     }, timeoutMs);
     const finish = (code, signal) => {
       if (settled) return;
@@ -56,13 +61,15 @@ function launchPhase(phase, timeoutMs, { dataRoot = root, extraEnv = {}, termina
       catch (error) { reportError = `No complete ${phase} report: ${String(error)}`; }
       try {
         const latest = JSON.parse(fs.readFileSync(path.join(dataRoot, 'diagnostics/latest.json'), 'utf8'));
-        if (latest.processId === child.pid) lifecycle = latest;
+        if (latest.processId === child.pid || (development && Date.parse(latest.startedAt) >= launchedAt)) lifecycle = latest;
       } catch { /* Missing diagnostics remain unknown, never evidence of success. */ }
       try {
         const saved = JSON.parse(fs.readFileSync(path.join(dataRoot, 'soak-progress.json'), 'utf8'));
         lastSoakProgress = { recordedStatus: saved.status, elapsedMs: saved.elapsedMs, cycles: saved.cycles, minutes: saved.minutes };
       } catch { /* A short phase has no soak progress. */ }
-      const passed = !timedOut && !spawnError && code === 0 && result?.passed === true && result.phase === phase && result.processId === child.pid;
+      const expectedPid = development ? lifecycle?.processId : child.pid;
+      const passed = !timedOut && !spawnError && code === 0 && result?.passed === true && result.phase === phase && result.processId === expectedPid &&
+        (!development || (Date.parse(result.startedAt) >= launchedAt && lifecycle?.stage === 'shutdown-complete' && lifecycle.details.exitCode === 0));
       resolve({ phase, pid: child.pid, exitCode: code, signal, timedOut, passed, forcedAtBoundary, result, lifecycle, lastSoakProgress, error: spawnError || reportError });
     };
     child.once('error', error => { spawnError = String(error); finish(null, null); });
@@ -73,6 +80,36 @@ function launchPhase(phase, timeoutMs, { dataRoot = root, extraEnv = {}, termina
 }
 
 async function main() {
+  if (startupOnly) {
+    const summary = { passed: false, output: root, development, phases: [] };
+    try {
+      // Same isolated data/cache directory: a cold start, a warm start and a failed-module reload.
+      for (const phase of ['startup-cold', 'startup-warm', 'startup-reload', 'startup-failed']) {
+        const result = await launchPhase(phase, 60000);
+        summary.phases.push(result);
+        if (phase === 'startup-failed') {
+          assert.equal(result.passed, false); assert.equal(result.timedOut, false);
+          assert.equal(result.lifecycle?.stage, 'shutdown-complete');
+          assert.equal(result.lifecycle.details.reason, 'startup-failed');
+          assert.equal(result.lifecycle.details.exitCode, 1);
+          const events = fs.readFileSync(path.join(root, 'diagnostics', result.lifecycle.file), 'utf8').trim().split(/\r?\n/).map(line => JSON.parse(line));
+          assert(!events.some(event => event.stage === 'ui-ready'), 'Missing modules cannot announce a ready UI');
+          const failure = events.find(event => event.stage === 'ui-startup-failed');
+          assert.equal(failure?.details.documentReady, true);
+          assert.equal(failure.details.needsBounds, true);
+          assert.equal(failure.details.boundsReports, 0);
+          result.expectedFailureVerified = true;
+          continue;
+        }
+        assert(result.passed, `${phase} failed: ${result.error || result.result?.error || result.lifecycle?.details?.reason}`);
+      }
+      summary.passed = true;
+    } catch (error) { summary.error = String(error); }
+    fs.writeFileSync(path.join(root, 'startup-summary.json'), JSON.stringify(summary, null, 2));
+    console.log(JSON.stringify({ passed: summary.passed, output: root, development, phases: summary.phases.map(({ phase, passed, expectedFailureVerified, result }) => ({ phase, passed, expectedFailureVerified, processId: result?.processId })), error: summary.error }, null, 2));
+    process.exitCode = summary.passed ? 0 : 1;
+    return;
+  }
   const summary = { passed: false, output: root, main: null, profileRestart: { passed: false, status: 'not-run' }, recovery: [], exitDiagnostics: [] };
   try {
     if (!process.argv.includes('--recovery-only')) {

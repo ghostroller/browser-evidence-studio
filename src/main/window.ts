@@ -19,12 +19,17 @@ export class StudioWindow {
   private uiDocumentReady = false;
   private uiNeedsBounds = true;
   private readonly uiBoundsWaiters = new Set<() => void>();
+  private readonly startupEvents = { commits:0, domReady:0, boundsReports:0, blockedNavigations:0, preloadFailed:false, rendererExitCode:null as number|null };
   constructor() {
     const theme = this.preferences.read().theme;
     this.appliedTheme = theme;
     this.window = new BrowserWindow({ width: 1460, height: 940, minWidth: 1100, minHeight: 760, title: 'Browser Evidence Studio', autoHideMenuBar:true, backgroundColor:theme === 'dark' ? '#171717' : '#ffffff', show: true, webPreferences: { preload: path.join(import.meta.dirname,'preload.cjs'), nodeIntegration:false, contextIsolation:true, sandbox:true,backgroundThrottling:false } });
     this.window.webContents.setWindowOpenHandler(() => ({action:'deny'}));
-    this.window.webContents.on('will-navigate', event => event.preventDefault());
+    this.window.webContents.on('will-navigate', (event, url) => {
+      // Vite/Forge recover stale modules and update preload via location.reload().
+      // Permit only the exact trusted document, never other paths on the dev server.
+      if(url !== this.uiUrl){this.startupEvents.blockedNavigations++;event.preventDefault();}
+    });
     this.mask = new WebContentsView({webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
     // Keep the underlying compositor surface visible while this native view owns input.
     // An opaque covering view can stop IntersectionObserver updates used by Puppeteer.
@@ -41,8 +46,18 @@ export class StudioWindow {
       // rejected by will-navigate must retain its valid bounds and occlusion state.
       this.resetUiPresentation();
       this.uiDocumentReady = url === this.uiUrl;
+      this.startupEvents.commits++;
     });
-    this.window.webContents.on('render-process-gone', () => this.resetUiPresentation());
+    this.window.webContents.on('dom-ready', () => {this.startupEvents.domReady++;});
+    this.window.webContents.on('preload-error', () => {this.startupEvents.preloadFailed=true;});
+    this.window.webContents.on('render-process-gone', (_event, details) => {
+      this.startupEvents.rendererExitCode=details.exitCode;this.resetUiPresentation();
+    });
+  }
+  startupStatus() {
+    const destroyed=this.window.isDestroyed() || this.window.webContents.isDestroyed();
+    return {...this.startupEvents,destroyed,documentReady:this.uiDocumentReady,needsBounds:this.uiNeedsBounds,
+      loading:!destroyed && this.window.webContents.isLoadingMainFrame()};
   }
   async load() {
     await this.window.loadURL(this.uiUrl);
@@ -106,6 +121,7 @@ export class StudioWindow {
     } catch { /* The mask may be closing with the window; preferences remain persisted. */ }
   }
   bounds(rect: {x:number;y:number;width:number;height:number}) {
+    this.startupEvents.boundsReports++;
     if (this.window.isDestroyed() || !this.uiDocumentReady || !rect || !['x','y','width','height'].every(key => typeof rect[key as keyof typeof rect] === 'number' && Number.isFinite(rect[key as keyof typeof rect]))) return;
     const [width,height] = this.window.getContentSize();
     const usable = rect.width > 0 && rect.height > 0 && Math.min(width,rect.x+rect.width)>Math.max(0,rect.x) && Math.min(height,rect.y+rect.height)>Math.max(0,rect.y);
