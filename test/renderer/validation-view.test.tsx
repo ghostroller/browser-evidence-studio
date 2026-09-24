@@ -99,3 +99,51 @@ test('keeps the newer demonstration when older history returns last', async () =
   expect(screen.getByRole<HTMLImageElement>('img', { name: '人工示例 checkpoint' }).getAttribute('src'))
     .toBe('bes-artifact://demo-second/second-screenshot');
 });
+
+test('finds comparison checkpoints after the bounded first history page', async () => {
+  const call = vi.fn(async (method: string, body?: any): Promise<any> => {
+    if (method === 'reviews') return { items: [] };
+    if (method === 'history') return {
+      summary: { run: { id: 'demo-late', projectId } },
+      checkpoints: { items: [{ key: 'earlier', title: 'early demo' }], nextCursor: 'demo-next' },
+    };
+    if (method === 'checkpoints' && body.runId === validationRunId && body.cursor === 'actual-next') {
+      return { items: [checkpoint('late actual', 'actual-screenshot')] };
+    }
+    if (method === 'checkpoints' && body.runId === 'demo-late' && body.cursor === 'demo-next') {
+      return { items: [checkpoint('late demo', 'demo-screenshot')] };
+    }
+    throw new Error(`Unexpected studio method: ${method}`);
+  });
+  window.studio = { call, bounds: vi.fn() };
+
+  render(<ValidationView record={record} onReview={vi.fn()} checkpoints={[{ key: 'earlier', title: 'early actual' }]}
+    checkpointCursor="actual-next" runs={[demoRun('demo-late')]} />);
+  fireEvent.change(screen.getByRole('combobox', { name: '同项目人工示范' }), { target: { value: 'demo-late' } });
+
+  await waitFor(() => expect(screen.getByText('受控复跑 · late actual')).toBeTruthy());
+  await waitFor(() => expect(screen.getByText('人工示例 · late demo')).toBeTruthy());
+  expect(call).toHaveBeenCalledWith('checkpoints', { runId: validationRunId, cursor: 'actual-next', limit: 100, maxBytes: 32768 });
+  expect(call).toHaveBeenCalledWith('checkpoints', { runId: 'demo-late', cursor: 'demo-next', limit: 100, maxBytes: 32768 });
+  expect(screen.getByRole<HTMLImageElement>('img', { name: '复跑 checkpoint' }).getAttribute('src'))
+    .toBe('bes-artifact://run-validation/actual-screenshot');
+  expect(screen.getByRole<HTMLImageElement>('img', { name: '人工示例 checkpoint' }).getAttribute('src'))
+    .toBe('bes-artifact://demo-late/demo-screenshot');
+});
+
+test('reports incomplete checkpoint reads without claiming a requirement is uncovered', async () => {
+  const call = vi.fn(async (method: string, body?: any): Promise<any> => {
+    if (method === 'reviews') return { items: [] };
+    if (method === 'history') return history('demo-current', 'demo checkpoint', 'demo-screenshot');
+    if (method === 'checkpoints' && body.runId === validationRunId) throw new Error('index temporarily unavailable');
+    throw new Error(`Unexpected studio method: ${method}`);
+  });
+  window.studio = { call, bounds: vi.fn() };
+
+  render(<ValidationView record={record} onReview={vi.fn()} checkpoints={[]} checkpointCursor="actual-next" runs={[demoRun('demo-current')]} />);
+  fireEvent.change(screen.getByRole('combobox', { name: '同项目人工示范' }), { target: { value: 'demo-current' } });
+
+  await waitFor(() => expect(screen.getByText(/受控复跑 · 保存点读取失败：.*index temporarily unavailable/)).toBeTruthy());
+  expect(screen.queryByText(/该 key 未覆盖/)).toBeNull();
+  expect(screen.getByText('人工示例 · demo checkpoint')).toBeTruthy();
+});

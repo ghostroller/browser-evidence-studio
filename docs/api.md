@@ -33,7 +33,7 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 
 验收启动 job 也有独立的取消信号，覆盖服务队列等待、旧 run 封存、新 run 创建、控制权转换和 worker 准备。取消排队中的启动不会停止其他执行，也不会在队列恢复后继续启动。启动 job 成功仅表示获得验收记录；之后停止正在运行的脚本使用当前 run 的 `/stop`，而不是取消已经成功的启动 job。
 
-已有 run 的写操作、保存 profile、回复/取消人工交接都要求当前 `leaseEpoch`。已活跃运行的普通 API 写操作要求 agent 控制；先由客户端交出控制权，handoff reply/cancel 和停止是恢复人工控制的例外。验收启动可使用下述客户端签发的一次性授权，不放开普通操作。从状态读取实际 `runId/pageId/generation/leaseEpoch`，不要按 URL 或当前活动窗口猜测目标。HTTP snapshot 与 checkpoint 必须携带 `pageId` 和 `generation`；服务按指定已登记页面采集，未知页面和过期代际返回 409。切换页面会递增 leaseEpoch，排队写操作在实际执行时重新核验。路由中的 ID 优先于请求体或查询中的 ID 别名。服务层继续核验运行、页面、导航代际和控制者；只通过 HTTP lease 校验不代表能控制原生 Puppeteer，managed runner 使用独立操作 transport 闸门。
+已有 run 的 HTTP 写操作和保存 profile 都要求当前 `leaseEpoch`。已活跃运行的普通 API 写操作要求 agent 控制；先由客户端交出控制权。取消人工交接和停止 runner 可由 agent 发起；人工交还控制只能在可信客户端确认，HTTP Bearer token 不能替代人工确认。验收启动可使用下述客户端签发的一次性授权，不放开普通操作。从状态读取实际 `runId/pageId/generation/leaseEpoch`，不要按 URL 或当前活动窗口猜测目标。HTTP snapshot、checkpoint 和 action 必须携带 `pageId` 和 `generation`；服务按指定已登记页面采集或操作，未知页面、非当前选择页面和过期代际返回 409。切换页面会递增 leaseEpoch，排队写操作在实际执行时重新核验。路由中的 ID 优先于请求体或查询中的 ID 别名。服务层继续核验运行、页面、导航代际和控制者；只通过 HTTP lease 校验不代表能控制原生 Puppeteer，managed runner 使用独立操作 transport 闸门。
 
 ## 路由
 
@@ -59,16 +59,18 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 | `GET /runs/:runId/artifacts/:artifactId/content` | 显式二进制读取；哈希及 run 内路径校验，禁止路径越界和链接逃逸 |
 | `GET /artifacts/:artifactId?runId=...`、`GET /artifacts/:artifactId/content?runId=...` | 附件读取的同等入口 |
 | `POST/GET /runs/:runId/handoffs` | 发起/读取人工交接；请求含 `pageId/instructions/completionCheck/timeoutMs` |
-| `POST /handoffs/:handoffId/reply`、`cancel` | 交还时执行真实页面完成检查；检查失败保留人工控制 |
+| `POST /handoffs/:handoffId/cancel` | 停止等待中的 runner；人工交还与完成检查由可信客户端界面执行 |
 | `GET/POST /projects/:projectId/workflows` | 查询已登记流程；登记能力受可信项目目录边界限制 |
 | `POST/GET /runs/:runId/validations` | 启动/查询当前项目的已登记流程，启动请求含 `input`；结果可能引用新 validation run |
 | `GET /validations/:validationId` | 执行、指纹、逐需求结果及当前版本是否仍匹配 |
-| `GET/POST /validations/:validationId/reviews` | 有界回读/独立追加评审；提交 `verdict` 为 accept/reject/exception，需 `reason`，可带 `scope` |
+| `GET /validations/:validationId/reviews` | 有界回读人工判定；新增判定须在可信客户端界面提交 |
 | `POST /runs/:runId/stop` | 停止自动化并确认静默后交还人工 |
 
 ## 证据读取预算
 
 从 `summary → gaps → events/checkpoints → artifact` 逐步缩小范围。列表默认 8 KiB、上限 32 KiB；附件正文默认 4 KiB、上限 16 KiB；显式最小预算为 512 字节，元数据及游标无法容纳时返回 `BUDGET_TOO_SMALL`。列表可用 `limit`（1–200）、`fields`（逗号分隔投影）、`types`、`fromSequence/toSequence` 与 `cursor`。方向错误和越界参数会返回明确错误。
+
+`summary.checkpointCursor` 可直接用于未投影的 `GET /runs/:runId/checkpoints`。如果摘要预算放不下 checkpoint 预览，游标从第一个 checkpoint 开始，避免跳过未展示的记录。
 
 `maxBytes` 限制序列化 JSON 响应字节，包含元数据、转义和游标。`responseBytes/elapsedMs` 报告实际响应大小与读取耗时，不捏造模型 token 消耗。大记录可返回 `record-exceeds-query-budget`，按 `fields` 缩小字段或提高允许范围内的预算。索引重建不改变证据 ID，但使旧游标返回 `STALE_CURSOR`，应从原查询重新开始。
 

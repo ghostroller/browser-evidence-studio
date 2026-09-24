@@ -118,9 +118,13 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
   await nativeFixtureClick(studio, '#increment');
   await waitFor(() => run.selection as any, selection => selection?.element?.selectors?.includes('#increment'), 'element inspection persisted');
   assert.equal(await parent.page.$eval('#action-count', element => element.textContent), beforeClicks, 'Inspection click must not execute the site click handler');
+  await nativeFixtureClick(studio, '#increment');
+  assert.equal(await parent.page.$eval('#action-count', element => element.textContent), beforeClicks, 'A second inspection click must also be intercepted');
+  assert.equal(parent.capture.inspecting, true, 'Inspection remains enabled until the user exits or the page navigates');
   assert.equal((run.selection as any).pageId, parent.pageId);
   await studio.control('agent');
-  const racingAction = Promise.allSettled([studio.action({ type: 'click', selector: '#increment', pageId: parent.pageId, leaseEpoch: run.leaseEpoch })]);
+  assert.equal(parent.capture.inspecting, false, 'Agent control clears inspection before automation resumes');
+  const racingAction = Promise.allSettled([studio.action({ type: 'click', selector: '#increment', pageId: parent.pageId, generation: parent.navigationGeneration, leaseEpoch: run.leaseEpoch })]);
   await studio.stopRunner();
   assert.equal((await racingAction)[0].status, 'rejected', 'Takeover must revoke a still-connecting operation before it can click');
   assert.equal(run.controller, 'human');

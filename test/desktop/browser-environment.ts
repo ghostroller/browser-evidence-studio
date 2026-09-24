@@ -77,7 +77,7 @@ export async function runBrowserEnvironmentScenarios(studio: Studio, siteUrl: st
     verifyEnvironment(report.contexts.iframe, 'iframe', expectedUa);
 
     await studio.control('agent');
-    await studio.action({ type: 'click', selector: '#environment-fetch', pageId: parent.pageId, leaseEpoch: run.leaseEpoch });
+    await studio.action({ type: 'click', selector: '#environment-fetch', pageId: parent.pageId, generation: parent.navigationGeneration, leaseEpoch: run.leaseEpoch });
     assert.ok(run.operation, 'Managed operation must use the ordinary Puppeteer connection');
     await environment(parent.page);
     await run.operation.page.reload({ waitUntil: 'load' });
@@ -85,7 +85,7 @@ export async function runBrowserEnvironmentScenarios(studio: Studio, siteUrl: st
     assert.notEqual(report.contexts.reload.navigation.id, first.navigation.id, 'Reload must issue a fresh server navigation');
     verifyEnvironment(report.contexts.reload, 'reload', expectedUa);
 
-    await studio.action({ type: 'click', selector: '#environment-popup', pageId: parent.pageId, leaseEpoch: run.leaseEpoch });
+    await studio.action({ type: 'click', selector: '#environment-popup', pageId: parent.pageId, generation: parent.navigationGeneration, leaseEpoch: run.leaseEpoch });
     const deadline = Date.now() + 10_000;
     let popup = [...run.pages.values()].find(page => page.openerPageId === parent.pageId);
     while (!popup && Date.now() < deadline) { await delay(50); popup = [...run.pages.values()].find(page => page.openerPageId === parent.pageId); }

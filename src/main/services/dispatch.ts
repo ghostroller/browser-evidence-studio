@@ -23,15 +23,16 @@ export function makeDispatch(studio:Studio){
     const execute=async()=>{
     if(['checkpoint','startValidation'].includes(method))context.signal?.throwIfAborted();
     const grantStart=method==='startValidation'&&body.startGrantId!==undefined;
-    const runMethods=new Set(['action','checkpoint','control','pauseOperations','pauseCapture','seal','inspect','selectPage','requestHuman','replyHuman','cancelHandoff','startValidation','stopRunner','saveProfile']);
+    const runMethods=new Set(['action','checkpoint','control','pauseOperations','pauseCapture','seal','inspect','selectPage','requestHuman','cancelHandoff','startValidation','stopRunner','saveProfile']);
     if(source==='api'&&runMethods.has(method)&&!grantStart){
       const r=studio.required();ensure(body.leaseEpoch===r.leaseEpoch,'Stale control lease',409);if(body.runId)ensure(body.runId===r.id,'Run is not active',409);if(body.profileId)ensure(body.profileId===r.profileId,'Profile is not active',409);
-      if(!['replyHuman','cancelHandoff','stopRunner'].includes(method))ensure(r.controller==='agent','Human owns this browser; use the client to grant agent control',409);
+      if(!['cancelHandoff','stopRunner'].includes(method))ensure(r.controller==='agent','Human owns this browser; use the client to grant agent control',409);
     }
-    if(source==='api'&&['snapshot','checkpoint'].includes(method)){
+    if(source==='api'&&['snapshot','checkpoint','action'].includes(method)){
       const r=studio.required();ensure(body.runId===r.id,'Run is not active',409);
       ensure(typeof body.pageId==='string'&&Number.isSafeInteger(body.generation)&&body.generation>=0,'pageId and navigation generation are required',409);
       const page=r.pages.get(body.pageId);ensure(page&&page.navigationGeneration===body.generation,'Unknown page or stale navigation generation',409);
+      if(method==='action')ensure(body.pageId===r.selectedPageId,'Action page is not selected',409);
     }
     if(source==='api'&&['createProject','updateProject'].includes(method))ensure(!body.scriptDirectory,'Workflow directories are registered in the trusted client UI',403);
     if(source==='api'&&method==='startValidation')ensure(!['directory','scriptDirectory','entry','code','manifest'].some(key=>body[key]!==undefined),'Validation only runs the registered workflow; paths and code are not accepted',403);
@@ -59,9 +60,9 @@ export function makeDispatch(studio:Studio){
       case 'authorizeValidationStart':ensure(source==='ui','Validation startup authorization requires the trusted client UI',403);return studio.authorizeValidationStart(body);
       case 'revokeValidationStart':ensure(source==='ui','Validation startup revocation requires the trusted client UI',403);return studio.revokeValidationStart(body);
       case 'validationStartGrant':return studio.validationStartGrant(body);
-      case 'validate':case 'startValidation':return studio.validate(body,{signal:context.signal,requireGrant:source==='api'&&grantStart});case 'validation':return studio.validation(source==='api'?body.validationId:body.id||body.validationId);case 'validations':return {items:studio.state().validations.filter(v=>!body.runId||v.runId===body.runId)};case 'review':return studio.review({...body,id:source==='api'?body.validationId:body.id||body.validationId});
+      case 'validate':case 'startValidation':return studio.validate(body,{signal:context.signal,requireGrant:source==='api'&&grantStart});case 'validation':return studio.validation(source==='api'?body.validationId:body.id||body.validationId);case 'validations':return {items:studio.state().validations.filter(v=>!body.runId||v.runId===body.runId)};case 'review':ensure(source==='ui','Human reviews must be submitted in the trusted client',403);return studio.review(body);
       case 'reviews':return studio.reviews(source==='api'?body.validationId:body.id||body.validationId,body);
-      case 'requestHuman':return studio.startHandoff(body);case 'replyHuman':case 'releaseHuman':return studio.releaseHuman(body.handoffId||body.id);case 'cancelHandoff':return studio.cancelHandoff(body.handoffId||body.id);case 'handoffs':{const active=studio.active;return {items:active&&active.id===body.runId&&active.handoff?[active.handoff]:[]};}
+      case 'requestHuman':return studio.startHandoff(body);case 'replyHuman':case 'releaseHuman':ensure(source==='ui','Only the trusted client can return human control',403);return studio.releaseHuman(body.handoffId||body.id);case 'cancelHandoff':return studio.cancelHandoff(body.handoffId||body.id);case 'handoffs':{const active=studio.active;return {items:active&&active.id===body.runId&&active.handoff?[active.handoff]:[]};}
       case 'stopRunner':return studio.stopRunner();case 'cancelJob':ensure(['startValidation','requestHuman','action'].includes(body.operation),'This short atomic operation cannot be cancelled after commit',409);return studio.stopRunner();
       default:ensure(false,'Unknown operation: '+method,404);
     }};

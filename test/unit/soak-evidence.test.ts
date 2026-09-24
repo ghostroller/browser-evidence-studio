@@ -60,6 +60,11 @@ test('soak evidence audit refuses corrupt sealed raw records even when a startup
     entry.bytes = bytes.length; entry.sha256 = createHash('sha256').update(bytes).digest('hex');
     await writeFile(integrityPath, JSON.stringify(integrity));
     const reopened = await EvidenceStore.open(f.directory); await reopened.close();
-    await assert.rejects(buildSoakEvidenceSnapshot(new EvidenceReader(f.directory)), /silently omit damaged records/);
+    const summary = await f.reader.summary();
+    assert.equal((summary.run as { status: string }).status, 'interrupted');
+    const gaps = (await f.reader.gaps()).items.map(item => (item as { data: { reason: string } }).data.reason);
+    assert(gaps.includes('corrupt-records-preserved'));
+    assert(gaps.includes('sealed-evidence-corrupted'));
+    await assert.rejects(buildSoakEvidenceSnapshot(new EvidenceReader(f.directory)), /must reopen as sealed/);
   } finally { await f.cleanup(); }
 });

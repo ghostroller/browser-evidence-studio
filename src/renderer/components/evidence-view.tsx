@@ -186,10 +186,36 @@ export function ArtifactView({ value, onRead }: { value: any; onRead: (id: strin
   </section>;
 }
 
-export function ValidationView({ record, onReview, checkpoints, runs }: {
+type CheckpointSearch = { matches: any[]; complete: boolean; issue: string };
+
+async function findCheckpoints(runId: string, firstPage: any[], firstCursor: string | undefined, keys: string[], current: () => boolean): Promise<CheckpointSearch> {
+  const wanted = new Set(keys);
+  const matches = firstPage.filter(checkpoint => wanted.has(checkpoint.key));
+  for (const checkpoint of matches) wanted.delete(checkpoint.key);
+  let incomplete = firstPage.some(checkpoint => checkpoint.readStatus === 'record-exceeds-query-budget');
+  const seen = new Set<string>();
+  let cursor = firstCursor;
+  while (cursor && wanted.size && current()) {
+    if (seen.has(cursor)) return { matches, complete: false, issue: '保存点游标重复，后续材料尚未读完。' };
+    seen.add(cursor);
+    const page = await window.studio.call('checkpoints', { runId, cursor, limit: 100, maxBytes: 32768 });
+    if (!current()) break;
+    if (!page || !Array.isArray(page.items)) return { matches, complete: false, issue: '保存点返回内容无法读取，无法确认此 key 是否有匹配材料。' };
+    for (const checkpoint of items(page)) {
+      if (checkpoint.readStatus === 'record-exceeds-query-budget') incomplete = true;
+      if (wanted.has(checkpoint.key)) { matches.push(checkpoint); wanted.delete(checkpoint.key); }
+    }
+    cursor = page.nextCursor;
+  }
+  return { matches, complete: wanted.size === 0 || (!cursor && !incomplete), issue: wanted.size && incomplete ? '部分保存点超出读取预算，无法确认此 key 是否有匹配材料。' : '' };
+}
+
+export function ValidationView({ record, onReview, checkpoints, checkpointCursor, historyError, runs }: {
   record: any;
   onReview(body: any): Promise<any>;
   checkpoints: any[];
+  checkpointCursor?: string;
+  historyError?: string;
   runs: any[];
 }) {
   const [verdict, setVerdict] = useState('accept');
@@ -198,14 +224,19 @@ export function ValidationView({ record, onReview, checkpoints, runs }: {
   const [feedback, setFeedback] = useState('');
   const [demoId, setDemoId] = useState('');
   const [demoCheckpoints, setDemoCheckpoints] = useState<any[]>([]);
+  const [demoSearch, setDemoSearch] = useState<CheckpointSearch>({ matches: [], complete: false, issue: '' });
+  const [actualSearch, setActualSearch] = useState<CheckpointSearch>({ matches: [], complete: false, issue: '' });
   const [reviewPage, setReviewPage] = useState<any>(null);
   const [reviewError, setReviewError] = useState('');
   const [reviewLoading, setReviewLoading] = useState(false);
   const [savingReview, setSavingReview] = useState(false);
   const [recentReview, setRecentReview] = useState<any>(null);
   const demoRequest = useRef(0);
+  const actualRequest = useRef(0);
   const reviewRequest = useRef(0);
   const demonstrations = runs.filter(run => record.projectId && run.projectId === record.projectId && run.kind === 'demonstrate' && run.id !== record.runId);
+  const requiredKeys = items(record.result?.validation?.requirements).map((requirement: any) => requirement.checkpointKey).filter((key: unknown): key is string => typeof key === 'string' && key.length > 0);
+  const keysSignature = JSON.stringify(requiredKeys);
   const loadReviews = useCallback(async (cursor?: string) => {
     const request = ++reviewRequest.current;
     setReviewLoading(true); setReviewError('');
@@ -220,19 +251,41 @@ export function ValidationView({ record, onReview, checkpoints, runs }: {
   }, [record.id]);
   useEffect(() => { void loadReviews(); return () => { reviewRequest.current++; }; }, [loadReviews]);
   useEffect(() => {
+    const request = ++actualRequest.current;
+    const current = () => request === actualRequest.current;
+    const keys = JSON.parse(keysSignature) as string[];
+    if (historyError) {
+      setActualSearch({ matches: checkpoints.filter(checkpoint => keys.includes(checkpoint.key)), complete: false, issue: `保存点读取失败：${historyError}` });
+    } else {
+      setActualSearch({ matches: checkpoints.filter(checkpoint => keys.includes(checkpoint.key)), complete: false, issue: '' });
+      void findCheckpoints(record.runId, checkpoints, checkpointCursor, keys, current).then(result => {
+        if (current()) setActualSearch(result);
+      }).catch(error => {
+        if (current()) setActualSearch({ matches: checkpoints.filter(checkpoint => keys.includes(checkpoint.key)), complete: false, issue: `保存点读取失败：${String(error)}` });
+      });
+    }
+    return () => { actualRequest.current++; };
+  }, [record.id, record.runId, checkpoints, checkpointCursor, historyError, keysSignature]);
+  useEffect(() => {
     const request = ++demoRequest.current;
     setDemoCheckpoints([]);
+    setDemoSearch({ matches: [], complete: false, issue: '' });
     if (demoId && demonstrations.some(run => run.id === demoId)) {
-      void window.studio.call('history', { runId: demoId }).then(data => {
+      void window.studio.call('history', { runId: demoId }).then(async data => {
         if (request !== demoRequest.current) return;
         if (data.summary?.run?.projectId !== record.projectId || data.summary?.run?.id !== demoId) throw new Error('示范不属于当前验收项目，未加载对照材料。');
-        setDemoCheckpoints(items(data.checkpoints));
+        const first = items(data.checkpoints);
+        setDemoCheckpoints(first);
+        const result = await findCheckpoints(demoId, first, data.checkpoints?.nextCursor, JSON.parse(keysSignature) as string[], () => request === demoRequest.current);
+        if (request === demoRequest.current) setDemoSearch(result);
       }).catch(error => {
-        if (request === demoRequest.current) { setDemoId(''); setFeedback(String(error)); }
+        if (request !== demoRequest.current) return;
+        if (String(error).includes('示范不属于当前验收项目')) { setDemoId(''); setFeedback(String(error)); }
+        else setDemoSearch({ matches: [], complete: false, issue: `示范保存点读取失败：${String(error)}` });
       });
     } else if (demoId) setDemoId('');
     return () => { demoRequest.current++; };
-  }, [demoId, record.id, record.projectId]);
+  }, [demoId, record.id, record.projectId, keysSignature]);
   const saveReview = async () => {
     setSavingReview(true); setFeedback('');
     try {
@@ -266,8 +319,8 @@ export function ValidationView({ record, onReview, checkpoints, runs }: {
       </NativeSelect>
     </label>
     {items(result.requirements).map((requirement: any) => {
-      const actual = checkpoints.find(checkpoint => checkpoint.key === requirement.checkpointKey);
-      const example = demoCheckpoints.find(checkpoint => checkpoint.key === requirement.checkpointKey);
+      const actual = [...checkpoints, ...actualSearch.matches].find(checkpoint => checkpoint.key === requirement.checkpointKey);
+      const example = [...demoCheckpoints, ...demoSearch.matches].find(checkpoint => checkpoint.key === requirement.checkpointKey);
       const actualImage = screenshot(record.runId, actual);
       const exampleImage = screenshot(demoId, example);
       return <section className="requirement-report" key={requirement.id}>
@@ -286,12 +339,12 @@ export function ValidationView({ record, onReview, checkpoints, runs }: {
         </Table>
         {demoId && <div className="comparison">
           <figure>
-            <figcaption>人工示例 · {example?.title || '该 key 没有匹配保存点'}</figcaption>
+            <figcaption>人工示例 · {example?.title || (demoSearch.issue || (demoSearch.complete ? '该 key 没有匹配保存点' : '正在读取后续保存点…'))}</figcaption>
             {exampleImage ? <img src={exampleImage} alt="人工示例 checkpoint" /> : <p className="empty compact">没有可用截图</p>}
             <p>{example?.description}</p>
           </figure>
           <figure>
-            <figcaption>受控复跑 · {actual?.title || '该 key 未覆盖'}</figcaption>
+            <figcaption>受控复跑 · {actual?.title || (actualSearch.issue || (actualSearch.complete ? '该 key 没有匹配保存点' : '正在读取后续保存点…'))}</figcaption>
             {actualImage ? <img src={actualImage} alt="复跑 checkpoint" /> : <p className="empty compact">没有可用截图</p>}
             <p>{actual?.description}</p>
           </figure>

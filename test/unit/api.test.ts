@@ -45,6 +45,21 @@ test('UI preferences and presentation have no public HTTP routes or capabilities
   } finally { await fixture.cleanup(); }
 });
 
+test('bearer token cannot submit a human handoff reply or human review', async () => {
+  const dispatched: string[] = [];
+  const fixture = await setup(method => { dispatched.push(method); return {}; });
+  try {
+    const capabilities = (await fixture.call('GET', '/v1/capabilities')).json;
+    assert(!capabilities.operations.some((entry: { method: string; operation: string }) => entry.method === 'POST' && ['replyHuman', 'review'].includes(entry.operation)));
+    for (const endpoint of ['/v1/handoffs/handoff-1/reply', '/v1/validations/validation-1/reviews']) {
+      const response = await fixture.call('POST', endpoint, { leaseEpoch: 2, verdict: 'exception', reason: 'Forged review' });
+      assert.equal(response.status, 404, endpoint);
+      assert.equal(response.json.error.code, 'NOT_FOUND');
+    }
+    assert.deepEqual(dispatched, [], 'Neither request can reach a service method');
+  } finally { await fixture.cleanup(); }
+});
+
 test('checkpoint job cancellation binds to the queued job and retains partial evidence for an active job', async () => {
   let queue: Promise<unknown> = Promise.resolve(), finishFirst!: () => void;
   const started: string[] = [];
@@ -161,7 +176,9 @@ test('body and lease checks reject invalid input before dispatch and path identi
     assert.equal((await fixture.call('POST', '/v1/runs/run-1/inspect', { leaseEpoch: 3, enabled: true })).status, 404);
     assert.equal((await fixture.call('POST', '/v1/runs/run-1/pause', { leaseEpoch: 3 })).status, 404);
     assert.equal(calls.length, 0);
-    const started = await fixture.call('POST', '/v1/runs/run-1/actions', { runId: 'other-run', leaseEpoch: 3, pageId: 'page-1', type: 'click', selector: '#safe' });
+    assert.equal((await fixture.call('POST', '/v1/runs/run-1/actions', { leaseEpoch: 3, pageId: 'page-1', type: 'click', selector: '#safe' })).status, 409);
+    assert.equal(calls.length, 0, 'Missing navigation identity is rejected before job creation');
+    const started = await fixture.call('POST', '/v1/runs/run-1/actions', { runId: 'other-run', leaseEpoch: 3, pageId: 'page-1', generation: 1, type: 'click', selector: '#safe' });
     assert.equal(started.status, 202);
     await eventual(() => fixture.call('GET', `/v1/jobs/${started.json.jobId}`), (response) => response.json.status === 'succeeded');
     assert.equal(calls[0].body.runId, 'run-1'); assert.equal(calls[0].method, 'action');

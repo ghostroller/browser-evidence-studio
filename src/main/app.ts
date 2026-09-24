@@ -10,9 +10,13 @@ import { startApi, type ApiHandle } from './api/server';
 import { LifecycleLog } from './lifecycle-log';
 import { isTrustedUiSender } from './ui-ipc';
 import { configureBrowserEnvironment } from './browser/environment';
+import { resolveStudioDataRoot } from './test-mode';
 
 configureBrowserEnvironment();
-const dataRoot=process.env.BES_DATA||path.join(app.getPath('appData'),app.isPackaged?'BrowserEvidenceStudio':'BrowserEvidenceStudio-dev');
+const dataRoot=(()=>{
+  try{return resolveStudioDataRoot(process.env,app.getPath('appData'),app.isPackaged);}
+  catch(error){console.error('Browser Evidence Studio startup refused: '+String(error));process.exit(2);}
+})();
 app.setPath('userData',dataRoot);
 app.commandLine.appendSwitch('remote-debugging-address','127.0.0.1');
 app.commandLine.appendSwitch('remote-debugging-port','0');

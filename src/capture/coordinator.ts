@@ -16,6 +16,7 @@ export class CaptureCoordinator {
   private contexts = new Map<number,string>();
   private paused = false;
   private stopped = false;
+  private inspectionEnabled = false;
   private drops = 0;
   private pendingBytes = 0;
   private degraded = false;
@@ -26,6 +27,7 @@ export class CaptureCoordinator {
   private readonly binding = `bes_${randomUUID().replace(/-/g,'')}`;
   constructor(readonly page: Page, readonly identity: PageIdentity, readonly store: EvidenceStore, private onSelection: (data:unknown)=>void = ()=>{}, private onDegraded:(reason:string)=>void=()=>{}) {this.requests=new RequestLedger(randomUUID(),identity.targetId);}
   get health(){return this.degraded?'degraded':this.stopped?'stopped':this.paused?'paused':'recording';}
+  get inspecting(){return this.inspectionEnabled;}
   private fail(reason:string){if(this.degraded)return;this.degraded=true;this.onDegraded(reason);}
   private task(work: ()=>Promise<unknown>,estimatedBytes=4096) {
     if(this.stopped) return;
@@ -44,7 +46,7 @@ export class CaptureCoordinator {
     cdp.on('Runtime.executionContextCreated',({context}:any)=>{ if(context.name===this.world) this.contexts.set(context.id,context.auxData?.frameId); });
     cdp.on('Runtime.executionContextDestroyed',({executionContextId}:any)=>{this.contexts.delete(executionContextId);this.fullSnapshots.delete(executionContextId);});
     cdp.on('Runtime.executionContextsCleared',()=>{this.contexts.clear();this.fullSnapshots.clear();});
-    cdp.on('Page.frameNavigated',({frame}:any)=>{ if(!frame.parentId){ this.frameId=frame.id; this.identity.navigationGeneration++; } if(!this.paused) this.task(()=>this.event('navigation',{frameId:frame.id,url:frame.url,loaderId:frame.loaderId,parentId:frame.parentId})); });
+    cdp.on('Page.frameNavigated',({frame}:any)=>{ if(!frame.parentId){ this.frameId=frame.id; this.identity.navigationGeneration++; this.inspectionEnabled=false; } if(!this.paused) this.task(()=>this.event('navigation',{frameId:frame.id,url:frame.url,loaderId:frame.loaderId,parentId:frame.parentId})); });
     cdp.on('Runtime.exceptionThrown',(event:any)=>{if(!this.paused) this.task(()=>this.event('page-error',event));});
     cdp.on('Runtime.consoleAPICalled',(event:any)=>{if(!this.paused)this.task(()=>this.event('console',{type:event.type,args:event.args.map((x:any)=>({type:x.type,value:x.value,description:x.description?.slice(0,4000)}))}));});
     cdp.on('Runtime.bindingCalled',(event:any)=>{
@@ -107,8 +109,11 @@ export class CaptureCoordinator {
     await this.event('capture-ready',{capabilities:{mainDocument:true,rrweb:true,networkBodies:true,crossOriginFrames:'partial',canvas:'unsupported',media:'unsupported',nodeHttp:'unobserved'},targetId:this.identity.targetId});
   }
   async inspect(enabled:boolean) {
-    const contexts=await this.readyObservers();if(!contexts.ready.length)throw new Error('The current main document recorder is not ready for inspection');
+    const generation=this.identity.navigationGeneration;
+    const contexts=await this.readyObservers();if(enabled&&!contexts.ready.length)throw new Error('The current main document recorder is not ready for inspection');
     for(const {contextId}of contexts.ready){const result=await(this.cdp as any).send('Runtime.evaluate',{expression:`window.__besInspect = ${enabled}`,contextId});if(result.exceptionDetails)throw new Error('Could not change main document inspection: '+result.exceptionDetails.text);}
+    if(generation!==this.identity.navigationGeneration)throw new Error('Inspection target navigated while changing mode');
+    this.inspectionEnabled=enabled;
   }
   private readyObservers(){return readyMainObserverContexts(this.contexts,this.frameId,contextId=>(this.cdp as any).send('Runtime.evaluate',{expression:'Boolean(window.__besRecorderReady === true && window.rrweb?.record?.takeFullSnapshot)',contextId,returnByValue:true}));}
   async pause(value:boolean) {
@@ -135,7 +140,7 @@ function observe(binding:string) {
   const describe=(el:Element)=>({tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),name:el.getAttribute('aria-label'),text:(el.textContent||'').trim().slice(0,400),selectors:[el.id?'#'+CSS.escape(el.id):null,el.getAttribute('data-testid')?'[data-testid='+JSON.stringify(el.getAttribute('data-testid'))+']':null].filter(Boolean),rect:el.getBoundingClientRect().toJSON(),url:location.href});
   let highlighted:HTMLElement|undefined;
   document.addEventListener('pointermove',e=>{if(!w.__besInspect)return; if(highlighted)highlighted.style.removeProperty('outline');highlighted=e.target as HTMLElement; highlighted.style.outline='2px solid #19bda0';},true);
-  document.addEventListener('click',e=>{const el=e.target as Element;if(w.__besInspect){e.preventDefault();e.stopImmediatePropagation();if(highlighted)highlighted.style.removeProperty('outline');w.__besInspect=false;emit({kind:'element-selected',element:describe(el)});}else emit({kind:'action',action:'click',element:describe(el),isTrusted:e.isTrusted});},true);
+  document.addEventListener('click',e=>{const el=e.target as Element;if(w.__besInspect){e.preventDefault();e.stopImmediatePropagation();if(highlighted)highlighted.style.removeProperty('outline');emit({kind:'element-selected',element:describe(el)});}else emit({kind:'action',action:'click',element:describe(el),isTrusted:e.isTrusted});},true);
   document.addEventListener('input',e=>{const el=e.target as HTMLInputElement;emit({kind:'action',action:'input',element:describe(el),inputSummary:{masked:true,length:el.value?.length},isTrusted:e.isTrusted});},true);
   w.rrweb.record({emit:(event:unknown)=>emit({kind:'rrweb',event}),maskAllInputs:true,recordCanvas:false,collectFonts:false,inlineStylesheet:false,checkoutEveryNms:30000,sampling:{mousemove:100,scroll:100}});w.__besRecorderReady=true;
 }

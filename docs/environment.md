@@ -114,7 +114,7 @@ Electron 二进制下载与 npm 包下载是独立步骤。本次使用镜像取
 
 ## 运行数据和验证入口
 
-开发客户端默认使用 `%APPDATA%\BrowserEvidenceStudio-dev`；打包应用使用 `%APPDATA%\BrowserEvidenceStudio`。环境变量 `BES_DATA` 可指定独立数据根目录。profile、run 和 HTTP 连接文件在数据根目录下管理，运行数据不随源码或发行包提交。
+开发客户端默认使用 `%APPDATA%\BrowserEvidenceStudio-dev`；打包应用使用 `%APPDATA%\BrowserEvidenceStudio`。环境变量 `BES_DATA` 可指定独立数据根目录。设置 `BES_TEST=1` 运行内置桌面回归时，必须同时提供位于应用数据目录之外的绝对 `BES_DATA`；缺失或无效时进程在建立数据根之前以退出码 2 拒绝启动。profile、run 和 HTTP 连接文件在数据根目录下管理，运行数据不随源码或发行包提交。
 
 客户端启动时应用 `chrome-compatible-v1` 浏览器策略，详情见 [架构说明](architecture.md#34-内嵌浏览器兼容策略)。升级源码后需完全退出旧客户端，再用 `npm.cmd start` 启动；仅刷新页面无法更新启动配置。继续选择原项目/profile 即可保留客户端自己的登录环境。开发与打包应用的数据根不同，不能用旧 ZIP 验证新源码，也不要复制普通 Chrome 的 Cookie 或 profile。每次新录制的 manifest 会保存实际策略和 UA。
 

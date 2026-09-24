@@ -25,7 +25,7 @@ npm.cmd run example:jd-account -- --headed --start-date 2026-01-01 --end-date 20
 
 ## 录制证据和当前限制
 
-受管模式的登录重试还有已知契约缺口：入口在第 2、3 次人工登录使用 `jd-login-retry-2` / `jd-login-retry-3`，但 workflow 只声明 `jd-login`。受管 runner 会以 `Undeclared human assistance point` 拒绝这两次交接，因而目前不能承诺受管模式三次登录尝试可用；该问题尚未修复。
+受管模式在 workflow 中声明 `jd-login`、`jd-login-retry-2` 和 `jd-login-retry-3` 三个人工登录点。每次交还后脚本仍读取可见登录状态，不把控制权交还本身当作认证成功。三次重试仅通过合成测试，尚未在真实账号流程验证。
 
 定位依据为演示档案 `efc0c4e5-e9b0-470a-8f0b-0ec5636f1c4f`。档案中记录了专用登录页 `passport.jd.com/uc/login`，并观察到个人资料页的 `#nickName`、`name="sex"` 和生日控件，地址列表路由 `https://easybuy.jd.com/address/getEasyBuyList.action` 与动态地址卡片 `[id^="addresssDiv-"]`，订单卡片及“订单详情”控件，回收站空状态，以及订单详情区域。真实 run 已显示这个历史地址路由现在会回到 `www.jd.com/`；后续执行改为查找当前个人信息页上的可见地址链接，并且仍须检查地址卡片后才创建 checkpoint。该导航修正尚未复跑验收。订单详情仅作为档案中的演示线索，本 workflow 目前不逐笔打开。
 
@@ -33,4 +33,4 @@ npm.cmd run example:jd-account -- --headed --start-date 2026-01-01 --end-date 20
 
 此前基础版本在 Node 24.21.0 / npm 11.19.0 下通过入口语法检查、workflow 与 JSON schema 校验、`npm run typecheck`、`npm test`（107 项通过）和 `npm run build`；本次专用登录页改动尚未重跑这些检查。构建当时仍输出 renderer 依赖指令、chunk 大小和 sourcemap 警告。受管采集与真人扫码仍待完成，不要把设计目标或演示档案中的值写成复跑通过。
 
-阶段保存的合成回归可执行 `node --import tsx --test examples/jd-account-export/run.test.mjs`。它运行真实 `run` 入口，在 Puppeteer 读取/导航边界提供纯合成值，检查已提交数据的保留、执行失败和分页保护上限语义。较早逐笔访问详情页的版本曾六项通过；2026-09-24 提交前检查当前版本为 **4/6 通过、2 项失败**：旧测试仍要求第二笔详情导航触发失败，并要求摘要含详情页截图及电话字段，与当前从列表派生摘要的实现不一致。测试尚未随该行为调整，当前参考版本不能标为回归通过。两份入口语法检查通过；测试不启动浏览器、不访问京东，不证明页面解析器或真实账号流程通过。
+阶段保存的合成回归可执行 `node --import tsx --test examples/jd-account-export/run.test.mjs`。它运行真实 `run` 入口，在 Puppeteer 读取/导航边界提供纯合成值，检查已提交数据的保留、订单列表派生摘要的来源、执行失败、分页保护上限和三次登录交接 ID。2026-09-24 当前版本 **7/7 通过**。测试不启动浏览器、不访问京东，不证明页面解析器或真实账号流程通过。

@@ -225,7 +225,7 @@ query outputTruncated 与原件 captureStatus 独立；字段不存在与真实 
 - 大材料和 rrweb 流按块落盘；可查询已提交块，索引后台增量更新。
 - 崩溃检测尾部未完成记录，保留损坏证据并报告 gap，不吞异常。
 - 重建索引保持 ID；删除索引不影响原件和身份。
-- seal 先 flush、校验引用/哈希，再提交 sealed；中断封存标 interrupted。
+- seal 先 flush、校验引用/哈希，再提交 sealed；中断封存标 interrupted。重开 sealed run 时按 `integrity.json` 核对原件路径、大小和 SHA-256；已封存文件损坏、缺失或存在未列入完整性清单的证据源时，保留可读取的原件并追加恢复缺口，状态改为 interrupted，不把重建索引后的可读性误当作封存完整。
 - 封存后原件不变。补录新建 run，以 supplements/continuationOf 关联；评审作为独立追加修订。
 - 应用重启提供恢复界面，核对实例/PID 启动身份/真实采集状态；不让用户手工移动锁文件。
 - 已显示“已保存”的 checkpoint 是耐久边界；尚未提交的数据窗口必须可测量并公开。

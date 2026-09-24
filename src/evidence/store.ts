@@ -46,6 +46,30 @@ async function unreportedCorruption(runDir: string, corrupt: CorruptRecord[]): P
   return unseen;
 }
 
+interface SealedIntegrityIssue { file: string; reason: string; expectedSha256?: string; observedSha256?: string; }
+async function sealedIntegrityIssues(runDir: string): Promise<SealedIntegrityIssue[]> {
+  let ledger: { schemaVersion?: number; files?: Array<{ path: string; sha256: string; bytes: number }> };
+  try { ledger = JSON.parse(await fs.readFile(await safeFile(runDir, 'integrity.json'), 'utf8')); }
+  catch { return [{ file: 'integrity.json', reason: 'missing-or-unreadable' }]; }
+  if (ledger.schemaVersion !== 1 || !Array.isArray(ledger.files)) return [{ file: 'integrity.json', reason: 'invalid-integrity-ledger' }];
+  const issues: SealedIntegrityIssue[] = [], listed = new Set<string>();
+  for (const entry of ledger.files) {
+    if (!entry || typeof entry.path !== 'string' || !/^[a-f0-9]{64}$/.test(entry.sha256) || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0 || listed.has(entry.path)) {
+      issues.push({ file: 'integrity.json', reason: 'invalid-integrity-entry' });
+      continue;
+    }
+    listed.add(entry.path);
+    try {
+      const file = await safeFile(runDir, entry.path), hash = createHash('sha256'); let bytes = 0;
+      for await (const chunk of createReadStream(file)) { hash.update(chunk); bytes += chunk.length; }
+      const observedSha256 = hash.digest('hex');
+      if (bytes !== entry.bytes || observedSha256 !== entry.sha256) issues.push({ file: entry.path, reason: 'size-or-hash-mismatch', expectedSha256: entry.sha256, observedSha256 });
+    } catch { issues.push({ file: entry.path, reason: 'missing-or-unreadable', expectedSha256: entry.sha256 }); }
+  }
+  for (const source of await evidenceSources(runDir)) if (!listed.has(source.file)) issues.push({ file: source.file, reason: 'unlisted-evidence-source' });
+  return issues;
+}
+
 /** The only writer of run evidence. A resolved append has reached FileHandle.sync(). */
 export class EvidenceStore {
   private tail: Promise<unknown> = Promise.resolve();
@@ -94,14 +118,29 @@ export class EvidenceStore {
           if (!previous || number >= previous.number) store.chunks.set(key, { number, bytes: (await fs.stat(path.join(runDir, source.file))).size });
         }
       }
-      if (manifest.status === 'sealed') return store;
       // Every original damaged byte remains in recovery; repaired active logs contain only valid records.
       const unseenCorruption = await unreportedCorruption(runDir, rebuilt.corrupt);
+      const integrityIssues = manifest.status === 'sealed'
+        ? (await sealedIntegrityIssues(runDir)).filter(issue => !unseenCorruption.some(record => record.file === issue.file))
+        : [];
+      if (manifest.status === 'sealed' && !unseenCorruption.length && !integrityIssues.length) return store;
+      const priorStatus = manifest.status;
+      if (priorStatus === 'sealed') {
+        // Persist the broken seal before writing a recovery gap. A crash between
+        // those steps must never leave an acknowledged gap under a sealed manifest.
+        store.manifest = { ...manifest, status: 'interrupted', updatedAt: new Date().toISOString() };
+        await atomicJson(path.join(runDir, 'manifest.json'), store.manifest);
+      }
       const damagedFiles = [...new Set(unseenCorruption.map((record) => record.file))];
       for (const file of new Set(rebuilt.corrupt.map(record => record.file))) {
         const match = /^(.*\/\w+)-(\d{6})\.jsonl$/.exec(file);
         const chunk = match && store.chunks.get(match[1]);
         if (chunk && chunk.number === Number(match![2])) chunk.bytes = store.chunkBytes; // Never append after even an acknowledged incomplete record.
+      }
+      for (const { file } of integrityIssues) {
+        const match = /^(.*\/\w+)-(\d{6})\.jsonl$/.exec(file);
+        const chunk = match && store.chunks.get(match[1]);
+        if (chunk && chunk.number === Number(match![2])) chunk.bytes = store.chunkBytes; // Keep modified sealed bytes untouched.
       }
       for (const file of damagedFiles) {
         const originalFile = await safeFile(runDir, file);
@@ -119,13 +158,23 @@ export class EvidenceStore {
         }
         await store.appendEvent({ type: 'recovery.gap', source: 'evidence-store', data: { reason: 'corrupt-records-preserved', file, preserved, records: unseenCorruption.filter((record) => record.file === file) } });
       }
+      for (const issue of integrityIssues) {
+        let preserved: string | undefined;
+        try {
+          const original = await safeFile(runDir, issue.file);
+          preserved = `recovery/${Date.now()}-${randomUUID()}-${path.basename(issue.file)}`;
+          await fs.copyFile(original, path.join(runDir, preserved));
+          const handle = await fs.open(path.join(runDir, preserved), 'r+');
+          try { await handle.sync(); } finally { await handle.close(); }
+        } catch { preserved = undefined; }
+        await store.appendEvent({ type: 'recovery.gap', source: 'evidence-store', data: { reason: 'sealed-integrity-mismatch', file: issue.file, issue: issue.reason, expectedSha256: issue.expectedSha256, observedSha256: issue.observedSha256, ...(preserved ? { preserved } : {}) } });
+      }
       if (damagedFiles.length) store.index = (await rebuildIndex(runDir)).index;
-      const priorStatus = manifest.status;
       if (priorStatus !== 'interrupted' || damagedFiles.length) {
         store.manifest = { ...manifest, status: 'interrupted', updatedAt: new Date().toISOString() };
         await atomicJson(path.join(runDir, 'manifest.json'), store.manifest);
       }
-      if (priorStatus !== 'interrupted') await store.appendEvent({ type: 'recovery.gap', source: 'evidence-store', data: { reason: priorStatus === 'sealing' ? 'seal-interrupted' : 'previous-capture-no-longer-live', previousStatus: priorStatus, ...(writerLock.recovery ? { writerLockRecovery: writerLock.recovery } : {}) } });
+      if (priorStatus !== 'interrupted') await store.appendEvent({ type: 'recovery.gap', source: 'evidence-store', data: { reason: priorStatus === 'sealed' ? 'sealed-evidence-corrupted' : priorStatus === 'sealing' ? 'seal-interrupted' : 'previous-capture-no-longer-live', previousStatus: priorStatus, ...(writerLock.recovery ? { writerLockRecovery: writerLock.recovery } : {}) } });
       await store.flush();
       return store;
     } catch (error) { await writerLock.release(); throw error; }
@@ -259,9 +308,9 @@ export class EvidenceStore {
         for (const source of await evidenceSources(this.runDir)) if (source.kind === 'events') {
           for await (const line of jsonLines(await safeFile(this.runDir, source.file))) {
             const data = line.value?.data as Record<string, unknown> | undefined;
-            if (line.value?.type === 'recovery.gap' && data?.reason === 'corrupt-records-preserved' && typeof data.file === 'string' && typeof data.preserved === 'string') {
+            if (line.value?.type === 'recovery.gap' && data && ['corrupt-records-preserved', 'sealed-integrity-mismatch'].includes(String(data.reason)) && typeof data.file === 'string' && typeof data.preserved === 'string') {
               const checked = await this.hashFile(data.preserved); files.set(checked.path, checked);
-              acknowledgedCorruption.add(data.file);
+              if (data.reason === 'corrupt-records-preserved') acknowledgedCorruption.add(data.file);
             }
           }
         }

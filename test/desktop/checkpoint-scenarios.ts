@@ -72,11 +72,11 @@ export async function runCheckpointScenarios(studio:Studio,url:string){
     // after the former capture and any operation disconnect both finish.
     for(const controller of ['human','agent'] as const){
       await studio.control('agent');
-      await studio.action({type:'click',selector:'#open-popup',pageId:page.pageId,leaseEpoch:run.leaseEpoch});
+      await studio.action({type:'click',selector:'#open-popup',pageId:page.pageId,generation:page.navigationGeneration,leaseEpoch:run.leaseEpoch});
       const child=await waitUntil(()=>[...run.pages.values()].find(candidate=>candidate.pageId!==page.pageId),Boolean,'checkpoint popup');
       assert.ok(child);await studio.serialized(async()=>{});await child.page.waitForSelector('#popup-button');
       await dispatch('selectPage',{pageId:child.pageId});
-      await studio.action({type:'click',selector:'#popup-button',pageId:child.pageId,leaseEpoch:run.leaseEpoch});
+      await studio.action({type:'click',selector:'#popup-button',pageId:child.pageId,generation:child.navigationGeneration,leaseEpoch:run.leaseEpoch});
       if(controller==='human')await studio.control('human');
       const operation=run.operation,childContents=child.view.webContents;
       const childEvaluate=child.page.evaluate,childCapture=childContents.capturePage;
@@ -105,7 +105,7 @@ export async function runCheckpointScenarios(studio:Studio,url:string){
         const failedDom=await studio.reader(run.id).artifactMetadata(retained.artifactRefs[1]);
         assert.equal(failedDom.captureStatus,'read-failed');assert.equal(failedDom.path,undefined);
         if(controller==='human')await studio.navigate(url+'/orders');
-        else await studio.action({type:'click',selector:'#increment',pageId:page.pageId,leaseEpoch:run.leaseEpoch});
+        else await studio.action({type:'click',selector:'#increment',pageId:page.pageId,generation:page.navigationGeneration,leaseEpoch:run.leaseEpoch});
       }finally{
         releaseDisconnect();child.page.evaluate=childEvaluate;
         if(operation&&disconnect)operation.browser.disconnect=disconnect;

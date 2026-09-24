@@ -1,12 +1,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFile, mkdtemp } from 'node:fs/promises';
+import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { startFixture } from '../../test/fixtures/site/index.ts';
 
 const executable = process.env.BROWSER_EXECUTABLE_PATH;
+test('independent entry refuses an occupied output directory before launching Chrome', async () => {
+  const output = await mkdtemp(path.join(tmpdir(), 'bes-independent-existing-'));
+  const original = '{"keep":"earlier evidence"}\n';
+  try {
+    await writeFile(path.join(output, 'result.json'), original);
+    const child = spawn(process.execPath, ['examples/orders/standalone.mjs', '--url', 'http://127.0.0.1:1', '--executable-path', path.join(output, 'missing-chrome'), '--output', output], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let diagnostics = '';
+    child.stderr.on('data', chunk => { diagnostics += chunk; });
+    const exitCode = await new Promise((resolve, reject) => { child.once('error', reject); child.once('exit', resolve); });
+    assert.equal(exitCode, 1);
+    assert.match(diagnostics, /Output directory must be empty/);
+    assert.equal(await readFile(path.join(output, 'result.json'), 'utf8'), original);
+  } finally { await rm(output, { recursive: true, force: true }); }
+});
+
 test('ordinary independent Puppeteer workflow accepts complete data and rejects missing/incorrect/partial entities', { skip: !executable, timeout: 120000 }, async () => {
   const fixture = await startFixture();
   const output = await mkdtemp(path.join(tmpdir(), 'bes-independent-'));

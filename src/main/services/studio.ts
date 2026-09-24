@@ -1,5 +1,5 @@
 import { WebContentsView, session, app, type Session, type DownloadItem, type WebContents } from 'electron';
-import { mkdir, readFile, readdir, writeFile, rename, stat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import puppeteer, { type Browser, type Page } from 'puppeteer-core';
@@ -9,7 +9,7 @@ import { browserEnvironmentMetadata } from '../browser/environment';
 import { GateTransport } from '@/runner/gate';
 import { EvidenceStore } from '@/evidence/store';
 import { EvidenceReader } from '@/evidence/reader';
-import { jsonLines, safeFile } from '@/evidence/files';
+import { atomicJson, jsonLines, safeFile } from '@/evidence/files';
 import { CaptureCoordinator, type PageIdentity } from '@/capture/coordinator';
 import { ensure, now } from '@/shared/errors';
 import { startWorkflow, type WorkflowHandle } from '@/runner/manager';
@@ -76,7 +76,9 @@ export class Studio {
       try{const store=await EvidenceStore.open(path.join(this.root,'runs',id));this.runs.push(store.manifest);await store.close();}catch(error){this.runs.push({id,status:'unreadable',error:String(error)});}
     }
     await this.refreshValidations();
-    this.observer=await puppeteer.connect({browserWSEndpoint:this.endpoint,defaultViewport:null});
+    // Capture owns a separate, bounded Network CDP session. Keep this long-lived
+    // page observer out of network monitoring; operation pages retain it for workflows.
+    this.observer=await puppeteer.connect({browserWSEndpoint:this.endpoint,defaultViewport:null,networkEnabled:false});
   }
   async refreshValidations(){
     ensure(!this.workflow&&!this.workflowStarting&&!this.workflowSettlement&&!this.validationLaunch,'Cannot rebuild validation history during execution',409);
@@ -95,12 +97,12 @@ export class Studio {
     let aborted!:()=>void;const cancelled=new Promise<never>((_resolve,reject)=>{aborted=()=>reject(signal.reason??new Error('Validation stopped'));signal.addEventListener('abort',aborted,{once:true});});
     try{await Promise.race([observed,cancelled]);}finally{signal.removeEventListener('abort',aborted);}
   }
-  private async save(){ const file=path.join(this.root,'workspace.json');await writeFile(file+'.tmp',JSON.stringify({schemaVersion:1,projects:this.projects,profiles:this.profiles},null,2));await rename(file+'.tmp',file); }
+  private async save(){await atomicJson(path.join(this.root,'workspace.json'),{schemaVersion:1,projects:this.projects,profiles:this.profiles});}
   serialized<T>(fn:()=>Promise<T>):Promise<T>{const next=this.queue.then(fn);this.queue=next.catch(()=>{});return next;}
   required(){ensure(this.active,'No active run',409);return this.active;}
   private pageContents(p:ManagedPage){try{const contents=p.view.webContents;return contents&&!contents.isDestroyed()?contents:undefined;}catch{return undefined;}}
   current(){const r=this.required();const p=r.pages.get(r.selectedPageId);ensure(p&&this.pageContents(p),'No live selected page',409);return p;}
-  state(){const r=this.active;return {instanceId:this.instanceId,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,validationStartGrant:this.validationStartGrant({runId:r.id}).grant,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
+  state(){const r=this.active;return {instanceId:this.instanceId,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:p.capture.inspecting,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,validationStartGrant:this.validationStartGrant({runId:r.id}).grant,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
   async createProject(body:any){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');const p={id:randomUUID(),name:body.name.trim().slice(0,200),objective:String(body.objective||'').slice(0,4000),scriptDirectory:body.scriptDirectory?path.resolve(body.scriptDirectory):undefined,createdAt:now()};this.projects.push(p);await this.save();return p;}
   async updateProject(body:any){const project=this.projects.find(item=>item.id===(body.projectId||body.id));ensure(project,'Unknown project',404);if(body.name!==undefined){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');project.name=body.name.trim().slice(0,200);}if(body.objective!==undefined){ensure(typeof body.objective==='string','Objective must be text');project.objective=body.objective.slice(0,4000);}if(body.scriptDirectory!==undefined){ensure(typeof body.scriptDirectory==='string'||body.scriptDirectory===null,'Workflow directory must be a path');project.scriptDirectory=body.scriptDirectory?path.resolve(body.scriptDirectory):undefined;}await this.save();return project;}
   async createProfile(body:any){ensure(this.projects.some(p=>p.id===body.projectId),'Unknown project');ensure(typeof body.name==='string'&&body.name.trim(),'Profile name required');const p:Profile={id:randomUUID(),projectId:body.projectId,name:body.name.trim().slice(0,120),loginStatus:'unknown'};this.profiles.push(p);await this.save();return p;}
@@ -236,10 +238,12 @@ export class Studio {
     if(r.pendingOperation)await this.revokeOperation(r);
     if(r.operation){const operation=r.operation;await operation.gate.quiesce();await operation.browser.disconnect();if(r.operation===operation)r.operation=undefined;}
     ensure(this.active===r&&r.leaseEpoch===transitionEpoch&&!this.closing,'Control transition was cancelled',409);
+    if(controller==='agent')await Promise.all([...r.pages.values()].filter(page=>page.capture.inspecting).map(page=>page.capture.inspect(false)));
+    ensure(this.active===r&&r.leaseEpoch===transitionEpoch&&!this.closing,'Control transition was cancelled',409);
     r.controller=controller;r.locked=false;this.window.lock(controller!=='human');
     await r.store.appendEvent({type:'control',source:'studio',data:{controller,leaseEpoch:r.leaseEpoch}});return this.state().active;
   }
-  async action(body:any){const r=this.required(),p=this.current(),leaseEpoch=r.leaseEpoch;this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(body.leaseEpoch===leaseEpoch&&body.pageId===p.pageId,'Stale lease or wrong page identity',409);
+  async action(body:any){const r=this.required(),p=this.current(),leaseEpoch=r.leaseEpoch;ensure(Number.isSafeInteger(body.generation)&&body.generation>=0,'Navigation generation is required',409);this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(body.leaseEpoch===leaseEpoch&&body.pageId===p.pageId,'Stale lease or wrong page identity',409);
     const op=await this.operation(r,p,leaseEpoch);this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(op.targetId===p.targetId&&r.operation===op,'Target mismatch',409);
     const commandId=randomUUID();await r.store.appendEvent({type:'command',source:'api',pageId:p.pageId,data:{commandId,type:body.type,selector:body.selector,controller:r.controller}});
     this.assertOperationOwner(r,p,leaseEpoch,body.generation);

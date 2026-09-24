@@ -21,10 +21,10 @@ export async function runDesktopTests(studio:Studio){
     console.log('M0 capture-ready and synthetic page loaded');
     const p=studio.current(),r=studio.required();assert.notEqual(p.webContentsId,studio.window.window.webContents.id);assert.ok(p.targetId);
     await p.page.waitForSelector('#api-state');await p.page.waitForFunction(()=>document.querySelector('#api-state')?.textContent==='已就绪');
-    await studio.control('agent');await studio.action({type:'click',pageId:p.pageId,leaseEpoch:r.leaseEpoch,selector:'#increment'});
+    await studio.control('agent');await studio.action({type:'click',pageId:p.pageId,generation:p.navigationGeneration,leaseEpoch:r.leaseEpoch,selector:'#increment'});
     console.log('M0 managed click completed');
     assert.equal(await p.page.$eval('#action-count',el=>el.textContent),'1');
-    await studio.action({type:'navigate',url:site.url+'/orders?again=1',pageId:p.pageId,leaseEpoch:r.leaseEpoch});
+    await studio.action({type:'navigate',url:site.url+'/orders?again=1',pageId:p.pageId,generation:p.navigationGeneration,leaseEpoch:r.leaseEpoch});
     await p.page.waitForFunction(()=>document.querySelector('#api-state')?.textContent==='已就绪');
     const gate=r.operation!.gate;await gate.quiesce();
     const attempts=await Promise.allSettled([r.operation!.page.click('#increment'),delay(10).then(()=>r.operation!.page.evaluate(()=>document.body.setAttribute('illegal','yes')))]);

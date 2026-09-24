@@ -94,6 +94,8 @@
     }
   ],
   "humanPoints": [
-    { "id": "jd-login", "description": "Open the recorded dedicated page at passport.jd.com/uc/login. Return control after scanning or if the QR code expires. The workflow checks the visible profile page first and retries up to three times only when authentication is not confirmed." }
+    { "id": "jd-login", "description": "Open the recorded dedicated page at passport.jd.com/uc/login. Return control after scanning or if the QR code expires. The workflow checks the visible profile page before retrying." },
+    { "id": "jd-login-retry-2", "description": "Second QR login attempt when the visible profile page did not confirm authentication after the first handoff." },
+    { "id": "jd-login-retry-3", "description": "Final QR login attempt when the visible profile page still did not confirm authentication." }
   ]
 }

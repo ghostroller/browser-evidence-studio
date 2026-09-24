@@ -1,5 +1,5 @@
 import puppeteer from 'puppeteer-core';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -21,6 +21,9 @@ if (!args.has('--url') || !(args.get('--executable-path') || process.env.BROWSER
   const directory = path.dirname(fileURLToPath(import.meta.url));
   const output = path.resolve(String(args.get('--output') || `artifacts/standalone-${new Date().toISOString().replace(/[:.]/g, '-')}`));
   await mkdir(output, { recursive: true });
+  if ((await readdir(output)).length) throw new Error('Output directory must be empty so earlier evidence is not overwritten.');
+  // Exclusive creation also prevents two runs that both observed an empty directory.
+  await writeFile(path.join(output, '.bes-output-reserved'), JSON.stringify({ startedAt: new Date().toISOString(), processId: process.pid }) + '\n', { flag: 'wx' });
   const input = { baseUrl: String(args.get('--url')), variant: String(args.get('--variant') || 'normal'), requireLogin: args.has('--login'), requireHumanReview: args.has('--review') };
   const ajv = new Ajv({ allErrors: true, strict: false });
   const inputValidator = ajv.compile(JSON.parse(await readFile(path.join(directory, 'input.schema.json'), 'utf8')));

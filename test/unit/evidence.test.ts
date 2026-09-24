@@ -134,6 +134,59 @@ test('incomplete tails are preserved, reported as gaps and never absorb a later 
   } finally { await f.cleanup(); }
 });
 
+test('damage discovered after sealing preserves the original and marks the run interrupted', async () => {
+  const f = await fixture();
+  let resumed: EvidenceStore | undefined;
+  try {
+    await f.store.appendEvent({ type: 'acknowledged', source: 'synthetic' });
+    await f.store.seal();
+    await f.store.close();
+    const journal = path.join(f.directory, 'journal', (await fs.readdir(path.join(f.directory, 'journal')))[0]);
+    await fs.appendFile(journal, 'damaged-tail');
+
+    resumed = await EvidenceStore.open(f.directory);
+    assert.equal(resumed.manifest.status, 'interrupted');
+    const reasons = (await f.reader.gaps()).items.map(item => (item as { data: { reason: string } }).data.reason);
+    assert.ok(reasons.includes('corrupt-records-preserved'));
+    assert.ok(reasons.includes('sealed-evidence-corrupted'));
+    const preserved = (await fs.readdir(path.join(f.directory, 'recovery'))).filter(name => name.endsWith('.jsonl'));
+    assert.equal(preserved.length, 1);
+    assert.ok((await fs.readFile(path.join(f.directory, 'recovery', preserved[0]), 'utf8')).endsWith('damaged-tail'));
+    assert.ok((await fs.readFile(journal, 'utf8')).endsWith('damaged-tail'));
+    const gapCount = reasons.length;
+    await resumed.close();
+    resumed = await EvidenceStore.open(f.directory);
+    assert.equal(resumed.manifest.status, 'interrupted');
+    assert.equal((await f.reader.gaps()).items.length, gapCount, 'Reopening must not duplicate the damage report');
+  } finally { await resumed?.close().catch(() => undefined); await f.cleanup(); }
+});
+
+test('sealed integrity detects valid JSON changes and a missing journal source', async () => {
+  for (const damage of ['changed', 'missing']) {
+    const f = await fixture();
+    let reopened: EvidenceStore | undefined;
+    try {
+      await f.store.appendEvent({ type: 'acknowledged', source: 'synthetic' });
+      await f.store.seal();
+      await f.store.close();
+      const journal = path.join(f.directory, 'journal', (await fs.readdir(path.join(f.directory, 'journal')))[0]);
+      if (damage === 'changed') await fs.writeFile(journal, (await fs.readFile(journal, 'utf8')).replace('acknowledged', 'changed-value'));
+      else await fs.unlink(journal);
+      const changedBytes = damage === 'changed' ? await fs.readFile(journal) : undefined;
+      reopened = await EvidenceStore.open(f.directory);
+      assert.equal(reopened.manifest.status, 'interrupted');
+      const gaps = (await f.reader.gaps()).items.map(item => (item as { data: { reason: string; issue?: string } }).data);
+      assert(gaps.some(gap => gap.reason === 'sealed-integrity-mismatch' && gap.issue === (damage === 'missing' ? 'missing-or-unreadable' : 'size-or-hash-mismatch')));
+      assert(gaps.some(gap => gap.reason === 'sealed-evidence-corrupted'));
+      if (changedBytes) {
+        assert.deepEqual(await fs.readFile(journal), changedBytes, 'The changed original is not appended or rewritten');
+        const recovery = await fs.readdir(path.join(f.directory, 'recovery'));
+        assert(recovery.some(name => name.endsWith('.jsonl')));
+      }
+    } finally { await reopened?.close().catch(() => undefined); await f.cleanup(); }
+  }
+});
+
 test('seal detects damaged bytes, missing artifact references and previously unreported corruption', async () => {
   const f = await fixture();
   try {
@@ -185,6 +238,25 @@ test('bounded event pages reject wrong directions and cursors and support missin
     await assert.rejects(f.reader.events({ cursor: 'garbage' }), (error: EvidenceError) => error.code === 'INVALID_CURSOR');
     await assert.rejects(f.reader.artifact('../manifest.json'), (error: EvidenceError) => error.code === 'INVALID_ARTIFACT_ID');
     await assert.rejects(EvidenceStore.open(f.directory), (error: EvidenceError) => error.code === 'WRITER_BUSY');
+  } finally { await f.cleanup(); }
+});
+
+test('summary checkpoint continuation starts after returned previews and works with default checkpoint reads', async () => {
+  const f = await fixture();
+  try {
+    const checkpoints = [];
+    for (let number = 0; number < 5; number++) checkpoints.push(await f.store.appendCheckpoint({
+      key: `checkpoint-${number}`, title: 'synthetic title '.repeat(12),
+      captureStartedAt: new Date().toISOString(), captureEndedAt: new Date().toISOString(), captureConsistency: 'consistent', artifactRefs: [],
+    }));
+    for (const maxBytes of [1024, 2000]) {
+      const summary = await f.reader.summary({ maxBytes });
+      const previewIds = (summary.checkpoints as { id: string }[]).map(item => item.id);
+      const cursor = summary.checkpointCursor;
+      assert.equal(typeof cursor, 'string');
+      const continuation = await f.reader.checkpoints({ cursor: cursor as string, maxBytes: 32768 });
+      assert.deepEqual([...previewIds, ...continuation.items.map(item => (item as { id: string }).id)], checkpoints.map(item => item.id));
+    }
   } finally { await f.cleanup(); }
 });
 

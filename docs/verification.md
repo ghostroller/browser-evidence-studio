@@ -2,6 +2,35 @@
 
 更新日期：2026-09-24，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## 整体审查修复（2026-09-24）
+
+本批修复了人工交还/人工评审的 HTTP 写入权限、action 对页面和导航代际的校验、封存档案原件被改动或缺失后的显式恢复缺口、摘要 checkpoint 游标、长历史验收对照、检查模式连续点击与页面状态、同一 run 保存点材料乱序、时间线范围乱序、独立示例覆盖旧输出，以及测试模式误写正式数据根。未修改 CDP 响应头的脱敏策略。旧档案无法补造原本未保存的字节；封存完整性失败时保留可读损坏原件并标为 `interrupted`，不继续宣称 sealed。验收对照仍按 32 KiB 有界分页；保存点过大或读取失败时显示无法确认。
+
+| 实际命令 / 检查 | 结果 |
+| --- | --- |
+| Node `v24.21.0`、npm `11.19.0`；`npm.cmd run typecheck`、`npm.cmd run build` | 均通过；构建仍有原有的 `use client`、大 chunk 与 sourcemap 提示 |
+| `npm.cmd test` | **26 文件 / 155 项通过，0 失败**；包含权限、原件完整性、游标及 renderer 竞态专项。首次全量为 154/155：旧长测审计断言仍期待损坏档案保持 sealed；现改为检查 interrupted 和缺口后全量通过 |
+| `node --import tsx --test examples/jd-account-export/run.test.mjs` | **7/7** 纯合成通过；列表派生摘要、分阶段失败和三次声明的登录点均覆盖，不验证真实京东页面解析 |
+| `node --import tsx --test examples/orders/standalone.test.mjs` | 非空输出目录拒绝并保留旧文件的专项通过；首次未设置 `BROWSER_EXECUTABLE_PATH` 时浏览器场景跳过。随后设置本机 Chrome 路径，在正常桌面进程环境重跑 **2/2** 通过；受限沙箱内的 Chrome GPU 启动失败不计通过 |
+| `node test/desktop/launch.js` | 源码构建的 19 进程矩阵通过，报告 `output/desktop-1790256142001/desktop-summary.json`；包括检查模式第二次点击、人工交接、五处强杀恢复及 profile 新进程重开 |
+| 使用仓库内 Electron ZIP 缓存设置 `ELECTRON_ZIP_DIR` 后运行 `npm.cmd run package`、`npm.cmd run make` | 均通过；首次未指定离线缓存时，package 因沙箱不能创建用户 `%LOCALAPPDATA%/electron` 而失败，未把该失败计入通过。后续源码已重新 make；最新 ZIP 大小见下文 |
+| 当时的包 `node test/desktop/launch.js '--executable=out/Browser Evidence Studio-win32-x64/BrowserEvidenceStudio.exe'` | 19 进程矩阵通过，报告 `output/desktop-1790256568129/desktop-summary.json`。该版 `app.asar` SHA-256 `6e1d3f58e4bc7458666364c1793eef6e2a1a63fff62f451e82ed034762107789` |
+| 设置 `BES_TEST=1`、不传 `BES_DATA`、隔离 APPDATA 启动 | 以退出码 2 直接拒绝，没有创建正式数据目录。首次包虽正确拒绝，却由 Electron 弹出未捕获异常窗口；捕获并直接退出后复验无弹窗。最新 `atomicJson` 包又单独复验：10 秒内退出码 2，没有创建正式数据目录 |
+
+一分钟计时预检 `output/desktop-1790256825450/soak-result.json` 的主阶段为 **60/60 次点击、零漏槽、61 个响应、1 个 checkpoint**，新进程复核 69 个文件及 1 个 checkpoint 通过；click P95 **28.99 ms**、最大 **48.28 ms**，页面私有内存最大 **60.23 MiB**。整轮启动器随后在不相关的 `report-before-terminal` 恢复用例首次建档时遇到 Windows `EPERM` 重命名，故退出码 1；独立重新执行 `node test/desktop/launch.js --recovery-only` 的五处强杀恢复矩阵通过，报告 `output/desktop-1790257067092/desktop-summary.json`。一分钟只能验证计时机制，不能证明 30 分钟节奏或内存稳定。
+
+本轮对长测器增加单调时钟调度、负载结束时间、点击/页面回执/请求/checkpoint 等阶段耗时、最慢周期和漏槽前周期记录，未调宽 1,800 次与零漏槽阈值。随后用当时的发行包执行 `BES_SKIP_UI=1 node test/desktop/launch.js '--executable=out/Browser Evidence Studio-win32-x64/BrowserEvidenceStudio.exe' --soak=30`，启动器退出码 **0**，`output/desktop-1790257133769/desktop-summary.json` 与同目录 `soak-result.json` 均为 **passed=true**。固定负载完成 **1,800/1,800 次动作、零漏槽、1,831 个响应、31 个 checkpoint**；受核对动作、响应正文和原件完整性通过。checkpoint 持久完成 P95 **236.21 ms**、运行期间摘要 P95 **18.64 ms**、HTTP 提交 P95 **5.28 ms**，均在预设阈值内。新 Electron 进程独立重建并核验 **1,920 个文件、179,046,581 字节、31 个 checkpoint**；同轮五处强杀恢复和两种退出场景通过。
+
+该轮页面私有内存最高 **484.3 MiB**，低于 **512 MiB** 的进程保护上限，但去除前五分钟后的斜率仍约 **13.34 MiB/分钟**；页面 JS heap 约 **4 MiB**，不能由本次阈值通过推断内存稳定。约第 20 分钟起部分点击阶段升至约 **940 ms**，同时页面 layout 速率下降，成因尚未确认。该发行包生成于下文的 observer 连接配置调整、`EMPTY_ITEMS` 稳定引用和新增诊断之前；它的结果只代表当时版本。后续版本的重新打包与 30 分钟复验见下文。`BES_SKIP_UI` 不覆盖 Windows 物理鼠标体验，真实账号验收仍需用户另行参与。此前 **1,799/1,800** 的失败保留为旧包的历史结果，不能与本轮通过混同。
+
+随后仅为 Puppeteer observer 连接设置 `networkEnabled: false`，作为页面私有内存增长的待检验缓解假设；还补充电源/窗口诊断并稳定 renderer 的 `EMPTY_ITEMS` 引用。首次用这些改动打包在受限沙箱启动时遇到 GPU 子进程失败，报告 `output/desktop-1790259453510`；在正常桌面进程环境重试时，合成场景的 `workspace.json.tmp` 重命名遇到 Windows `EPERM`，报告 `output/desktop-1790259482176`。`Studio.save` 随后改用已有的 `atomicJson` 写入方式并重新打包，这些失败不计为通过。
+
+该最新包先以 `BES_SKIP_UI=1 node test/desktop/launch.js '--executable=out/Browser Evidence Studio-win32-x64/BrowserEvidenceStudio.exe' --soak=5` 做短预检：`output/desktop-1790259609513/desktop-summary.json` 与同目录 `soak-result.json` 均通过，启动器退出码 **0**。完成 **300/300 次动作、零漏槽、305 个响应、5 个 checkpoint**；新 Electron 进程重开核验 **324 个文件、5 个 checkpoint**，五处强杀恢复和两种退出场景通过。页面私有内存最高 **102.9 MiB**，旧包同长度窗口为 **127.4 MiB**；但本次浏览器窗口约第 **2.34 分钟**后隐藏，条件不同。此五分钟结果只验证短负载机制。
+
+随后在正常桌面进程环境执行同一发行包的 `BES_SKIP_UI=1 node test/desktop/launch.js '--executable=out/Browser Evidence Studio-win32-x64/BrowserEvidenceStudio.exe' --soak=30`：`output/desktop-1790260171927/desktop-summary.json` 与同目录 `soak-result.json` 均为 **passed=true**，启动器退出码 **0**。固定负载完成 **1,800/1,800 次动作、零漏槽、1,830 个响应、30 个 checkpoint**；checkpoint 持久完成 P95 **278.03 ms**、运行期间摘要 P95 **20.26 ms**、HTTP 提交 P95 **5.39 ms**，均在预设阈值内。新 Electron 进程重建并核验 **1,917 个文件、177,919,183 字节、30 个 checkpoint**，五处强杀恢复和两种退出场景通过。该版 `app.asar` SHA-256 `24926a70414d4c8d016c89c44607c61d91e5208493e0e2bef31bd6c3d050f2e0`；最新 Windows ZIP 为 **173,954,444 字节**。
+
+最新包的页面私有内存最高 **302.73 MiB**，去除前五分钟后的斜率约 **7.54 MiB/分钟**；早一版 30 分钟结果分别是 **484.3 MiB** 和 **13.34 MiB/分钟**。新轮窗口首次隐藏在约第 **10.33 分钟**，有 **119 个**隐藏状态样本，未观察到 powerMonitor 锁屏或睡眠事件；窗口条件与旧轮不同，因此数值下降只是观察，不能独立归因于 observer 的 `networkEnabled: false`，正斜率也不能证明无泄漏。`BES_SKIP_UI` 不覆盖 Windows 物理鼠标体验，真实账号验收仍需用户另行参与。此前旧包 **1,799/1,800** 的失败仍保留为历史结果。
+
 ## 前端行为测试与存档切换竞态（2026-09-24）
 
 在 Vitest 迁移基础上新增 3 个 jsdom/React Testing Library 文件、8 项行为测试：存档 A/B 乱序返回、关闭后旧材料迟到；验收对照拒绝跨项目或错误 run 的历史，以及 A/B 乱序示范；材料视图区分明确的 JSON `null` 与字段缺失、标示输出预算截断，并核对定向 JSON 路径与游标请求。测试只使用合成的 IPC 响应，没有读取真实录制。

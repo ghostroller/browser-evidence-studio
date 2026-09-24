@@ -17,6 +17,7 @@ class SyntheticPage {
   currentUrl = 'about:blank';
   detailVisits = 0;
   orderReads = 0;
+  loginConfirmed = true;
   constructor(failAt, paginationLimit = false) {
     this.failAt = failAt;
     this.paginationLimit = paginationLimit;
@@ -51,6 +52,7 @@ class SyntheticPage {
       return Object.fromEntries(Object.keys(argument).map(key => [key, fields[key] ?? null]));
     }
     const pathname = new URL(this.currentUrl).pathname;
+    if (!this.loginConfirmed && (pathname === '/uc/login' || pathname === '/user/info')) return false;
     if (pathname === '/uc/login') return true;
     if (pathname === '/user/info') return '保密';
     if (pathname === '/synthetic/addresses') return [{
@@ -95,6 +97,7 @@ async function executeSynthetic(failAt, paginationLimit = false) {
       // Acknowledgement is asynchronous, as in the real reporter. The workflow
       // must await it before moving on to another potentially failing stage.
       await setImmediate();
+      if (name === 'details' && failAt === 'details') throw new Error('Synthetic details emission failure');
       assert(!datasets.some(dataset => dataset.name === name), `Dataset ${name} was emitted twice`);
       assert(provenance.sourceRefs.length > 0);
       assert(provenance.sourceRefs.every(id => checkpoints.some(checkpoint => checkpoint.id === id)));
@@ -126,9 +129,9 @@ for (const [failAt, retained] of [['orders', 3], ['details', 4], ['recycle', 5],
     assert.equal(result.datasets.find(dataset => dataset.name === 'identity').records[0].boundPhone, '138****0000');
     assert.equal(result.checkpoints.some(checkpoint => checkpoint.key === 'collection-complete'), false);
     if (failAt === 'details') {
-      assert.equal(result.page.detailVisits, 2);
-      assert.equal(result.checkpoints.filter(checkpoint => checkpoint.key === 'order-detail').length, 1);
-      assert.equal(result.datasets.some(dataset => dataset.name === 'details'), false, 'A half-read detail dataset is not emitted as completed');
+      assert.equal(result.page.detailVisits, 0, 'List-derived summaries do not visit detail pages');
+      assert.equal(result.checkpoints.filter(checkpoint => checkpoint.key === 'orders-list-page').length, 1);
+      assert.equal(result.datasets.some(dataset => dataset.name === 'details'), false, 'An unacknowledged detail dataset is not counted as completed');
     }
     if (failAt === 'recycle') {
       assert(result.checkpoints.some(checkpoint => checkpoint.key === 'deleted-orders-complete'));
@@ -147,7 +150,8 @@ test('successful staged reporting retains existing provenance, fields and pagina
   assert(orders.records.every(record => !Object.hasOwn(record, 'detailHref') && !Object.hasOwn(record, 'listUrl')));
   const details = result.datasets.find(dataset => dataset.name === 'details');
   assert.equal(details.origin, 'derived');
-  assert(details.records.every(record => record.orderId === record.sourceOrderId && record.screenshotCheckpointId && record.telephone === null));
+  assert(details.records.every(record => record.orderId === record.sourceOrderId && record.sourceCheckpointId && record.detailSource === 'orders-list-derived'));
+  assert.equal(result.page.detailVisits, 0);
   assert.deepEqual(result.datasets.find(dataset => dataset.name === 'deletedOrders').records, []);
   assert.equal(result.output.deletedOrdersState, 'explicit-empty');
 });
@@ -159,4 +163,21 @@ test('a pagination safety limit still reports an incomplete dataset and fails ac
   assert.deepEqual(result.datasets.find(dataset => dataset.name === 'orders').pagination,
     { complete: false, pages: 1, terminalReason: 'Pagination safety limit reached without terminal evidence' });
   assert.equal(result.output.pagination.complete, false);
+});
+
+test('all QR retries use declared human handoff points and verify authentication after return', async () => {
+  const page = new SyntheticPage();
+  page.loginConfirmed = false;
+  const requested = [];
+  await run({ page, input, reporter: {
+    async progress() {},
+    async emitData() {},
+    async assertion() {},
+    async requestHuman({ id }) {
+      requested.push(id);
+      page.loginConfirmed = requested.length === 3;
+    },
+  } });
+  assert.deepEqual(requested, ['jd-login', 'jd-login-retry-2', 'jd-login-retry-3']);
+  assert(requested.every(id => manifest.humanPoints.some(point => point.id === id)));
 });

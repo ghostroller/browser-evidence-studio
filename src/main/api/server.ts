@@ -38,11 +38,9 @@ const routes: Route[] = [
   route('GET', /^\/v1\/runs\/([^/]+)\/artifacts\/([^/]+)\/content$/, ['runId', 'artifactId'], 'artifactContent', { binary: true }),
   route('GET', /^\/v1\/artifacts\/([^/]+)$/, ['artifactId'], 'artifact'),
   route('GET', /^\/v1\/artifacts\/([^/]+)\/content$/, ['artifactId'], 'artifactContent', { binary: true }),
-  route('POST', /^\/v1\/handoffs\/([^/]+)\/reply$/, ['handoffId'], 'replyHuman', { mutate: true, lease: true }),
   route('POST', /^\/v1\/handoffs\/([^/]+)\/cancel$/, ['handoffId'], 'cancelHandoff', { mutate: true, lease: true }),
   route('GET', /^\/v1\/validations\/([^/]+)$/, ['validationId'], 'validation'),
   route('GET', /^\/v1\/validations\/([^/]+)\/reviews$/, ['validationId'], 'reviews'),
-  route('POST', /^\/v1\/validations\/([^/]+)\/reviews$/, ['validationId'], 'review', { mutate: true }),
 ];
 class ApiError extends Error { constructor(readonly code: string, message: string, readonly status = 400) { super(message); } }
 function failure(error: unknown): ApiFailure {
@@ -188,6 +186,7 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
         body[name] = value;
       });
       if (matched.lease && (!Number.isSafeInteger(body.leaseEpoch) || Number(body.leaseEpoch) < 1)) throw new ApiError('LEASE_REQUIRED', 'A current leaseEpoch is required for this mutation.', 409);
+      if (matched.operation === 'action' && (!Number.isSafeInteger(body.generation) || Number(body.generation) < 0)) throw new ApiError('GENERATION_REQUIRED', 'A current navigation generation is required for each action.', 409);
       if (!matched.mutate) {
         const result = await dispatch(matched.operation, body);
         if (matched.binary) {

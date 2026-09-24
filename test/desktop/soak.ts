@@ -4,7 +4,7 @@ import { createReadStream } from 'node:fs';
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { app } from 'electron';
+import { app, powerMonitor } from 'electron';
 import type { Metrics } from 'puppeteer-core';
 import type { Studio } from '@/main/services/studio';
 import type { EvidenceReader } from '@/evidence/reader';
@@ -17,7 +17,10 @@ const round = (value: number) => Math.round(value * 100) / 100;
 const percentile = (values: number[], fraction = .95) => values.length ? [...values].sort((a, b) => a - b)[Math.ceil(values.length * fraction) - 1] : null;
 interface ExpectedAction { sequence: number; commandId: string; selector: string; }
 interface ExpectedRequest { sequence: string; url: string; bytes: number; sha256: string; }
-interface MemorySample { elapsedMs: number; main: NodeJS.MemoryUsage; pageProcessId: number; pagePrivateBytes: number | null; pageWorkingSetBytes: number | null; browserPage: Metrics; }
+interface MemorySample {
+  elapsedMs: number; main: NodeJS.MemoryUsage; pageProcessId: number; pagePrivateBytes: number | null; pageWorkingSetBytes: number | null; browserPage: Metrics;
+  windowVisible: boolean; windowFocused: boolean; browserViewVisible: boolean; systemIdleSeconds: number; systemIdleStateAt60Seconds: 'active' | 'idle' | 'locked' | 'unknown';
+}
 
 async function* events(reader: EvidenceReader, types: string[]) {
   let cursor: string | undefined;
@@ -113,14 +116,26 @@ export async function runSoak(studio: Studio, url: string, minutes: number) {
   if (studio.active) await studio.seal();
   const actions: ExpectedAction[] = [], requests: ExpectedRequest[] = [], checkpointIds: string[] = [], samples: MemorySample[] = [];
   const checkpointMs: number[] = [], checkpointCaptureTimestampMs: number[] = [], summaryMs: number[] = [], submitMs: number[] = [], summaryBytes: number[] = [];
+  const stageMs: Record<string, number[]> = { click: [], pageAck: [], regularFetch: [], largeFetch: [], checkpoint: [], captureFlush: [], summary: [], memory: [], fieldRead: [] };
+  const slowCycles: Array<{ slot: number; cycle: number; elapsedMs: number; workMs: number; visibility: string; focused: boolean; stages: Record<string, number> }> = [];
+  const missedSlots: Array<{ expectedSlot: number; resumedSlot: number; elapsedMs: number; previousCycle?: (typeof slowCycles)[number] }> = [];
+  const measure = async <T>(name: string, work: () => Promise<T>, cycle?: Record<string, number>): Promise<T> => {
+    const at = performance.now();
+    try { return await work(); }
+    finally { const elapsed = round(performance.now() - at); stageMs[name].push(elapsed); if (cycle) cycle[name] = elapsed; }
+  };
   const report: any = { schemaVersion: 2, processId: process.pid, runId: '', minutes, elapsedMs: 0, passed: false, status: 'starting', checkpointIds,
     qualification: minutes >= 30 ? '30-minute-or-longer-fixed-load' : minutes >= 20 ? '20-minute-fixed-load' : 'mechanism-preflight-only',
     load: { cadenceMs: 1000, plannedCycles: Math.ceil(minutes * 60), regularResponseBytes: 64 * KiB, largeResponseBytes: MiB, largeEveryMs: 60000, checkpointEveryMs: 60000, summaryEveryMs: 10000, domTickMs: 100, skippedScheduleSlots: 0, completedCycles: 0, maxCycleWorkMs: 0, cyclesOverCadence: 0 },
     thresholds: limits, expected: { actions, requests }, limitations: ['UI first-visible-feedback latency is not measured.', 'Memory protection limits are not a leak-free or indefinite-growth acceptance criterion.', 'Evidence completeness is limited to acknowledged synthetic actions and responses in this run.'] };
+  const powerEvents: Array<{ event: string; at: string; elapsedMs: number | null }> = [];
+  report.powerEvents = { items: powerEvents, dropped: 0 };
   const save = async (status: string) => {
     report.status = status;
     report.performance = { checkpointDurableAcknowledgementMs: checkpointMs, checkpointCaptureTimestampMs, summaryMs, httpSubmitMs: submitMs, summaryBytes,
       checkpointP95Ms: percentile(checkpointMs), summaryP95Ms: percentile(summaryMs), httpSubmitP95Ms: percentile(submitMs),
+      stageTimings: Object.fromEntries(Object.entries(stageMs).map(([name, values]) => [name, { count: values.length, p50Ms: percentile(values, .5), p95Ms: percentile(values), maxMs: values.length ? Math.max(...values) : null }])),
+      slowCycles, missedSlots,
       checkpointTiming: 'Client POST start through succeeded job response: includes HTTP, queue, durable completion and up to 50 ms polling delay. Stored captureStartedAt/savedAt timestamps are supplementary, not a durable completion clock.' };
     report.memory = memoryReport(samples);
     for (const file of ['soak-result.json', 'soak-progress.json']) {
@@ -128,7 +143,15 @@ export async function runSoak(studio: Studio, url: string, minutes: number) {
       await writeFile(temporary, JSON.stringify(report, null, file === 'soak-result.json' ? 2 : undefined)); await rename(temporary, destination);
     }
   };
-  let started: number | undefined;
+  let started: number | undefined, startedMonotonic: number | undefined;
+  const recordPowerEvent = (event: string) => {
+    if (powerEvents.length < 32) powerEvents.push({ event, at: new Date().toISOString(), elapsedMs: startedMonotonic === undefined ? null : round(performance.now() - startedMonotonic) });
+    else report.powerEvents.dropped++;
+  };
+  const onLock = () => recordPowerEvent('lock-screen'), onUnlock = () => recordPowerEvent('unlock-screen');
+  const onSuspend = () => recordPowerEvent('suspend'), onResume = () => recordPowerEvent('resume');
+  powerMonitor.on('lock-screen', onLock); powerMonitor.on('unlock-screen', onUnlock);
+  powerMonitor.on('suspend', onSuspend); powerMonitor.on('resume', onResume);
   try {
     const project = await studio.createProject({ name: '固定合成长录制验证', objective: '唯一动作和请求、原件完整性、HTTP 性能和进程内存观察' });
     const profile = await studio.createProfile({ projectId: project.id, name: '独立合成长录制' });
@@ -167,9 +190,11 @@ export async function runSoak(studio: Studio, url: string, minutes: number) {
     };
     const memory = async () => {
       const pageProcessId = page.view.webContents.getOSProcessId(), metric = app.getAppMetrics().find(item => item.pid === pageProcessId);
-      const sample: MemorySample = { elapsedMs: Date.now() - started!, main: process.memoryUsage(), pageProcessId,
+      const sample: MemorySample = { elapsedMs: performance.now() - startedMonotonic!, main: process.memoryUsage(), pageProcessId,
         pagePrivateBytes: metric?.memory.privateBytes === undefined ? null : metric.memory.privateBytes * KiB,
-        pageWorkingSetBytes: metric?.memory.workingSetSize === undefined ? null : metric.memory.workingSetSize * KiB, browserPage: await page.page.metrics() };
+        pageWorkingSetBytes: metric?.memory.workingSetSize === undefined ? null : metric.memory.workingSetSize * KiB, browserPage: await page.page.metrics(),
+        windowVisible: studio.window.window.isVisible(), windowFocused: studio.window.window.isFocused(), browserViewVisible: page.view.getVisible(),
+        systemIdleSeconds: powerMonitor.getSystemIdleTime(), systemIdleStateAt60Seconds: powerMonitor.getSystemIdleState(60) };
       samples.push(sample);
       assert.ok(sample.main.rss <= limits.mainRssBytes, 'Main RSS exceeds predeclared 1 GiB protection limit');
       assert.ok(sample.pagePrivateBytes === null || sample.pagePrivateBytes <= limits.pagePrivateBytes, 'Page private bytes exceed predeclared 512 MiB protection limit');
@@ -194,37 +219,52 @@ export async function runSoak(studio: Studio, url: string, minutes: number) {
       assert.equal(reply.status, 200); assert.equal(reply.data.pathStatus, 'present'); assert.equal(reply.data.value, 'SOAK-END'); assert.equal(reply.data.outputTruncated, false); assert.ok(reply.bytes <= 1024);
       (report.fieldReads ||= []).push({ phase, artifactId: firstArtifactId, maxBytes: 1024, responseBytes: reply.bytes, elapsedMs: round(reply.elapsedMs), value: reply.data.value });
     };
-    started = Date.now(); report.startedAt = new Date(started).toISOString(); await save('running');
+    started = Date.now(); startedMonotonic = performance.now(); report.startedAt = new Date(started).toISOString(); await save('running');
     const durationMs = minutes * 60000; let slot = 0, nextCheckpoint = 0, nextSummary = 0;
-    while (Date.now() - started < durationMs) {
-      const due = started + slot * 1000; if (due >= started + durationMs) break;
-      await delay(Math.max(1, due - Date.now()));
-      if (Date.now() - started >= durationMs) break;
-      const currentSlot = Math.floor((Date.now() - started) / 1000);
-      if (currentSlot > slot) { report.load.skippedScheduleSlots += currentSlot - slot; slot = currentSlot; }
+    let previousCycle: (typeof slowCycles)[number] | undefined;
+    const loadElapsed = () => performance.now() - startedMonotonic!;
+    while (loadElapsed() < durationMs) {
+      const due = startedMonotonic + slot * 1000; if (due >= startedMonotonic + durationMs) break;
+      await delay(Math.max(1, due - performance.now()));
+      if (loadElapsed() >= durationMs) break;
+      const currentSlot = Math.floor(loadElapsed() / 1000);
+      if (currentSlot > slot) { report.load.skippedScheduleSlots += currentSlot - slot; missedSlots.push({ expectedSlot: slot, resumedSlot: currentSlot, elapsedMs: round(loadElapsed()), previousCycle }); slot = currentSlot; }
       const cycleAt = performance.now();
+      const cycleStages: Record<string, number> = {};
       assert.equal(run.controller, 'agent', 'Stop if a human takes ownership'); assert.equal(studio.current().pageId, page.pageId); assert.equal(new URL(page.page.url()).origin, new URL(url).origin);
       const sequence = actions.length + 1, selector = '#soak-click-' + sequence;
-      const action = await studio.action({ type: 'click', selector, pageId: page.pageId, generation: page.navigationGeneration, leaseEpoch: run.leaseEpoch });
-      assert.equal(await page.page.$eval('#action-count', element => Number(element.textContent)), sequence);
+      const action = await measure('click', () => studio.action({ type: 'click', selector, pageId: page.pageId, generation: page.navigationGeneration, leaseEpoch: run.leaseEpoch }), cycleStages);
+      const observed = await measure('pageAck', () => page.page.$eval('#action-count', element => ({ count: Number(element.textContent), visibility: document.visibilityState, focused: document.hasFocus() })), cycleStages);
+      assert.equal(observed.count, sequence);
       actions.push({ sequence, commandId: action.commandId, selector });
-      await fetchPayload('regular-' + sequence, 64 * KiB);
-      if (Date.now() - started >= nextCheckpoint) {
-        await fetchPayload('large-' + sequence, MiB); await checkpoint('soak-' + sequence); await page.capture.flush();
-        if (!firstArtifactId) await fieldRead('early');
-        console.log(`SOAK ${((Date.now() - started) / 60000).toFixed(1)}/${minutes} min; actions=${actions.length}, checkpoint=${checkpointIds.length}`);
+      await measure('regularFetch', () => fetchPayload('regular-' + sequence, 64 * KiB), cycleStages);
+      if (loadElapsed() >= nextCheckpoint) {
+        await measure('largeFetch', () => fetchPayload('large-' + sequence, MiB), cycleStages);
+        await measure('checkpoint', () => checkpoint('soak-' + sequence), cycleStages);
+        await measure('captureFlush', () => page.capture.flush(), cycleStages);
+        if (!firstArtifactId) await measure('fieldRead', () => fieldRead('early'), cycleStages);
+        console.log(`SOAK ${(loadElapsed() / 60000).toFixed(1)}/${minutes} min; actions=${actions.length}, checkpoint=${checkpointIds.length}`);
         nextCheckpoint += 60000;
       }
-      if (Date.now() - started >= nextSummary) { await summary(); await memory(); nextSummary += 10000; }
-      report.elapsedMs = Date.now() - started; report.load.completedCycles = actions.length;
+      if (loadElapsed() >= nextSummary) { await measure('summary', summary, cycleStages); await measure('memory', memory, cycleStages); nextSummary += 10000; }
+      report.elapsedMs = round(loadElapsed()); report.load.completedCycles = actions.length;
       if (slot % 10 === 0) await save('running');
       const cycleWorkMs = performance.now() - cycleAt;
       report.load.maxCycleWorkMs = Math.max(report.load.maxCycleWorkMs, round(cycleWorkMs));
       if (cycleWorkMs > 1000) report.load.cyclesOverCadence++;
+      previousCycle = { slot, cycle: sequence, elapsedMs: round(loadElapsed()), workMs: round(cycleWorkMs), visibility: observed.visibility, focused: observed.focused, stages: cycleStages };
+      if (cycleWorkMs > 900) {
+        if (slowCycles.length < 100) slowCycles.push(previousCycle);
+        else {
+          const slowest = slowCycles.reduce((minimum, item, index) => item.workMs < slowCycles[minimum].workMs ? index : minimum, 0);
+          if (previousCycle.workMs > slowCycles[slowest].workMs) slowCycles[slowest] = previousCycle;
+        }
+      }
       slot++;
     }
-    if (Date.now() - started < durationMs) await delay(durationMs - (Date.now() - started));
-    report.elapsedMs = Date.now() - started; report.load.completedCycles = actions.length;
+    if (loadElapsed() < durationMs) await delay(durationMs - loadElapsed());
+    report.load.loadEndedAt = new Date().toISOString(); report.load.loadElapsedMs = round(loadElapsed());
+    report.elapsedMs = report.load.loadElapsedMs; report.load.completedCycles = actions.length;
     assert.ok(report.elapsedMs >= durationMs); await page.capture.flush(); await summary(); await memory(); await fieldRead('late');
     report.pageAcknowledgedActions = await page.page.$eval('#action-count', element => Number(element.textContent)); assert.equal(report.pageAcknowledgedActions, actions.length);
     await save('verifying'); const verificationAt = performance.now();
@@ -244,7 +284,10 @@ export async function runSoak(studio: Studio, url: string, minutes: number) {
     console.log('SOAK PASS ' + JSON.stringify({ runId: run.id, minutes, qualification: report.qualification, elapsedMs: report.elapsedMs, actions: actions.length, requests: requests.length, checkpointP95Ms: percentile(checkpointMs), summaryP95Ms: percentile(summaryMs), httpSubmitP95Ms: percentile(submitMs) }));
     return report;
   } catch (error) {
-    report.passed = false; report.error = String(error); if (started) report.elapsedMs = Math.max(report.elapsedMs, Date.now() - started);
+    report.passed = false; report.error = String(error); if (startedMonotonic) report.elapsedMs = Math.max(report.elapsedMs, round(performance.now() - startedMonotonic));
     await save('failed'); throw error;
+  } finally {
+    powerMonitor.off('lock-screen', onLock); powerMonitor.off('unlock-screen', onUnlock);
+    powerMonitor.off('suspend', onSuspend); powerMonitor.off('resume', onResume);
   }
 }

@@ -23,6 +23,7 @@ function mockStudio() {
     checkpoint: async (body: unknown) => { calls.push({ method: 'checkpoint', body }); return body; },
     action: async (body: unknown) => { calls.push({ method: 'action', body }); return body; },
     validation: async (id: string) => { calls.push({ method: 'validation', body: id }); return { id }; },
+    releaseHuman: async (id: string) => { calls.push({ method: 'releaseHuman', body: id }); return { passed: true, handoffId: id }; },
     review: async (body: unknown) => { calls.push({ method: 'review', body }); return body; },
     reviews: async (id: string, body: unknown) => { calls.push({ method: 'reviews', body: { id, options: body } }); return { id }; },
     reader: () => ({ summary: async (body: unknown) => { calls.push({ method: 'summary', body }); return body; } }),
@@ -61,14 +62,39 @@ test('a queued request is reauthorized after a human takes over, and selecting a
   assert.equal(calls.length, 0);
 });
 
-test('path validation identity wins over a conflicting body/query alias and summary keeps its requested budget', async () => {
+test('HTTP action requires the selected page generation and rejects a queued action after navigation', async () => {
+  const { fake, dispatch, run, calls } = mockStudio();
+  const identity = { runId: run.id, pageId: 'page-a', leaseEpoch: run.leaseEpoch, type: 'click', selector: '#safe' };
+  await assert.rejects(dispatch('action', identity, 'api'), (error: any) => error.status === 409);
+  let release!: () => void;
+  fake.block(new Promise<void>(resolve => { release = resolve; }));
+  const pending = dispatch('action', { ...identity, generation: 3 }, 'api');
+  const rejected = assert.rejects(pending, (error: any) => error.status === 409);
+  run.pages.get('page-a')!.navigationGeneration = 4;
+  release(); await rejected;
+  assert.equal(calls.length, 0, 'A stale command never reaches the browser operation');
+  await dispatch('action', { ...identity, generation: 4 }, 'api');
+  assert.equal(calls[0].method, 'action');
+});
+
+test('human handoff release and review writes require the trusted UI source', async () => {
+  const { dispatch, calls } = mockStudio();
+  for (const method of ['replyHuman', 'releaseHuman', 'review']) {
+    await assert.rejects(dispatch(method, { handoffId: 'handoff-1', validationId: 'validation-a', verdict: 'accept', reason: 'forged', leaseEpoch: 7 }, 'api'), (error: any) => error.status === 403);
+  }
+  assert.deepEqual(calls, []);
+  await dispatch('releaseHuman', { handoffId: 'handoff-1' }, 'ui');
+  await dispatch('review', { id: 'validation-a', verdict: 'exception', reason: 'Trusted decision' }, 'ui');
+  assert.deepEqual(calls.map(({ method }) => method), ['releaseHuman', 'review']);
+});
+
+test('path validation identity wins for reads and summary keeps its requested budget', async () => {
   const { dispatch, calls } = mockStudio();
   await dispatch('validation', { validationId: 'path-id', id: 'wrong-id' }, 'api');
-  await dispatch('review', { validationId: 'path-id', id: 'wrong-id', verdict: 'accept', reason: 'scope' }, 'api');
   await dispatch('summary', { runId: 'run-1', maxBytes: 1200 }, 'api');
   await dispatch('reviews', { validationId: 'path-id', id: 'wrong-id', maxBytes: 1200, cursor: 'bounded-next' }, 'api');
-  assert.equal(calls[0].body, 'path-id'); assert.equal(calls[1].body.id, 'path-id'); assert.equal(calls[2].body.maxBytes, 1200);
-  assert.equal(calls[3].body.id, 'path-id'); assert.equal(calls[3].body.options.maxBytes, 1200); assert.equal(calls[3].body.options.cursor, 'bounded-next');
+  assert.equal(calls[0].body, 'path-id'); assert.equal(calls[1].body.maxBytes, 1200);
+  assert.equal(calls[2].body.id, 'path-id'); assert.equal(calls[2].body.options.maxBytes, 1200); assert.equal(calls[2].body.options.cursor, 'bounded-next');
 });
 
 test('a pending WebSocket handshake can be revoked without ever exposing an operation transport', async () => {
