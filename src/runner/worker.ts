@@ -64,5 +64,5 @@ async function main(): Promise<void> {
 }
 
 void main().catch(error => {
-  send({ type: 'failed', error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined, nodeVersion: process.versions.node });
+  send({ type: 'failed', error: (error instanceof Error ? error.message : String(error)).slice(0, 4096), name: error instanceof Error ? error.name.slice(0,128) : undefined, stack: error instanceof Error ? error.stack?.slice(0,8192) : undefined, nodeVersion: process.versions.node });
 }).finally(() => port.close());

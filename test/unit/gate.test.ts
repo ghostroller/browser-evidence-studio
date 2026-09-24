@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { GateDrainError, GateTransport, type ProtocolTransport } from '@/runner/gate';
+import type { TransportCloseInfo } from '@/runner/transport-diagnostics';
 
 class FakeTransport implements ProtocolTransport {
   onmessage?: (message: string) => void;
-  onclose?: () => void;
+  onclose?: (details?: TransportCloseInfo) => void;
   sent: string[] = [];
   send(message: string) { this.sent.push(message); }
   close() { this.onclose?.(); }
@@ -68,6 +69,24 @@ test('connection loss during drain rejects the handoff and closes once', async (
   gate.close();
   assert.equal(closes, 1);
   assert.equal(gate.snapshot().state, 'closed');
+});
+
+test('closing evidence retains bounded method names before drain state is cleared', () => {
+  const raw = new FakeTransport();
+  let notifications=0;
+  const gate = new GateTransport(raw,{onClosed:()=>{notifications++;}});
+  for(let id=1;id<=20;id++)gate.send(JSON.stringify({id,method:`Synthetic.command${id}`,params:{secret:'never-save-protocol-arguments'}}));
+  raw.onclose?.({source:'remote',occurredAt:new Date().toISOString(),code:1006});
+  const info=gate.closeDiagnostic;
+  assert.equal(info?.trigger,'transport');
+  assert.equal(info?.gateStateBeforeClose,'open');
+  assert.equal(info?.inFlight,20);
+  assert.equal(info?.pendingMethods.length,16);
+  assert.equal(info?.pendingMethodsTruncated,true);
+  assert.equal(JSON.stringify(info).includes('never-save-protocol-arguments'),false);
+  assert.equal(gate.snapshot().inFlight,0);
+  gate.close();raw.onclose?.({source:'remote',occurredAt:new Date().toISOString(),code:1000});
+  assert.equal(notifications,1);assert.equal(gate.closeDiagnostic?.transport.code,1006);
 });
 
 test('human takeover permits bounded attached-session housekeeping without opening page operations', async () => {

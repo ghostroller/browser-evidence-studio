@@ -2,6 +2,29 @@
 
 更新日期：2026-09-24，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## 操作连接关闭与原始错误保留（2026-09-24）
+
+收到新诊断后，只读核对默认开发数据根的 run `eb862014-114b-41d8-8d79-fb3d3b2a10f7` / validation `1bb7d4ed-a052-4ae8-85d2-d14f3b7acbcc`，没有读取订单正文、导航、点击或封存。快照 lastSequence=5523：人工交还事件 `evt-000000002832` 于 03:41:15.235Z 保存，四个 consistent checkpoint 为 login-confirmed、profile-complete、identity-complete、addresses-complete；03:41:23.223Z 的 validation-complete 为 failed。报告 `art-000000005069` 定向字段为 `Operation transport disconnected`、30270ms、versionVerdict=pass。新启动日志入口为 `output/dev/2026-09-24T03-38-18-353Z-36688-e1c43fff`，检查时有29个控制台块，没有匹配的 WebSocket/异常错误行；日志没有记录事件不等于证明远端没有断线。
+
+源码和确定性负例确认：workflow 抛错 → worker finally 执行 browser.disconnect → `cdp.close` 先到主进程 → Gate.close 同步触发 onclose → manager 报通用断线并终止 worker → 稍后的原始 failed 消息被忽略。`connectManagedPage` 的失败清理也可能走同一路径。修复前 `worker cleanup before its failure message...` 用 `cdp.close → failed('synthetic original failure')` 实际得到通用断线，测试失败。该复现证明错误掩盖缺陷；旧真实报告没有原始错误或关闭来源，无法倒推其中必定是选择器超时或真正网络中断，约30秒耗时本身也不能定因。
+
+修复后的行为：
+
+- 本地 worker 关闭立即关闸，但最多等待1秒接收原始失败或退出；没有终态明确失败，不能恢复执行或产生通过。成功完成清理、取消、真正远端关闭分别处理。迟到 worker error 不覆盖已确定的取消或首次传输故障。
+- SocketTransport 区分 local / remote / error，记录时间、可取得的关闭码/原因及错误标识；error 后的 close 不重复通知或覆盖首个错误，握手和 abort 的迟到 error 也被消费。原因/消息有界并处理常见 URL、地址和凭据字符串，不记录 endpoint、页面正文或 CDP 参数。
+- Gate 保存关闭前状态、在途数及至多16个方法名；追加 `operation-transport-closed` 事件，报告增加 `errorSource`、有界 `errorStack` 和 `operationTransportClose`。异常关闭摘要也写到控制台，`start:agent` 可直接回读。
+
+验证环境仍为 Node 24.21.0 / npm 11.19.0、Electron 44.4.3 / Chromium 152.0.7977.130。
+
+| 命令 | 实际结果 |
+| --- | --- |
+| `npm.cmd run typecheck`、`npm.cmd run build` | 通过；最后的迟到 error 保护后再通过类型检查并重建 main/worker |
+| `npm.cmd test` | 首轮 **121/123**：evidence、request-body 各一项因 `WRITER_IDENTITY_UNAVAILABLE` 失败，其他项通过；日志 `output/transport-unit.log`。未修改 writer 锁或放宽身份检查 |
+| `node --import tsx --test --test-concurrency=1 test/unit/*.test.ts test/fixtures/site/site.test.ts` | 加入迟到 worker error 回归后 **124/124** 通过；日志 `output/transport-unit-serial.log`。该串行通过不抹去首轮默认并发失败，也不证明其环境原因 |
+| `$env:BES_SKIP_UI='1'; node test/desktop/launch.js` | 19进程矩阵整体通过，`output/desktop-1790222346829/desktop-summary.json`；真实 worker 短时 waitForSelector 超时保留原始异常和 worker 关闭来源，主动 disconnect 不返回仍失败；两者均保留先前的数据/checkpoint、页面及人工控制，正常完成/取消/崩溃恢复继续通过 |
+
+桌面矩阵之后补的迟到 error 优先级保护由真实 Worker 注入终止期 error 的单测覆盖，未重复跑完整矩阵。只读旧 run 期间没有读取数据集/订单 DOM 或截图正文。本轮未主动重启当前用户客户端、重跑真实流程或生成发行包；原始真实异常仍需在新实现生效后的授权复验中获取。
+
 ## Agent 开发入口与人工交接修复（2026-09-24）
 
 新增 `npm run start:agent`，直接包装现有 Forge CLI，保留终端输出和 stdin。每次启动在 `output/dev/<launchId>` 保存原始 stdout/stderr、带接收时间与流名称的 console.jsonl 和 launch.json；固定 `output/dev/latest.json` 只在新启动时发布，旧启动退出不会覆盖新入口。摘要记录 Forge 与 launcher 的 PID、数据根、连接文件和应用生命周期路径，不读取 token/profile、不把 Forge 存活或退出 0 当作 Electron 就绪。项目技能和环境文档补充入口、旧实例识别及 health 核对；普通 `npm start` 的历史控制台无法补录。

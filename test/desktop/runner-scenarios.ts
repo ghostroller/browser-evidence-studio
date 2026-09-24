@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Studio } from '@/main/services/studio';
@@ -196,4 +197,57 @@ export async function runRunnerScenarios(studio: Studio, siteUrl: string) {
   await retainedPage.capture.flush();
   await studio.seal();
   console.log('M5 cancel PASS: worker exited, result persisted, human ownership restored, captured page retained');
+
+  // Use real Puppeteer and the bundled worker, with a registered fixture kept
+  // inside this synthetic data root. Existing business examples stay untouched.
+  const failureDirectory = await mkdtemp(path.join(studio.root, 'runner-close-fixture-'));
+  await writeFile(path.join(failureDirectory, 'workflow.json'), JSON.stringify({
+    schemaVersion: 1, workflowId: 'synthetic-worker-close', entry: './run.mjs', exportName: 'run', driver: 'puppeteer',
+    requirements: [{ id: 'collected-before-close', checkpointKey: 'before-close', description: 'Retain completed work when the real worker later fails',
+      dataset: 'collected', rules: [{ type: 'min-rows', count: 1 }, { type: 'required', field: 'title' }, { type: 'required', field: 'text' }] }],
+  }, null, 2));
+  await writeFile(path.join(failureDirectory, 'run.mjs'), `
+    export async function run({ page, input, reporter }) {
+      await page.goto(input.baseUrl + '/lab', { waitUntil: 'domcontentloaded' });
+      const record = { title: await page.title(), text: await page.$eval('#lab-result', element => element.textContent) };
+      const checkpoint = await reporter.checkpoint('before-close', { title: 'Synthetic data before worker failure' });
+      await reporter.emitData('collected', [record], { origin: 'browser', sourceRefs: [checkpoint.id] });
+      if (input.failure === 'selector-timeout') {
+        await page.waitForSelector('#synthetic-never-present', { timeout: 80 });
+      } else {
+        await page.browser().disconnect();
+        await new Promise(() => {});
+      }
+    }
+  `);
+  const failureProject = await studio.createProject({ name: 'Worker 原始异常与本地断开', objective: '保留真实 Puppeteer 错误和已完成证据；无终态断开不得通过', scriptDirectory: failureDirectory });
+  const failureProfile = await studio.createProfile({ projectId: failureProject.id, name: 'Worker 断开独立合成环境' });
+  for (const failure of ['selector-timeout', 'disconnect-without-result']) {
+    const started = await studio.validate({ projectId: failureProject.id, profileId: failureProfile.id, input: { baseUrl: siteUrl, failure } });
+    const record = await validationFinished(studio, started.id);
+    const result = record.result;
+    assert.ok(result, `Missing persisted worker result for ${failure}: ${record.error}`);
+    assert.equal(result.status, 'failed', `${failure} cannot complete successfully`);
+    assert.equal(result.validation.overall, 'fail', 'A retained dataset does not turn a failed execution into a pass');
+    assert.equal(result.operationTransportClose?.trigger, 'worker', 'Puppeteer disconnect is a worker-origin close, not a remote transport loss');
+    assert.doesNotMatch(result.error ?? '', /Operation transport disconnected/);
+    if (failure === 'selector-timeout') {
+      assert.equal(result.errorSource, 'worker');
+      assert.match(result.error ?? '', /synthetic-never-present/, 'The original Puppeteer selector error must survive disconnect cleanup');
+      assert.match(result.error ?? '', /timeout|waiting for selector/i);
+    }
+    const dataset = result.datasets.find(dataset => dataset.name === 'collected');
+    const checkpoint = result.checkpoints.find(checkpoint => checkpoint.key === 'before-close');
+    assert.ok(dataset && checkpoint, 'Successful data and checkpoint reports must remain in the failed execution');
+    assert.deepEqual(dataset.records, [{ title: '证据实验 · 合成站点', text: '点击触发采集' }]);
+    assert.deepEqual(dataset.sourceRefs, [checkpoint.id], 'The retained dataset must reference its actual checkpoint');
+    assert.equal(result.validation.coverageVerdict, 'pass');
+    assert.equal(result.validation.assertionVerdict, 'pass');
+    assert.equal(record.currentVersion, 'matched');
+    assert.equal(studio.required().controller, 'human');
+    assert.equal(studio.required().locked, false);
+    assert.equal(studio.current().view.webContents.isDestroyed(), false, 'Disconnecting the worker must retain the observed page');
+    await studio.seal();
+    console.log(`M5 worker close PASS: ${failure}, original error and prior evidence retained, acceptance failed`);
+  }
 }

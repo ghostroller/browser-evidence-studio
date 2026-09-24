@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { parseWorkflowManifest, type WorkflowManifest } from '@/contracts/workflow';
 import { fingerprintWorkflow, loadWorkflow, resolveRegisteredFile } from '@/runner/fingerprint';
 import { validateExecution, type ValidationInput } from '@/runner/validation';
@@ -97,7 +98,7 @@ const hooks: RunnerHooks = {
   assertion: async () => {}, requestHuman: async () => {}, progress: async () => {},
 };
 
-async function withWorker(script: string, run: (directory: string, workerPath: string, transport: GateTransport) => Promise<void>): Promise<void> {
+async function withWorker(script: string, run: (directory: string, workerPath: string, transport: GateTransport, raw: ProtocolTransport) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(path.join(tmpdir(), 'bes-runner-'));
   try {
     await writeFile(path.join(directory, 'workflow.json'), JSON.stringify({ ...manifest, humanPoints: [{ id: 'confirm', description: 'Explicit synthetic confirmation' }] }));
@@ -106,7 +107,7 @@ async function withWorker(script: string, run: (directory: string, workerPath: s
     const workerPath = path.join(directory, 'test-worker.mjs');
     await writeFile(workerPath, script);
     const raw: ProtocolTransport = { send: () => {}, close: () => raw.onclose?.() };
-    await run(directory, workerPath, new GateTransport(raw));
+    await run(directory, workerPath, new GateTransport(raw), raw);
   } finally {
     assert.equal(await realpath(path.dirname(directory)), await realpath(tmpdir()));
     assert.ok(path.basename(directory).startsWith('bes-runner-'));
@@ -238,5 +239,78 @@ test('a timer command during a human window terminates the worker and records fa
     assert.equal(transport.snapshot().rejectedCommands, 1);
     assert.equal(transport.snapshot().state, 'closed');
     assert.equal(result.validation.overall, 'fail');
+  });
+});
+
+test('worker cleanup before its failure message must preserve the original workflow error', async () => {
+  await withWorker(`
+    import { parentPort } from 'node:worker_threads';
+    parentPort.postMessage({type:'cdp.close'});
+    parentPort.postMessage({type:'failed',error:'synthetic original failure',name:'TimeoutError',stack:'TimeoutError: synthetic original failure',nodeVersion:process.versions.node});
+    setInterval(() => {}, 100);
+  `, async (directory, workerPath, transport) => {
+    const result = await (await startWorkflow({directory,workerPath,transport,targetId:'explicit-target',input:{},hooks})).done;
+    assert.equal(result.status, 'failed');
+    assert.match(result.error ?? '', /synthetic original failure/);
+    assert.equal(result.errorSource, 'worker');
+    assert.match(result.errorStack ?? '', /TimeoutError/);
+    assert.equal(result.operationTransportClose?.trigger, 'worker');
+    assert.equal(result.validation.overall, 'fail');
+  });
+});
+
+test('worker disconnect without an outcome is bounded and never becomes a pass', async () => {
+  await withWorker(`
+    import { parentPort } from 'node:worker_threads';
+    parentPort.postMessage({type:'cdp.close'});
+    setInterval(() => {}, 100);
+  `, async (directory, workerPath, transport) => {
+    const result = await (await startWorkflow({directory,workerPath,transport,targetId:'explicit-target',input:{},hooks,maxDurationMs:5000})).done;
+    assert.equal(result.status, 'failed');
+    assert.equal(result.errorSource, 'worker-disconnect');
+    assert.match(result.error ?? '', /without reporting its outcome/);
+    assert.equal(result.validation.overall, 'fail');
+    assert.equal(result.operationTransportClose?.transport.source, 'local');
+  });
+});
+
+test('remote transport failure retains close identity and fails without waiting for worker cleanup', async () => {
+  await withWorker(`
+    import { parentPort } from 'node:worker_threads';
+    parentPort.postMessage({type:'started',nodeVersion:process.versions.node});
+    setInterval(() => {}, 100);
+  `, async (directory, workerPath, transport, raw) => {
+    const result = await (await startWorkflow({directory,workerPath,transport,targetId:'explicit-target',input:{},hooks,
+      onStarted:async()=>{raw.onclose?.({source:'remote',occurredAt:new Date().toISOString(),code:1008,reason:'synthetic peer rejection'});}
+    })).done;
+    assert.equal(result.status, 'failed');
+    assert.equal(result.errorSource, 'transport');
+    assert.match(result.error ?? '', /code=1008/);
+    assert.equal(result.operationTransportClose?.trigger, 'transport');
+    assert.equal(result.operationTransportClose?.transport.reason, 'synthetic peer rejection');
+  });
+});
+
+test('late worker errors during termination cannot replace cancellation or the first transport failure', async t => {
+  const terminate=Worker.prototype.terminate;
+  t.mock.method(Worker.prototype,'terminate',function(this:Worker){
+    this.emit('error',new Error('synthetic late worker cleanup error'));
+    return terminate.call(this);
+  });
+  await withWorker('setInterval(() => {}, 100);',async(directory,workerPath,transport)=>{
+    const handle=await startWorkflow({directory,workerPath,transport,targetId:'explicit-target',input:{},hooks});
+    await handle.cancel('original cancellation');
+    const result=await handle.done;
+    assert.equal(result.status,'cancelled');assert.equal(result.error,'original cancellation');
+  });
+  await withWorker(`
+    import { parentPort } from 'node:worker_threads';
+    parentPort.postMessage({type:'started',nodeVersion:process.versions.node});
+    setInterval(() => {}, 100);
+  `,async(directory,workerPath,transport,raw)=>{
+    const result=await(await startWorkflow({directory,workerPath,transport,targetId:'explicit-target',input:{},hooks,
+      onStarted:async()=>{raw.onclose?.({source:'remote',occurredAt:new Date().toISOString(),code:1006});}
+    })).done;
+    assert.equal(result.errorSource,'transport');assert.match(result.error??'',/code=1006/);
   });
 });

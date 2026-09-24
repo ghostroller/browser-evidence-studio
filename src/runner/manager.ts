@@ -3,7 +3,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import Ajv from 'ajv';
 import type { CheckpointDetails, DataProvenance, Dataset, HumanRequest, JsonValue, ReportedAssertion, WorkflowManifest, WorkflowReporter } from '@/contracts/workflow';
-import { GateTransport } from './gate';
+import { GateTransport, type GateCloseDiagnostic } from './gate';
 import { fingerprintInput, fingerprintWorkflow, loadWorkflow, resolveRegisteredFile, type WorkflowFingerprint } from './fingerprint';
 import { validateExecution, type ValidationResult } from './validation';
 import type { HostMessage, WorkerMessage } from './context';
@@ -55,6 +55,9 @@ export interface WorkflowRunResult {
   humanAttempts: { id: string; startedAt: string; finishedAt?: string; status: 'waiting' | 'completed' | 'failed' }[];
   output?: unknown;
   error?: string;
+  errorSource?: 'worker' | 'worker-disconnect' | 'transport' | 'host' | 'worker-exit';
+  errorStack?: string;
+  operationTransportClose?: GateCloseDiagnostic;
   validation: ValidationResult;
 }
 
@@ -94,6 +97,8 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   });
   let status: WorkflowRunResult['status'] = 'interrupted';
   let error: string | undefined;
+  let errorSource: WorkflowRunResult['errorSource'];
+  let errorStack: string | undefined;
   let output: unknown;
   let runtimeNodeVersion: string | null = null;
   let stopping = false;
@@ -101,6 +106,7 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   let reportCalls = 0;
   let activeExclusive = false;
   let totalReportedBytes = 0;
+  let disconnectDeadline: ReturnType<typeof setTimeout> | undefined;
   const cancellation = new AbortController();
   const outstandingReports = new Set<Promise<unknown>>();
   let settle!: (result: WorkflowRunResult) => void;
@@ -109,14 +115,30 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   options.transport.onmessage = message => send({ type: 'cdp.message', message });
   options.transport.onclose = () => {
     send({ type: 'cdp.closed' });
-    if (!stopping && !completeReceived) void stop('failed', 'Operation transport disconnected');
+    if (stopping || status === 'completed') return;
+    const closure = options.transport.closeDiagnostic;
+    console.warn('Runner operation transport closed', JSON.stringify(closure));
+    if (closure?.trigger === 'worker') {
+      // Puppeteer disconnects in its error cleanup BEFORE the worker can report
+      // the original failure. Keep the gate closed, but let that FIFO message win.
+      disconnectDeadline = setTimeout(() => {
+        void stop('failed', 'Worker closed the operation transport without reporting its outcome', 'worker-disconnect');
+      }, 1000);
+    } else {
+      const info = closure?.transport;
+      const detail = info ? ` (${info.source}${info.code === undefined ? '' : `; code=${info.code}`}${info.errorCode ? `; ${info.errorCode}` : ''})` : '';
+      void stop('failed', `Operation transport disconnected${detail}`, 'transport');
+    }
   };
   const maxDuration = setTimeout(() => { void stop('failed', 'Workflow maximum duration elapsed'); }, options.maxDurationMs ?? 30 * 60_000);
 
-  async function stop(nextStatus: WorkflowRunResult['status'], reason: string): Promise<void> {
+  async function stop(nextStatus: WorkflowRunResult['status'], reason: string, source: WorkflowRunResult['errorSource'] = 'host', stack?: string): Promise<void> {
     if (stopping) { await done; return; }
     status = nextStatus;
     error = reason;
+    errorSource = source;
+    errorStack = stack?.slice(0,8192);
+    if (disconnectDeadline) clearTimeout(disconnectDeadline);
     cancellation.abort(new Error(reason));
     worker.postMessage({ type: 'cancel', reason } satisfies HostMessage);
     stopping = true;
@@ -217,7 +239,7 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
         }
       } catch (cause) { void stop('failed', String(cause)); }
     } else if (message.type === 'cdp.close') {
-      options.transport.close();
+      options.transport.close('worker');
     } else if (message.type === 'reporter') {
       reportCalls += 1;
       const reported = report(message).then(value => send({ type: 'reply', id: message.id, value }), cause => {
@@ -238,17 +260,24 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
       }, cause => { void stop('failed', `Workflow completion could not drain browser operations: ${String(cause)}`); });
     } else if (message.type === 'failed') {
       runtimeNodeVersion = message.nodeVersion;
-      void stop('failed', message.error);
+      void stop('failed', `${message.name ? `${message.name.slice(0,128)}: ` : ''}${message.error.slice(0,4096)}`, 'worker', message.stack);
     }
   });
-  worker.once('error', cause => { status = 'failed'; error = cause.stack||cause.message; });
+  worker.once('error', cause => {
+    if (stopping) return;
+    status = 'failed'; error = cause.message.slice(0,4096); errorSource = 'worker'; errorStack = cause.stack?.slice(0,8192);
+  });
   worker.once('exit', code => {
     stopping = true;
     cancellation.abort(new Error('Worker exited'));
     clearTimeout(maxDuration);
+    if (disconnectDeadline) clearTimeout(disconnectDeadline);
     options.transport.close();
     if (status === 'completed' && code !== 0) { status = 'failed'; error = `Worker exited with code ${code}`; }
-    if (!completeReceived && !error) error = `Worker exited without completion (code ${code})`;
+    if (!completeReceived && !error) {
+      error = `Worker exited without completion (code ${code})`;
+      errorSource = options.transport.closeDiagnostic?.trigger === 'worker' ? 'worker-disconnect' : 'worker-exit';
+    }
     void (async () => {
       await Promise.allSettled(outstandingReports);
       let fingerprintAfter: WorkflowFingerprint;
@@ -258,7 +287,7 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
         fingerprintAfter = { sha256: 'unavailable-after-execution', files: [], dependencyLockSha256: null };
       }
       const validation = validateExecution({ manifest, execution: status, checkpoints, datasets, assertions, fingerprintBefore, fingerprintAfter, knownSourceRefs: [...sources] });
-      settle({ status, startedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedMs, manifest, entryPath, inputSha256, runtimeNodeVersion, fingerprintBefore, fingerprintAfter, checkpoints, datasets, assertions, humanAttempts, output, error, validation });
+      settle({ status, startedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedMs, manifest, entryPath, inputSha256, runtimeNodeVersion, fingerprintBefore, fingerprintAfter, checkpoints, datasets, assertions, humanAttempts, output, error, errorSource, errorStack, operationTransportClose: options.transport.closeDiagnostic, validation });
     })();
   });
   return { done, cancel: reason => stop('cancelled', reason ?? 'Cancelled by user') };

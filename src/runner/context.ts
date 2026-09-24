@@ -7,7 +7,7 @@ export type WorkerMessage =
   | { type: 'cdp.close' }
   | { type: 'reporter'; id: number; method: ReporterMethod; args: unknown[] }
   | { type: 'complete'; output: unknown; nodeVersion: string }
-  | { type: 'failed'; error: string; stack?: string; nodeVersion: string };
+  | { type: 'failed'; error: string; name?: string; stack?: string; nodeVersion: string };
 
 export type HostMessage =
   | { type: 'cdp.message'; message: string }

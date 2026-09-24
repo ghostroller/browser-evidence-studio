@@ -6,6 +6,8 @@
 
 checkpointKey 与 requirementId 稳定对应。结构化输出声明 sourceRefs/origin 和分页完成依据。Node 请求的来源材料通过 reporter 附入；没有来源或未覆盖时应判证据不足。至少检查实体身份、必填/类型、重复、分页终止和跨记录关联；“非空”不能替代正确性。
 
+每个数据集完成并取得来源后立即 await emitData，同名只提交一次；不要等整个流程结束才保存所有数据。后续失败时保留已完成材料，未完成阶段不补空占位，执行失败仍不得验收通过。遇到断线报告先读 `errorSource`、`error` 与 `operationTransportClose`（必要时有界读取 `errorStack` / `operation-transport-closed` 事件）；worker 本地主动关闭可能是异常清理，不能直接推断网络、登录或租约失败。旧报告没有这些字段时保留未知。
+
 需要人工协助的点在 manifest 中声明。requestHuman 在 transport 闸门静默后等待，完成条件由脚本给出。不要注入跨交接继续点击的定时器。强制接管会停止 runner，不承诺恢复原执行栈；从显式恢复入口或新 run 重试。
 
 通过 `/runs/:runId/validations` 启动当前登记版本，跟踪返回 runId/validationId、实际执行状态和逐需求结果。检查运行前后指纹、实际入口、退出结果、需求覆盖、checkpoint 和数据来源。代码、构建、配置或锁文件变化后，旧 pass 只代表历史版本；受影响 checkpoint 必须重新验证。

@@ -1,9 +1,11 @@
+import { transportCloseInfo, type TransportCloseInfo } from './transport-diagnostics';
+
 /** The small public transport shape accepted by Puppeteer.connect(). */
 export interface ProtocolTransport {
   send(message: string): void;
   close(): void;
   onmessage?: (message: string) => void;
-  onclose?: () => void;
+  onclose?: (details?: TransportCloseInfo) => void;
 }
 
 export type GateState = 'open' | 'quiescing' | 'quiesced' | 'failed' | 'closed';
@@ -16,6 +18,17 @@ export interface GateConflict {
 }
 
 interface ProtocolCommand { id?: number; method?: string; sessionId?: string; params?: Record<string, unknown>; }
+
+export interface GateCloseDiagnostic {
+  trigger: 'host' | 'worker' | 'transport';
+  transport: TransportCloseInfo;
+  gateStateBeforeClose: GateState;
+  inFlight: number;
+  pendingMethods: string[];
+  pendingMethodsTruncated: boolean;
+  rejectedCommands: number;
+  maintenanceCommands: number;
+}
 
 export class GateDrainError extends Error {
   constructor(message: string, readonly pendingMethods: string[]) {
@@ -36,7 +49,9 @@ export class GateDrainError extends Error {
  */
 export class GateTransport implements ProtocolTransport {
   onmessage?: (message: string) => void;
-  onclose?: () => void;
+  onclose?: (details?: TransportCloseInfo) => void;
+  private closedWith?: GateCloseDiagnostic;
+  get closeDiagnostic(): GateCloseDiagnostic | undefined { return this.closedWith; }
   private state: GateState = 'open';
   private readonly pending = new Map<number, string>();
   private conflicts = 0;
@@ -51,10 +66,10 @@ export class GateTransport implements ProtocolTransport {
 
   constructor(
     private readonly transport: ProtocolTransport,
-    private readonly options: { onConflict?: (conflict: GateConflict) => void } = {},
+    private readonly options: { onConflict?: (conflict: GateConflict) => void; onClosed?: (details: GateCloseDiagnostic) => void } = {},
   ) {
     transport.onmessage = (message) => this.receive(message);
-    transport.onclose = () => this.didClose();
+    transport.onclose = details => this.didClose('transport', details);
   }
 
   send(message: string): void {
@@ -122,10 +137,10 @@ export class GateTransport implements ProtocolTransport {
     return { state: this.state, inFlight: this.pending.size, pendingMethods: [...this.pending.values()], rejectedCommands: this.conflicts, maintenanceCommands: this.maintenanceCommands };
   }
 
-  close(): void {
+  close(trigger: 'host' | 'worker' = 'host'): void {
     if (this.state === 'closed') return;
     // Transition before delegating: some transports report close asynchronously.
-    this.didClose();
+    this.didClose(trigger, transportCloseInfo('local'));
     this.transport.close();
   }
 
@@ -173,8 +188,13 @@ export class GateTransport implements ProtocolTransport {
     }
   }
 
-  private didClose(): void {
+  private didClose(trigger: GateCloseDiagnostic['trigger'], details = transportCloseInfo('unknown')): void {
     if (this.state === 'closed') return;
+    const methods = [...new Set(this.pending.values())];
+    this.closedWith = {trigger, transport: details, gateStateBeforeClose: this.state, inFlight: this.pending.size,
+      pendingMethods: methods.slice(0, 16).map(method => method.slice(0, 128)),
+      pendingMethodsTruncated: methods.length > 16 || methods.some(method => method.length > 128),
+      rejectedCommands: this.conflicts, maintenanceCommands: this.maintenanceCommands};
     this.state = 'closed';
     if (this.draining) {
       clearTimeout(this.draining.timer);
@@ -183,6 +203,7 @@ export class GateTransport implements ProtocolTransport {
     }
     this.pending.clear();
     this.sessions.clear();
-    this.onclose?.();
+    this.options.onClosed?.(this.closedWith);
+    this.onclose?.(details);
   }
 }
