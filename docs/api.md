@@ -6,6 +6,8 @@
 
 客户端启动后，在其数据根目录的 `connection/agent-connection.json` 写入 `address`、`token`、`instanceId`、`processId`。开发与发行使用各自数据目录；从客户端显示的位置读取，不猜端口、不搜索真实账号目录。进程退出后删除连接文件；重启生成新 token。
 
+使用 `npm run start:agent` 时，可从仓库 `output/dev/latest.json` 找启动摘要、控制台日志、连接文件与生命周期文件路径；关联当前实例的核对方式见 [环境说明](environment.md#供-agent-诊断的开发启动入口)。启动摘要不包含 token，Forge 状态不能代替 `/v1/health`。
+
 所有 `/v1` 请求携带 `Authorization: Bearer <token>`。不要输出、提交或复制 token 到技能或业务代码。Windows 在写入 token 前用新临时文件、移除继承 ACL 并仅授予当前用户访问，再原子替换连接文件；其他系统使用 `0600`。Host 只接受当前回环地址或对应端口的 localhost；Origin 只接受该 API 自身来源。普通本机程序不需要 Origin。无认证返回 401，非授权 Host/Origin 返回 403。
 
 可在已授权的 Node 脚本中这样读取连接，令 `connectionPath` 指向客户端展示的文件：

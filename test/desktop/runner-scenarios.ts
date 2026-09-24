@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Studio } from '@/main/services/studio';
+import { EvidenceReader } from '@/evidence/reader';
 import { clickSyntheticHuman } from './native-input';
 
 async function waitUntil<T>(read: () => Promise<T> | T, accept: (value: T) => boolean, label: string, timeoutMs = 90_000): Promise<T> {
@@ -28,6 +29,57 @@ async function waitingHuman(studio: Studio, id: string, point: string) {
   assert.equal(studio.required().controller, 'human');
   assert.equal(studio.required().capture, 'recording');
   assert.equal(studio.required().locked, false);
+}
+
+/** Hold persistence to make a duplicate release overlap the first check reliably. */
+async function releaseHumanConcurrently(studio: Studio, handoffId: string) {
+  const run = studio.required(), page = studio.current().page;
+  const originalAppend = run.store.appendEvent, originalEvaluate = page.$eval;
+  let releasePersistence!: () => void;
+  const persistenceBlocked = new Promise<void>(resolve => { releasePersistence = resolve; });
+  let completionWrites = 0, completionChecks = 0, entered = false, firstError: unknown;
+  const selector = run.handoff.completionCheck.selector;
+  run.store.appendEvent = async function(event) {
+    if (event.type === 'handoff-completed' && (event.data as { id?: string } | undefined)?.id === handoffId) {
+      completionWrites += 1;
+      entered = true;
+      await persistenceBlocked;
+    }
+    return originalAppend.call(this, event);
+  };
+  page.$eval = (async (...args: Parameters<typeof originalEvaluate>) => {
+    if (args[0] === selector) completionChecks += 1;
+    return originalEvaluate.apply(page, args);
+  }) as typeof page.$eval;
+  const initialEpoch = run.leaseEpoch;
+  const first = studio.releaseHuman(handoffId);
+  // Attach a rejection observer immediately, including failures before the barrier.
+  const settled = first.then(() => {}, error => { firstError = error; });
+  try {
+    await waitUntil(() => entered || firstError !== undefined, Boolean, 'first handoff completion persistence', 5000);
+    if (firstError) throw firstError;
+    assert.equal(run.locked, true, 'The first completion check must still own the input lock');
+    const second = studio.releaseHuman(handoffId);
+    const results = Promise.allSettled([first, second]);
+    releasePersistence();
+    const outcomes = await results;
+    for (const outcome of outcomes) {
+      assert.equal(outcome.status, 'fulfilled', outcome.status === 'rejected' ? String(outcome.reason) : undefined);
+    }
+    const result = await first;
+    assert.deepEqual(await second, result, 'Concurrent releases of one handoff must share the same successful result');
+    assert.equal(completionChecks, 1, 'Duplicate releases must not re-evaluate the completion condition');
+    assert.equal(completionWrites, 1, 'Duplicate releases must persist exactly one completion event');
+    assert.equal(run.leaseEpoch, initialEpoch + 1, 'Duplicate releases must transfer ownership only once');
+    assert.deepEqual(await studio.releaseHuman(handoffId), result, 'A late retry after successful release must be idempotent');
+    assert.equal(run.leaseEpoch, initialEpoch + 1);
+    return result;
+  } finally {
+    releasePersistence();
+    await settled;
+    run.store.appendEvent = originalAppend;
+    page.$eval = originalEvaluate;
+  }
 }
 
 /** Called inside the real Electron desktop harness after the M0 baseline. */
@@ -72,23 +124,61 @@ export async function runRunnerScenarios(studio: Studio, siteUrl: string) {
   const assisted = await studio.validate({ input: { baseUrl: siteUrl, variant: 'normal', requireLogin: true, requireHumanReview: true } });
   await waitingHuman(studio, assisted.id, 'login');
   const loginPageId = studio.current().pageId;
+  const loginHandoffId = studio.required().handoff.handoffId as string;
   await assert.rejects(studio.releaseHuman(), /Completion check failed/);
   assert.equal(studio.required().controller, 'human', 'No reply or an unfulfilled check must not mean login success');
   await assert.rejects(studio.checkpoint({ key: 'competing-checkpoint' }), /running workflow owns checkpoint/i);
   await studio.current().page.waitForFunction(() => !(document.querySelector('#confirm-login') as HTMLButtonElement)?.disabled);
   await clickSyntheticHuman(studio, '#confirm-login');
   await studio.current().page.waitForSelector('#login-status[data-authenticated="true"]');
-  await studio.releaseHuman();
+  const beforeNavigation = studio.current().navigationGeneration;
+  await clickSyntheticHuman(studio, '#navigate-login');
+  await waitUntil(async () => {
+    const validation = await studio.validation(assisted.id);
+    if (['failed', 'cancelled', 'interrupted'].includes(validation.status)) throw new Error(`Workflow failed during human-owned navigation: ${validation.result?.error ?? validation.error}`);
+    return studio.current().navigationGeneration > beforeNavigation && new URL(studio.current().page.url()).searchParams.has('after-handoff-worker');
+  }, Boolean, 'human-owned worker creation and document navigation', 15000);
+  await studio.current().page.waitForSelector('#login-status[data-authenticated="true"]');
+  await waitingHuman(studio, assisted.id, 'login');
+  assert.equal(studio.required().handoff.handoffId, loginHandoffId, 'Navigation must retain the awaiting human request');
+  const loginRelease = await releaseHumanConcurrently(studio, loginHandoffId);
   await waitingHuman(studio, assisted.id, 'confirm-scope');
   assert.equal(studio.current().pageId, loginPageId, 'The managed target remains stable across navigations and handoffs');
+  const scopeHandoffId = studio.required().handoff.handoffId as string;
+  const scopeEpoch = studio.required().leaseEpoch;
+  assert.notEqual(scopeHandoffId, loginHandoffId);
+  assert.deepEqual(await studio.releaseHuman(loginHandoffId), loginRelease, 'An old completed handoff may be replayed without applying it to the current one');
+  assert.equal(studio.required().handoff.handoffId, scopeHandoffId);
+  assert.equal(studio.required().handoff.status, 'waiting');
+  assert.equal(studio.required().controller, 'human');
+  assert.equal(studio.required().locked, false);
+  assert.equal(studio.required().leaseEpoch, scopeEpoch, 'A previous handoff ID cannot release the next human window');
   await clickSyntheticHuman(studio, '#confirm-scope');
   await studio.current().page.waitForSelector('#scope-status[data-confirmed="true"]');
-  await studio.releaseHuman();
+  await studio.releaseHuman(scopeHandoffId);
   const assistedResult = (await validationFinished(studio, assisted.id)).result;
   assert.ok(assistedResult);
   assert.equal(assistedResult.validation.overall, 'pass', assistedResult.error);
   assert.deepEqual(assistedResult.humanAttempts.map((attempt: any) => [attempt.id, attempt.status]), [['login', 'completed'], ['confirm-scope', 'completed']]);
-  console.log('M3/M5 human flow PASS: explicit native fixture input, real completion checks, two declared assistance points');
+  const handoffReader = new EvidenceReader(studio.required().store.runDir);
+  const handoffSequence = Number((await handoffReader.summary()).lastSequence);
+  let handoffCursor: string | undefined, completedHandoffs = 0, controlConflicts = 0;
+  for (let page = 0; page < 50; page++) {
+    const events = await handoffReader.events({ types: ['handoff-completed', 'control-conflict'], fields: ['type'],
+      toSequence: handoffSequence, cursor: handoffCursor, limit: 20, maxBytes: 4096 });
+    for (const event of events.items) {
+      const type = (event as { type: string }).type;
+      if (type === 'handoff-completed') completedHandoffs++;
+      if (type === 'control-conflict') controlConflicts++;
+    }
+    if (!events.nextCursor) { handoffCursor = undefined; break; }
+    assert.notEqual(events.nextCursor, handoffCursor, 'The bounded handoff query must advance its cursor');
+    handoffCursor = events.nextCursor;
+  }
+  assert.equal(handoffCursor, undefined, 'The handoff event audit must finish within 50 bounded pages');
+  assert.equal(controlConflicts, 0, 'Puppeteer target maintenance during human navigation is not a workflow control violation');
+  assert.equal(completedHandoffs, 2, 'Each assistance point has one persisted completion');
+  console.log('M3/M5 human flow PASS: native input, worker/document changes during handoff, idempotent release, two declared assistance points');
 
   const cancelled = await studio.validate({ input: { baseUrl: siteUrl, variant: 'normal', requireHumanReview: true } });
   await waitingHuman(studio, cancelled.id, 'confirm-scope');

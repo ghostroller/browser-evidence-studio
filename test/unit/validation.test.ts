@@ -234,6 +234,7 @@ test('a timer command during a human window terminates the worker and records fa
     const result = await handle.done;
     assert.equal(result.status, 'failed');
     assert.match(result.error ?? '', /control was revoked/);
+    assert.match(result.error ?? '', /Input\.dispatchMouseEvent; gate=quiesced/);
     assert.equal(transport.snapshot().rejectedCommands, 1);
     assert.equal(transport.snapshot().state, 'closed');
     assert.equal(result.validation.overall, 'fail');

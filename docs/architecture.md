@@ -119,6 +119,10 @@ UI 操作、HTTP browser action、managed runner 共用控制权状态。HTTP �
 
 requestHuman 在闸门确认关闭后进入 await，正常交还经真实状态检查再恢复连接并继续。强制接管无法安全暂停时，断开/终止 runner 并确认静默后才开放人工；此路径不承诺恢复原执行栈，应从显式恢复入口或新 run 重试。脚本不得另建绕过管理的连接，也不得向页面注入跨交接持续点击的定时器；客户端不能撤回已经启动的站点异步工作。被闸门拒绝的越权操作记录为冲突并使任务失败。对本地任意恶意脚本不提供沙箱级保证。
 
+闸门关闭期间继续转发浏览器事件。Puppeteer 会据此维护自动附加的 target：当前仅对本连接实际观测过的 session 放行无参数 `Runtime.runIfWaitingForDebugger`、单 objectId 的 `Runtime.releaseObject`、父子 session 匹配的 `Target.detachFromTarget` 及固定自动附加参数的 `Target.setAutoAttach`。这些维护不恢复页面操作权限；`Runtime.evaluate` / `callFunctionOn`、导航、输入、注入及未知命令仍拒绝，failed/closed 状态一律不放行。不能简单缓存全部事件，否则 auto-attach 暂停的新 worker 可能阻塞人工导航。runner 冲突事件保存具体 method/state/validationId，不保存协议参数。
+
+完成检查按 run/handoffId 合并并发请求；成功结果在当前 run 内可重读，旧 ID 不能释放下一次交接。UI 显式发送 handoffId。导航上下文销毁只作最多三次短暂重试，选择器或字段不匹配仍保留人工控制，其他检查错误保留原因；完成选择器存在只证明声明条件满足，不自动等于真实登录成功。
+
 宿主视图必须真正覆盖或移开业务原生视图。锁定键盘/鼠标/滚轮/快捷导航，明确处理新窗口、拖放与系统对话框，不依赖网页自己实现的遮罩。
 
 ### 3.4 内嵌浏览器兼容策略

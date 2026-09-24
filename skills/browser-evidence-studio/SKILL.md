@@ -3,7 +3,7 @@ name: browser-evidence-studio
 description: 使用 Browser Evidence Studio 本机客户端的 HTTP API，读取人工示范证据、进行受控浏览器探索、复跑已登记 Puppeteer 脚本并按 checkpoint 验收。用于该客户端中的项目和运行，不接管其他浏览器或修改旧业务插件。
 ---
 
-从客户端展示的连接文件读取当前 address/token，保留在进程内。先读 `/v1/health`、`/v1/state` 和目标 run 的 summary/gaps，再按证据 ID 读取有界片段。不要在聊天或 Git 中输出 token、Cookie、登录 profile、完整 DOM 或 base64。
+开发实例先从仓库 `output/dev/latest.json` 找本次启动摘要、控制台日志和连接文件；该入口由 `npm run start:agent` 生成。没有该文件时，使用用户提供或客户端展示的连接文件位置。实例身份核对与旧入口处理见 [references/api.md](references/api.md)。读取当前 address/token 后保留在进程内，先读 `/v1/health`、`/v1/state` 和目标 run 的 summary/gaps，再按证据 ID 读取有界片段。不要在聊天或 Git 中输出 token、Cookie、登录 profile、完整 DOM 或 base64。
 
 按当前工作阅读一份说明：
 

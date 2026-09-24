@@ -211,7 +211,10 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
       const before = options.transport.snapshot().rejectedCommands;
       try {
         options.transport.send(message.message);
-        if (options.transport.snapshot().rejectedCommands !== before) void stop('failed', 'Workflow attempted a browser operation while control was revoked');
+        if (options.transport.snapshot().rejectedCommands !== before) {
+          const { method } = JSON.parse(message.message) as { method: string };
+          void stop('failed', `Workflow attempted a browser operation while control was revoked (${method}; gate=${options.transport.snapshot().state})`);
+        }
       } catch (cause) { void stop('failed', String(cause)); }
     } else if (message.type === 'cdp.close') {
       options.transport.close();

@@ -15,6 +15,8 @@ export interface GateConflict {
   occurredAt: string;
 }
 
+interface ProtocolCommand { id?: number; method?: string; sessionId?: string; params?: Record<string, unknown>; }
+
 export class GateDrainError extends Error {
   constructor(message: string, readonly pendingMethods: string[]) {
     super(message);
@@ -25,7 +27,10 @@ export class GateDrainError extends Error {
 /**
  * One revocable operation connection. Capture must use a DIFFERENT transport.
  *
- * Closing the gate rejects every new command, including unknown CDP methods.
+ * Closing the gate rejects page operations, including unknown CDP methods.
+ * A narrow set of connection housekeeping commands may still run for sessions
+ * actually attached on this transport. Otherwise Puppeteer's auto-attach can
+ * pause a site's own worker during human input and mistake its resume for a write.
  * quiesce() resolves only after all commands sent before closure have replied.
  * This cannot retract asynchronous page work started by an earlier command.
  */
@@ -35,6 +40,8 @@ export class GateTransport implements ProtocolTransport {
   private state: GateState = 'open';
   private readonly pending = new Map<number, string>();
   private conflicts = 0;
+  private maintenanceCommands = 0;
+  private readonly sessions = new Map<string, { parent?: string }>();
   private draining?: {
     promise: Promise<void>;
     resolve: () => void;
@@ -51,12 +58,13 @@ export class GateTransport implements ProtocolTransport {
   }
 
   send(message: string): void {
-    const command = JSON.parse(message) as { id?: number; method?: string; sessionId?: string };
+    const command = JSON.parse(message) as ProtocolCommand;
     if (!Number.isSafeInteger(command.id) || typeof command.method !== 'string') {
       throw new Error('Operation transport accepts only CDP commands with a numeric id and method');
     }
     const id = command.id as number;
-    if (this.state !== 'open') {
+    const maintenance = (this.state === 'quiescing' || this.state === 'quiesced') && this.isMaintenance(command);
+    if (this.state !== 'open' && !maintenance) {
       this.conflicts += 1;
       const conflict: GateConflict = {
         commandId: id, method: command.method, state: this.state, occurredAt: new Date().toISOString(),
@@ -71,6 +79,7 @@ export class GateTransport implements ProtocolTransport {
       return;
     }
     if (this.pending.has(id)) throw new Error(`Duplicate in-flight CDP command id ${id}`);
+    if (maintenance) this.maintenanceCommands += 1;
     this.pending.set(id, command.method);
     try {
       this.transport.send(message);
@@ -109,8 +118,8 @@ export class GateTransport implements ProtocolTransport {
     this.state = 'open';
   }
 
-  snapshot(): { state: GateState; inFlight: number; pendingMethods: string[]; rejectedCommands: number } {
-    return { state: this.state, inFlight: this.pending.size, pendingMethods: [...this.pending.values()], rejectedCommands: this.conflicts };
+  snapshot(): { state: GateState; inFlight: number; pendingMethods: string[]; rejectedCommands: number; maintenanceCommands: number } {
+    return { state: this.state, inFlight: this.pending.size, pendingMethods: [...this.pending.values()], rejectedCommands: this.conflicts, maintenanceCommands: this.maintenanceCommands };
   }
 
   close(): void {
@@ -121,10 +130,36 @@ export class GateTransport implements ProtocolTransport {
   }
 
   private receive(message: string): void {
-    const reply = JSON.parse(message) as { id?: number };
+    if (this.state === 'closed') return;
+    const reply = JSON.parse(message) as ProtocolCommand;
     if (typeof reply.id === 'number') this.pending.delete(reply.id);
+    if (reply.method === 'Target.attachedToTarget' && typeof reply.params?.sessionId === 'string') {
+      this.sessions.set(reply.params.sessionId, { parent: reply.sessionId });
+    } else if (reply.method === 'Target.detachedFromTarget' && typeof reply.params?.sessionId === 'string') {
+      this.sessions.delete(reply.params.sessionId);
+    }
     this.onmessage?.(message);
     this.finishDrain();
+  }
+
+  private isMaintenance(command: ProtocolCommand): boolean {
+    const params = command.params ?? {};
+    const keys = Object.keys(params);
+    // Detaching affects only this connection, never the underlying page/worker.
+    if (command.method === 'Target.detachFromTarget') {
+      const session = typeof params.sessionId === 'string' ? this.sessions.get(params.sessionId) : undefined;
+      return keys.length === 1 && !!session && session.parent === command.sessionId;
+    }
+    if (!command.sessionId || !this.sessions.has(command.sessionId)) return false;
+    switch (command.method) {
+      case 'Runtime.runIfWaitingForDebugger': return keys.length === 0;
+      case 'Runtime.releaseObject': return keys.length === 1 && typeof params.objectId === 'string';
+      case 'Target.setAutoAttach':
+        return keys.length === 4 && params.autoAttach === true && params.flatten === true && params.waitForDebuggerOnStart === true &&
+          Array.isArray(params.filter) && params.filter.length === 1 && params.filter[0] !== null &&
+          typeof params.filter[0] === 'object' && !Array.isArray(params.filter[0]) && Object.keys(params.filter[0]).length === 0;
+      default: return false;
+    }
   }
 
   private finishDrain(): void {
@@ -147,6 +182,7 @@ export class GateTransport implements ProtocolTransport {
       this.draining = undefined;
     }
     this.pending.clear();
+    this.sessions.clear();
     this.onclose?.();
   }
 }

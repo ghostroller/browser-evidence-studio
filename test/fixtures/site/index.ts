@@ -74,13 +74,23 @@ function ordersPage(url: URL): string {
 }
 
 function loginPage(): string {
-  return document('人工登录演示', `<p>此页面不联系真实登录服务。点击“模拟手机确认”属于显式人工操作；等待或超时不会登录。</p><section><div id="qr" aria-label="合成二维码"></div><p id="qr-state" role="status">准备中</p><div class="actions"><button id="confirm-login" disabled>模拟手机确认</button><button id="refresh-qr">刷新二维码</button><button id="logout">使登录过期</button><a href="/orders">返回订单</a></div><output id="login-status" data-authenticated="false">未登录</output></section>`, `
+  return document('人工登录演示', `<p>此页面不联系真实登录服务。点击“模拟手机确认”属于显式人工操作；等待或超时不会登录。</p><section><div id="qr" aria-label="合成二维码"></div><p id="qr-state" role="status">准备中</p><div class="actions"><button id="confirm-login" disabled>模拟手机确认</button><button id="refresh-qr">刷新二维码</button><button id="logout">使登录过期</button><a href="/orders">返回订单</a></div><output id="login-status" data-authenticated="false">未登录</output></section><section><button id="navigate-login">后台 worker 就绪后跳转</button><output id="navigation-status">尚未跳转</output></section>`, `
     let attempt = null;
     async function readSession() { const session = await fetch('/api/session').then(r => r.json()); const status = document.querySelector('#login-status'); status.dataset.authenticated = String(session.authenticated); status.textContent = session.authenticated ? '已登录：' + session.accountId : '未登录'; return session; }
     async function refresh() { attempt = await fetch('/api/login/start', { method: 'POST' }).then(r => r.json()); document.querySelector('#confirm-login').disabled = false; document.querySelector('#qr').classList.remove('expired'); document.querySelector('#qr').innerHTML = Array.from({length:81}, (_,i) => '<span style="opacity:' + (((i * 13 + attempt.attempt) % 7) < 3 ? 0 : 1) + '"></span>').join(''); }
     document.querySelector('#refresh-qr').onclick = refresh;
     document.querySelector('#confirm-login').onclick = async () => { const response = await fetch('/api/login/confirm', { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ nonce: attempt.nonce }) }); const result = await response.json(); if (!response.ok) { document.querySelector('#qr-state').textContent = result.error; return; } localStorage.setItem('synthetic-account', result.accountId); sessionStorage.setItem('synthetic-session-only', 'not-a-snapshot'); window.syntheticMemoryToken = 'volatile-synthetic'; await new Promise((resolve, reject) => { const request = indexedDB.open('synthetic-login', 1); request.onupgradeneeded = () => request.result.createObjectStore('account'); request.onerror = () => reject(request.error); request.onsuccess = () => { const db = request.result; const transaction = db.transaction('account', 'readwrite'); transaction.objectStore('account').put(result.accountId, 'id'); transaction.oncomplete = () => { db.close(); resolve(); }; }; }); await readSession(); document.querySelector('#confirm-login').disabled = true; document.querySelector('#qr-state').textContent = '人工确认已完成，服务端已验证'; };
     document.querySelector('#logout').onclick = async () => { await fetch('/api/logout', {method:'POST'}); await readSession(); };
+    document.querySelector('#navigate-login').onclick = () => {
+      document.querySelector('#navigate-login').disabled = true;
+      document.querySelector('#navigation-status').textContent = '等待站点后台 worker';
+      const worker = new Worker('/handoff-worker.js');
+      worker.onmessage = event => {
+        if (event.data !== 'synthetic-worker-ready') return;
+        location.assign('/login?after-handoff-worker=1');
+      };
+      worker.onerror = () => { document.querySelector('#navigation-status').textContent = '后台 worker 失败'; };
+    };
     setInterval(() => { if (!attempt || document.querySelector('#login-status').dataset.authenticated === 'true') return; const remaining = Math.max(0, attempt.expiresAt - Date.now()); document.querySelector('#qr-state').textContent = remaining ? '第 ' + attempt.attempt + ' 次尝试，还剩 ' + Math.ceil(remaining / 1000) + ' 秒' : '二维码已过期；请明确刷新后重试'; if (!remaining) { document.querySelector('#confirm-login').disabled = true; document.querySelector('#qr').classList.add('expired'); } }, 200);
     refresh(); readSession();
   `);
@@ -181,6 +191,9 @@ export async function startFixture(options: { port?: number; qrTtlMs?: number } 
       if (path === '/iframe') return send(response, 200, document('iframe 证据', '<iframe id="same-origin-frame" src="/frame" title="同源合成 frame"></iframe><p>frame 身份必须与顶层页面区分。</p>'));
       if (path === '/popup') return send(response, 200, document('合成业务弹窗', '<section data-popup="true">此 target 是独立业务弹窗，应保存 opener 关系。<button id="popup-button">弹窗操作</button><output id="popup-count">0</output></section>', "let count=0; document.querySelector('#popup-button').onclick=()=>document.querySelector('#popup-count').textContent=String(++count);"));
       if (path === '/login') return send(response, 200, loginPage());
+      // A real attached target exercises Puppeteer's automatic protocol traffic
+      // while the workflow itself awaits requestHuman. No account state changes.
+      if (path === '/handoff-worker.js') return send(response, 200, "postMessage('synthetic-worker-ready'); setInterval(() => {}, 1000);", 'text/javascript; charset=utf-8');
       if (path === '/review') return send(response, 200, document('人工范围确认', '<section><p>确认本次范围为合成站点全部 7 条订单、3 页和详情关联。</p><button id="confirm-scope">确认合成范围</button><output id="scope-status" data-confirmed="false">等待明确人工确认</output></section>', "document.querySelector('#confirm-scope').onclick=()=>{document.querySelector('#scope-status').dataset.confirmed='true';document.querySelector('#scope-status').textContent='人工已确认范围';};"));
       if (path === '/api/login/start' && request.method === 'POST') { const nonce = randomUUID(); const expiresAt = Date.now() + (options.qrTtlMs ?? 15000); attempts.set(nonce, expiresAt); for (const [key, expiry] of attempts) if (expiry < Date.now()) attempts.delete(key); return json(response, { nonce, expiresAt, attempt: ++attemptCount }); }
       if (path === '/api/login/confirm' && request.method === 'POST') {

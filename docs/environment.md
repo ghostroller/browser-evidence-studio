@@ -51,6 +51,20 @@ npm.cmd run test:startup
 
 出现 UI 启动失败时，查看当前 `BES_DATA`（默认 `%APPDATA%/BrowserEvidenceStudio-dev`）下 `diagnostics/lifecycle-*.jsonl` 的 `ui-startup-failed` 记录。`documentReady: true`、`needsBounds: true`、`boundsReports: 0` 表示可信文档已提交但没有有效布局上报；`preloadFailed` 和 `rendererExitCode` 可区分 preload/进程故障。该记录本身不能证明具体模块为何失败。20 秒布局期限保留，不以扩大超时或无限刷新代替排查。
 
+### 供 agent 诊断的开发启动入口
+
+需要保存开发控制台时，使用 `npm.cmd run start:agent`。原 `npm.cmd start` 保持不变；新入口仍执行同一 Forge/Vite 开发命令、使用同一数据根和 profile，不创建新的浏览器环境。`BES_DATA` 可照常指定数据根，相对路径以仓库目录解析为绝对路径后传给应用。不要同时运行两个客户端来切换此入口：先按正常方式关闭旧应用，再重新启动。
+
+每次启动创建 `output/dev/<时间-PID-随机标识>/`，保存 `stdout.log`、`stderr.log`、按接收顺序带时间和流名称的 `console.jsonl`，同时将原始输出显示在终端；stdin 直接继承，交互终端中 Forge 的 `rs` 仍可使用。`launch.json` 保存启动命令、时间、launcher/Forge 进程身份、退出码/信号、数据根和日志路径。记录的是 Forge 子进程生命周期，不把它的 `running` 状态当作应用已就绪。应用进程的实际身份、启动及退出阶段应继续检查摘要指向的 `diagnostics/latest.json` 和 `lifecycle-*.jsonl`。
+
+agent 的固定发现入口是仓库下的 **`output/dev/latest.json`**。先读取其中 `summary` 指向的本次 `launch.json`，再按需读取日志末尾，或读取 `connection` 指向的 `agent-connection.json` 以使用现有 HTTP 协议。连接文件中含令牌，不能直接输出全文；启动摘要只保存路径，不读取或复制连接内容、环境变量全集或 profile。`latest.json` 只在新启动时发布，旧进程退出仅更新自己的 `launch.json`，不会覆盖较新启动的入口。之前用 `npm start` 启动的历史控制台无法补录。
+
+连接文件可能仍属于旧实例：核对其 `createdAt` 与应用生命周期 `startedAt` 均不早于 `launch.startedAt`，连接与 `/v1/health` 的 `instanceId` / `processId` 相同、生命周期 `processId` 匹配。不满足时报告旧实例或未确认关联，不能把新 Forge 的启动/退出当作新客户端已就绪。项目技能已包含固定发现入口及这项核对。
+
+正常关闭应用会记录退出结果并刷出日志。终端 `Ctrl+C` 会记录取消信号并终止该次 Forge 进程；Windows 同时终止该次启动的子进程树，因此应优先在应用中正常关闭以完成录制保存。强制杀死 launcher、系统断电或文件系统失败可能留下最后的 `running` 状态，不能仅凭该文件断定进程仍存活。控制台包含进程实际输出，可能含本地路径或站点错误信息；这些日志均位于 Git 已忽略的 `output/`，不要当作可公开分享的脱敏材料。
+
+合成入口回归为 `node --import tsx --test test/unit/agent-dev-launch.test.ts`，覆盖日志/终端输出、UTF-8 分块、非零退出、启动失败、数据路径和并发入口归属，不会启动真实客户端或读取账号数据。
+
 ## ESM 与 Vite 构建边界
 
 按用户的实施要求，项目已从最初的 Webpack 方案改为 Electron Forge + Vite；旧 Webpack 配置和依赖已移除。

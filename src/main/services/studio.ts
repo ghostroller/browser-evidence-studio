@@ -27,6 +27,7 @@ interface ManagedPage extends PageIdentity { view:WebContentsView; page:Page; ca
 interface ManagedOperation { browser:Browser; gate:GateTransport; page:Page; targetId:string; }
 interface PendingOperation { targetId:string; leaseEpoch:number; abort:AbortController; gate?:GateTransport; promise:Promise<ManagedOperation>; }
 interface CheckpointOperation { id:string; pageId:string; phase:'draining'|'capturing'|'saving'; startedAt:string; abort:AbortController; done:Promise<void>; }
+interface HandoffReleaseResult { passed:true; handoffId:string; }
 export interface ActiveRun {
   id:string; projectId:string; profileId:string; store:EvidenceStore; pages:Map<string,ManagedPage>; selectedPageId:string;
   session:Session; controller:'human'|'agent'|'none'; leaseEpoch:number; capture:string; execution:string;
@@ -34,6 +35,7 @@ export interface ActiveRun {
   pageClosures?:Set<Promise<void>>;
   stopDownloads?:()=>Promise<void>;releaseDownloads?:()=>void;
   checkpointTask?:CheckpointOperation;
+  handoffReleases?:Map<string,Promise<HandoffReleaseResult>>;
 }
 export class Studio {
   readonly instanceId=randomUUID();
@@ -323,7 +325,7 @@ export class Studio {
     const id=randomUUID(),record:ValidationRecord={id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory,status:'starting',startedAt:now()};this.validations.unshift(record);
     const context:ValidationLifecycleContext={validationId:id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory};
     let finishStartup!:()=>void;const startup={abort:new AbortController(),gate:undefined as GateTransport|undefined,done:new Promise<void>(resolve=>{finishStartup=resolve;}),finish:()=>finishStartup()};this.workflowStarting=startup;
-    try{const gate=new GateTransport(await SocketTransport.connect(this.endpoint,startup.abort.signal));startup.gate=gate;startup.abort.signal.throwIfAborted();ensure(this.active===r&&r.controller==='agent'&&!r.locked,'Workflow startup lost control',409);this.workflow=await startWorkflow({directory,input:body.input||{},targetId:p.targetId,transport:gate,dependencyLockPath:path.join(app.getAppPath(),'package-lock.json'),startupSignal:startup.abort.signal,
+    try{const gate=new GateTransport(await SocketTransport.connect(this.endpoint,startup.abort.signal),{onConflict:conflict=>{void r.store.appendEvent({type:'control-conflict',source:'runner',data:{validationId:id,pageId:p.pageId,...conflict}}).catch(error=>console.error('Could not persist runner control conflict',error));}});startup.gate=gate;startup.abort.signal.throwIfAborted();ensure(this.active===r&&r.controller==='agent'&&!r.locked,'Workflow startup lost control',409);this.workflow=await startWorkflow({directory,input:body.input||{},targetId:p.targetId,transport:gate,dependencyLockPath:path.join(app.getAppPath(),'package-lock.json'),startupSignal:startup.abort.signal,
       beforeWorker:async prepared=>{Object.assign(record,await registerValidation(r.store,record,prepared));this.onChanged();await this.observeValidation('registered-before-worker',context,startup.abort.signal);},
       onStarted:async(nodeVersion,signal)=>{await r.store.appendEvent({type:'validation-running',source:'runner',data:{id,runId:r.id,startEventId:record.recovery?.startEventId,nodeVersion}});await this.observeValidation('running',context,signal);},hooks:{
        checkpoint:async(key,details,signal)=>{const cp=await this.checkpoint({key,...details},{fromRunner:true,pageId:p.pageId,signal});if(cp.metadata?.captureOutcome!=='completed'||cp.metadata?.captureStatus!=='complete'||cp.captureConsistency!=='consistent')throw new Error(`Checkpoint capture is incomplete (${cp.metadata?.captureOutcome}/${cp.metadata?.captureStatus}/${cp.captureConsistency}); retained checkpoint ${cp.id} cannot satisfy validation coverage`);return {id:cp.id};},
@@ -376,19 +378,50 @@ export class Studio {
     const timer=setTimeout(()=>{if(state.handoff.status==='waiting'){state.handoff.status='needs-attention';r.execution='paused';this.humanDone?.reject(new Error('Human assistance timed out; success remains unverified'));this.humanDone=undefined;this.onChanged();}},timeoutMs);
     void state.completion.catch(error=>r.store.appendEvent({type:'handoff-failed',source:'api',data:{id:state.handoff.handoffId,reason:String(error)}})).finally(()=>clearTimeout(timer)).catch(error=>console.error('Could not save handoff outcome',error));return {...state.handoff,accepted:true};
   }
-  async releaseHuman(handoffId?:string){const r=this.required();ensure(r.handoff?.status==='waiting'&&this.humanDone&&!r.locked&&!r.stopping,'No available waiting handoff, or completion is already being checked',409);ensure(!handoffId||handoffId===r.handoff.handoffId,'Wrong handoff identity',409);const p=r.pages.get(r.handoff.pageId);ensure(p,'Handoff page no longer exists',409);
+  async releaseHuman(handoffId?:string):Promise<HandoffReleaseResult>{
+    const r=this.required();
+    ensure(!r.stopping&&!r.ending&&!this.closing&&r.execution!=='cancelled','Handoff release is unavailable while the run is stopping or cancelled',409);
+    const id=handoffId??r.handoff?.handoffId;
+    ensure(typeof id==='string'&&id.length>0,'No available waiting handoff',409);
+    const releases=r.handoffReleases??=new Map<string,Promise<HandoffReleaseResult>>();
+    // A delayed reply for a completed handoff must never release the next one.
+    // Keep successful replies for this run; failed checks remain retryable.
+    const existing=releases.get(id);if(existing)return existing;
+    ensure(id===r.handoff?.handoffId,'Wrong handoff identity',409);
+    ensure(r.handoff.status==='waiting'&&this.humanDone&&!r.locked,'No available waiting handoff, or completion is already being checked',409);
+    const p=r.pages.get(r.handoff.pageId);ensure(p,'Handoff page no longer exists',409);
     const handoff=r.handoff,check=handoff.completionCheck,done=this.humanDone,leaseEpoch=r.leaseEpoch;
-    const current=()=>this.active===r&&r.handoff===handoff&&handoff.status==='waiting'&&this.humanDone===done&&r.leaseEpoch===leaseEpoch&&!r.stopping&&!this.closing;
+    const current=()=>this.active===r&&r.handoff===handoff&&handoff.status==='waiting'&&this.humanDone===done&&r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p&&Boolean(this.pageContents(p))&&!r.stopping&&!r.ending&&!this.closing;
     r.locked=true;this.window.lock(true);
-    try{
-      const result=await p.page.$eval(check.selector,(el,args:any)=>({text:el.textContent||'',value:args.attribute?el.getAttribute(args.attribute):null}),check).catch(()=>null);
-      ensure(current(),'Handoff changed while checking',409);
-      ensure(result&&(!check.text||result.text.includes(check.text))&&(!check.attribute||result.value===check.equals),'Completion check failed; human control is retained',409);
-      await r.store.appendEvent({type:'handoff-completed',source:'studio',data:{id:handoff.handoffId,pageId:p.pageId,check}});
-      ensure(current(),'Handoff was cancelled while saving its completion check',409);
-      if(handoff.owner==='agent'&&r.operation)r.operation.gate.resume();
-      r.controller='agent';r.leaseEpoch++;r.execution=handoff.owner==='runner'?'running':handoff.resumeExecution;handoff.status='completed';this.humanDone=undefined;r.locked=false;done.resolve();this.onChanged();return {passed:true,handoffId:handoff.handoffId};
-    }catch(error){if(current()){r.locked=false;this.window.lock(false);}throw error;}
+    let release!:Promise<HandoffReleaseResult>;
+    release=(async():Promise<HandoffReleaseResult>=>{
+      try{
+        let result:{text:string;value:string|null}|null=null;
+        // Cross-document navigation may destroy the context between selector
+        // lookup and evaluation. Retry only that transition, never a mismatch.
+        for(let attempt=0;attempt<3;attempt++){
+          ensure(current(),'Handoff changed while checking',409);
+          try{
+            result=await p.page.$eval(check.selector,(el,args:any)=>({text:el.textContent||'',value:args.attribute?el.getAttribute(args.attribute):null}),check);
+            break;
+          }catch(error){
+            ensure(current(),'Handoff changed while checking',409);
+            const message=error instanceof Error?error.message:String(error);
+            if(/failed to find element matching selector/i.test(message))break;
+            const navigated=/Execution context was destroyed|Cannot find context with specified id/i.test(message);
+            if(!navigated||attempt===2)throw new Error(`Completion check could not be evaluated; human control is retained: ${message}`,{cause:error});
+            await new Promise(resolve=>setTimeout(resolve,100));
+          }
+        }
+        ensure(current(),'Handoff changed while checking',409);
+        ensure(result&&(!check.text||result.text.includes(check.text))&&(!check.attribute||result.value===check.equals),'Completion check failed; human control is retained',409);
+        await r.store.appendEvent({type:'handoff-completed',source:'studio',data:{id:handoff.handoffId,pageId:p.pageId,check}});
+        ensure(current(),'Handoff was cancelled while saving its completion check',409);
+        if(handoff.owner==='agent'&&r.operation)r.operation.gate.resume();
+        r.controller='agent';r.leaseEpoch++;r.execution=handoff.owner==='runner'?'running':handoff.resumeExecution;handoff.status='completed';this.humanDone=undefined;r.locked=false;done.resolve();this.onChanged();return {passed:true,handoffId:id};
+      }catch(error){if(current()){r.locked=false;this.window.lock(false);}throw error;}
+    })().catch(error=>{if(releases.get(id)===release)releases.delete(id);throw error;});
+    releases.set(id,release);return release;
   }
   async cancelHandoff(handoffId?:string){const r=this.required();ensure(r.handoff&&(!handoffId||r.handoff.handoffId===handoffId),'Unknown handoff',404);return this.stopRunner();}
   async stopRunner(){

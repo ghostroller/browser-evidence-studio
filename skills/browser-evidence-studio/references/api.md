@@ -4,6 +4,8 @@
 
 从客户端显示的 `connection/agent-connection.json` 读取 `address/token`，请求统一带 `Authorization: Bearer ...`。连接每次启动变化。不要打印连接对象、认证头或寻找内部 CDP 端口。401 时重读已知连接文件一次；连接失效时检查客户端是否启动，不改 profile 或锁文件。
 
+开发诊断入口 `output/dev/latest.json` 的 `summary` 指向本次 `launch.json`；其中有日志、数据根、`connection` 和 `lifecycleLatest` 的绝对路径（路径位于 `files`）。先读摘要和日志末尾。Forge 的 `running` / 退出码 0 不证明应用就绪；应用需由 health 确认。连接文件的 `createdAt`、生命周期的 `startedAt` 应不早于 launch.startedAt，连接与 health 的 `instanceId` / `processId` 应相同，生命周期 `processId` 也应匹配。时间或身份不符表示旧实例或关联未确认，不把它报告为本次启动成功；不可为查连接自动重启用户客户端。此入口不含 token，历史 `npm start` 的控制台不能补录。默认 Windows 开发连接路径为 `%APPDATA%/BrowserEvidenceStudio-dev/connection/agent-connection.json`，自定义 `BES_DATA` 优先以启动摘要或用户提供路径为准。
+
 写操作 JSON 不超过 64 KiB。设置稳定 `Idempotency-Key`，收到 202 后保存 jobId，再查询 `/v1/jobs/:jobId`。202 是受理；即使启动验收的 job 已 succeeded，也须继续读取返回 validationId 对应的实际执行结果。超时重试原 key 和原内容；改变请求应创建新 key。取消后查询实际状态，`cancellationRequested` 不是停止确认。
 
 读取顺序为 run summary、gaps、选定 events/checkpoints、artifact。列表默认 8 KiB，正文默认 4 KiB；先用字段投影与 JSON path，确有需要才增加预算，跟随 nextCursor。不重复全量读取。`STALE_CURSOR` 表示索引代际变化，从原查询重开；不要修改或猜造游标。

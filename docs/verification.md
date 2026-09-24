@@ -2,6 +2,33 @@
 
 更新日期：2026-09-24，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## Agent 开发入口与人工交接修复（2026-09-24）
+
+新增 `npm run start:agent`，直接包装现有 Forge CLI，保留终端输出和 stdin。每次启动在 `output/dev/<launchId>` 保存原始 stdout/stderr、带接收时间与流名称的 console.jsonl 和 launch.json；固定 `output/dev/latest.json` 只在新启动时发布，旧启动退出不会覆盖新入口。摘要记录 Forge 与 launcher 的 PID、数据根、连接文件和应用生命周期路径，不读取 token/profile、不把 Forge 存活或退出 0 当作 Electron 就绪。项目技能和环境文档补充入口、旧实例识别及 health 核对；普通 `npm start` 的历史控制台无法补录。
+
+交接诊断只读核对 run `1285decd-3446-4834-a3d2-cf0ed3b50298` / validation `82409605-02e4-4a9e-b1da-acc3fee40e54`：`jd-login` 人工等待从 03:11:44.346Z 开始，03:11:47.205Z 失败；报告错误为 `Workflow attempted a browser operation while control was revoked`。固定快照内没有 handoff-completed，也没有具体拒绝方法。源码确认 runner gate 当时未设置 onConflict，因此缺少冲突事件不能证明没有协议冲突。运行前后业务代码指纹还发生变化，这是独立的版本验收失败因素。本轮未修改业务脚本或操作真实页面，不能把该失败归因为用户扫码未完成。
+
+合成复现 `output/desktop-1790220316661/desktop-summary.json` 明确记录 **Runtime.runIfWaitingForDebugger / quiesced** 被误拒。`await requestHuman` 的正常恢复顺序原本正确；Puppeteer 在收到 target 事件后会自行发送维护命令，原 gate 拒绝全部新命令，manager 又将所有拒绝归为业务越权。修复只允许当前连接已观察 session 上的有限维护，参数及父子关系受约束；输入、导航、任意 Runtime 执行和未知命令仍拒绝，failed/closed 不放行。runner 冲突新增 method/state/validationId 持久记录，错误文本也含方法名，不记录协议参数。合成发现证明这条框架路径有缺陷，但真实旧报告未记录方法，无法追溯证明每次均为同因。
+
+`releaseHuman` 按 run/handoffId 合并并发检查，成功响应在本 run 内可重放，旧 ID 不释放下一人工窗口；UI 携带 ID 并在检查锁定时禁用按钮。选择器缺失仍失败，明确的导航上下文错误最多重试三次，其余检查错误保留原因。声明 `selector: body` 只证明 body 存在，不等于登录验收通过。
+
+实际运行环境：Node 24.21.0、npm 11.19.0、Electron 44.4.3、Chromium 152.0.7977.130。
+
+| 命令/入口 | 实际结果 |
+| --- | --- |
+| `npm.cmd run typecheck` | 通过 |
+| `npm.cmd test` | **112/112** 通过，包含新启动入口的四项合成子进程测试及 gate 维护边界测试 |
+| `node --import tsx --test test/unit/gate.test.ts test/unit/validation.test.ts test/unit/agent-dev-launch.test.ts` | 最后收紧 failed/closed 与参数边界后 **19/19** 通过；原有人工期间定时器写入仍导致失败 |
+| `npm.cmd run build` | 通过，保留原有 bundle/source map 提示；末次 gate 收紧后另重建 main/worker |
+| 独立 `BES_DATA=output/agent-start-verify-1790220610815`、`BES_TEST=1`、`BES_TEST_PHASE=startup-cold` 下 `npm.cmd run start:agent` | 真实 Forge 冷启动和正常退出通过；`startup-cold-result.json` passed=true、应用 PID 37180，生命周期 shutdown-complete/0；控制台中的 Forge 构建输出、警告、Electron DevTools 行在本次日志中可回读 |
+| `$env:BES_SKIP_UI='1'; node test/desktop/launch.js` | **19 进程矩阵整体通过**，报告 `output/desktop-1790220748183/desktop-summary.json`；人工窗口内原生点击触发 dedicated worker 后跨文档导航、同 ID 并发/迟到重放、旧 ID 隔离、两处人工协作、取消及五个崩溃恢复位置通过 |
+
+启动日志样本：`output/dev/2026-09-24T03-30-11-946Z-42884-170649c9/launch.json`、stdout.log、stderr.log、console.jsonl。合成子进程另覆盖 UTF-8 拆块、非零退出、启动失败、自定义 BES_DATA 和旧启动退出不覆盖新入口。真实终端 Ctrl+C 与 `rs` 人工交互本轮未单独验收；实现保留 stdin 并限定终止本次 Forge 子进程树。
+
+保留中间失败：沙箱内 Electron GPU/文件页加载失败为 `output/desktop-1790220298289`，正常桌面执行后复现上述 gate 错误；修复后 `output/desktop-1790220537476` 的人工流程已完成，但测试错误假定一次过滤查询能读完所有事件而失败，随后改为固定 sequence 上界并按 nextCursor 有界续读，最终矩阵通过。技能 quick_validate.py 因两套 Python 均缺少 PyYAML 未能运行；仅正文发现规则有改动，frontmatter 保持原样并人工核对本地引用。
+
+本轮未重跑 UI 拖动专项、30 分钟长测、真实京东流程或发行包装；没有停止/重启当前用户客户端，需下次正常启动后使用新实现。日志属于本地诊断材料，不能当作脱敏公开材料。
+
 ## 开发启动布局超时修复（2026-09-24）
 
 用户报告 `npm run start` 偶发 `Trusted UI did not report a usable browser layout within 20 seconds`。仅只读核对原数据根的生命周期：PID 15948 于北京时间 09:23:56 启动，工作区读取在 09:24:51 完成，09:25:12 以 startup-failed / 1 退出，没有 ui-ready。工作区读取约 55 秒与随后约 20 秒的布局等待是两个阶段，不能合并解释为布局定时器过短。该次日志没有 renderer 模块错误，原事件的具体首次失败原因仍不能确定。
