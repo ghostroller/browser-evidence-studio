@@ -10,7 +10,9 @@ checkpointKey 与 requirementId 稳定对应。结构化输出声明 sourceRefs/
 
 需要人工协助的点在 manifest 中声明。requestHuman 在 transport 闸门静默后等待，完成条件由脚本给出。不要注入跨交接继续点击的定时器。强制接管会停止 runner，不承诺恢复原执行栈；从显式恢复入口或新 run 重试。
 
-通过 `/runs/:runId/validations` 启动当前登记版本，跟踪返回 runId/validationId、实际执行状态和逐需求结果。检查运行前后指纹、实际入口、退出结果、需求覆盖、checkpoint 和数据来源。代码、构建、配置或锁文件变化后，旧 pass 只代表历史版本；受影响 checkpoint 必须重新验证。
+通过 `/runs/:runId/validations` 启动当前登记版本。若当前 controller=human，先查询 `/runs/:runId/validation-start-grant`；只有客户端“允许 Agent 启动一次”已明确授权且 grant 非空时，才携带 `startGrantId=grant.grantId`、grant 的 `projectId/profileId/workflowId/leaseEpoch` 和 UI 授权时相同的 `input`启动。授权仅 120 秒有效、一次消费，绑定当前页面、代码/依赖锁和输入；不得把持久事件中的旧 grant 当作可用授权。没有授权时由用户在客户端明确授予，不能自行调用 UI 授权代替用户同意，也不能用 `/control` 或任意布尔参数绕过 human guard。
+
+重试同一启动保留相同 Idempotency-Key，轮询 job；202 不是启动成功。取消仍在排队或准备的启动用该 job 的 `/cancel`，不会停止其他执行；已经消费的授权不退回，失败后需重新授权。启动成功后跟踪返回的 **新 runId** 和 `id`（validationId）；继续停止脚本用该 run 的 `/stop`。检查实际执行状态、逐需求结果、前后指纹、入口、退出、checkpoint 和数据来源。代码、构建、配置或锁文件变化后，旧 pass 只代表历史版本；受影响 checkpoint 必须重新验证。详细绑定和审计事件见项目 `docs/api.md` 的“人工控制下授权 Agent 启动验收”。
 
 机器结论与人工评审分开保存。评审使用 accept/reject/exception、原因和范围，不能覆写机器失败。交付报告明确通过、不通过、未覆盖、证据不足，以及真实场景尚未验证的项目。
 

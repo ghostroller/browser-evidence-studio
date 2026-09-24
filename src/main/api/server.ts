@@ -30,6 +30,7 @@ const routes: Route[] = [
   route('GET', /^\/v1\/projects\/([^/]+)\/workflows$/, ['projectId'], 'workflows'), route('POST', /^\/v1\/projects\/([^/]+)\/workflows$/, ['projectId'], 'registerWorkflow', { mutate: true }),
   route('GET', /^\/v1\/runs$/, [], 'runs'), route('POST', /^\/v1\/runs$/, [], 'startRun', { mutate: true }),
   route('GET', /^\/v1\/runs\/([^/]+)$/, ['runId'], 'run'),
+  route('GET', /^\/v1\/runs\/([^/]+)\/validation-start-grant$/, ['runId'], 'validationStartGrant'),
   ...['pages', 'snapshot', 'checkpoints', 'summary', 'gaps', 'events', 'artifacts', 'handoffs', 'validations'].map((operation) => route('GET', new RegExp(`^/v1/runs/([^/]+)/${operation}$`), ['runId'], operation)),
   ...[['actions', 'action'], ['checkpoints', 'checkpoint'], ['control', 'control'], ['seal', 'seal'], ['select-page', 'selectPage'], ['handoffs', 'requestHuman'], ['validations', 'startValidation'], ['stop', 'stopRunner']].map(([suffix, operation]) => route('POST', new RegExp(`^/v1/runs/([^/]+)/${suffix}$`), ['runId'], operation, { mutate: true, lease: true })),
   ...[['pause-capture', 'pauseCapture', true], ['resume-capture', 'pauseCapture', false]].map(([suffix, operation, paused]) => route('POST', new RegExp(`^/v1/runs/([^/]+)/${suffix}$`), ['runId'], String(operation), { mutate: true, lease: true, extra: { paused } })),
@@ -119,7 +120,7 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
   const runJob = (job: InternalJob): void => {
     if (stopped || job.public.status !== 'queued') return;
     job.public.status = 'running'; job.public.updatedAt = new Date().toISOString();
-    if(job.public.operation==='checkpoint')job.cancellation=new AbortController();
+    if(['checkpoint','startValidation'].includes(job.public.operation))job.cancellation=new AbortController();
     void dispatch(job.public.operation, job.body, {signal:job.cancellation?.signal}).then((result) => {
       if (job.public.status !== 'running') return;
       const serialized = JSON.stringify(result ?? null);
@@ -130,9 +131,9 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
         if (typeof value === 'string' && value.length <= 128) references[field] = value;
       }
       job.public.result = Buffer.byteLength(serialized) > JOB_RESULT_LIMIT ? { outputTruncated: true, resultBytes: Buffer.byteLength(serialized), references, nextRead: 'Read this run through summary, checkpoints, validations or artifact queries.' } : result;
-      const cancelled=job.public.operation==='checkpoint'&&(result as any)?.metadata?.captureOutcome==='cancelled';
+      const cancelled=job.public.operation==='checkpoint'&&(result as any)?.metadata?.captureOutcome==='cancelled'||job.public.operation==='startValidation'&&job.cancellation?.signal.aborted;
       job.public.status = cancelled?'cancelled':'succeeded'; job.public.updatedAt = new Date().toISOString();
-    }).catch((error: unknown) => { if (job.public.status !== 'running') return; const cancelled=job.public.operation==='checkpoint'&&job.cancellation?.signal.aborted&&error===job.cancellation.signal.reason;job.public.status=cancelled?'cancelled':'failed';if(!cancelled)job.public.error=failure(error);job.public.updatedAt=new Date().toISOString(); });
+    }).catch((error: unknown) => { if (job.public.status !== 'running') return; const cancelled=['checkpoint','startValidation'].includes(job.public.operation)&&job.cancellation?.signal.aborted&&error===job.cancellation.signal.reason;job.public.status=cancelled?'cancelled':'failed';if(!cancelled)job.public.error=failure(error);job.public.updatedAt=new Date().toISOString(); });
   };
   const server = createServer((request, response) => {
     void (async () => {
@@ -148,7 +149,7 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
       if (!request.url?.startsWith('/') || request.url.startsWith('//')) throw new ApiError('INVALID_URL', 'Only local API paths are accepted.');
       const url = new URL(request.url, address), verb = request.method ?? 'GET';
       if (verb === 'GET' && url.pathname === '/v1/health') { json(response, 200, { status: 'ready', schemaVersion: 1, instanceId, transport: 'loopback-http', processId: process.pid }); return; }
-      if (verb === 'GET' && url.pathname === '/v1/capabilities') { json(response, 200, { schemaVersion: 1, authentication: 'Bearer token from current-user-only connection file', asyncMutations: true, idempotencyHeader: 'Idempotency-Key', bodyLimitBytes: BODY_LIMIT, evidenceDefaults: { queryBytes: 8192, artifactBytes: 4096 }, nativeControl: 'Managed Puppeteer transport gate; HTTP leases alone do not control native connections.', unsupported: ['public-cdp', 'arbitrary-eval', 'websocket-control'], operations: routes.map(({ verb: method, operation }) => ({ method, operation })) }); return; }
+      if (verb === 'GET' && url.pathname === '/v1/capabilities') { json(response, 200, { schemaVersion: 1, authentication: 'Bearer token from current-user-only connection file', asyncMutations: true, idempotencyHeader: 'Idempotency-Key', bodyLimitBytes: BODY_LIMIT, evidenceDefaults: { queryBytes: 8192, artifactBytes: 4096 }, nativeControl: 'Managed Puppeteer transport gate; HTTP leases alone do not control native connections.', validationStartAuthorization: { issuer: 'trusted-ui', singleUse: true, ttlSeconds: 120, readRoute: '/v1/runs/:runId/validation-start-grant', requestField: 'startGrantId', boundTo: ['runId','projectId','profileId','workflowId','leaseEpoch','pageId','targetId','generation','workflowSha256','inputSha256'] }, unsupported: ['public-cdp', 'arbitrary-eval', 'websocket-control'], operations: routes.map(({ verb: method, operation }) => ({ method, operation })) }); return; }
       const jobMatch = /^\/v1\/jobs\/([a-f0-9-]+)(\/cancel)?$/.exec(url.pathname);
       if (jobMatch) {
         const job = jobs.get(jobMatch[1]);
@@ -160,10 +161,10 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
           else if (job.public.status === 'running' || job.public.status === 'waiting-human') {
             if (!job.public.cancellationRequested) {
               job.public.cancellationRequested = true;
-              if(job.public.operation==='checkpoint'){
+              if(['checkpoint','startValidation'].includes(job.public.operation)){
                 // Abort only this job, including a callback still waiting in the
                 // Studio queue. The checkpoint result retains persisted evidence.
-                job.cancellation?.abort(new Error('Checkpoint acquisition cancelled'));
+                job.cancellation?.abort(new Error(job.public.operation==='checkpoint'?'Checkpoint acquisition cancelled':'Validation startup cancelled'));
               }else{
               void dispatch('cancelJob', { jobId: job.public.id, operation: job.public.operation, operationBody: job.body }).then(() => {
                 if (job.public.status === 'running' || job.public.status === 'waiting-human') job.public.status = 'cancelled';

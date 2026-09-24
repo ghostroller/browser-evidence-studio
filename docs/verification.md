@@ -2,6 +2,25 @@
 
 更新日期：2026-09-24，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
+## 一次性授权 Agent 启动验收（2026-09-24）
+
+已实现可信 UI 的“允许 Agent 启动一次”与“撤销启动授权”。grant 在内存中保留 120 秒，绑定当前 run/project/profile/workflow/lease、目录、代码与锁文件指纹、规范化输入及页面/target/导航代际。HTTP 仅认证读取 grant，并在原 `/v1/runs/:runId/validations` 中通过 `startGrantId` 一次消费；不能从 HTTP 签发授权、传任意脚本目录，或借 grant 绕过普通 actions/control 的 human guard。具体请求及当前实例发现步骤见 [API 契约](api.md#人工控制下授权-agent-启动验收)。
+
+同时修复启动取消的范围：每个 HTTP 启动 job 独立 abort，排队取消不调用全局 stopRunner；整个 seal/startRun/control/worker 准备过程有启动身份。消费后输入锁定，再次检查来源身份；worker 创建前核对版本、输入和固定 target。UI 撤销绕开长任务队列，尚未消费时立即失效；消费后失败或取消不恢复授权。发行/重启不会从历史事件复活 grant。
+
+实际环境为 Node 24.21.0 / npm 11.19.0，依赖版本未调整。
+
+| 命令或证据 | 实际结果 |
+| --- | --- |
+| `npm.cmd run typecheck`、`npm.cmd run build` | 通过，保留现有依赖指令、sourcemap/chunk 构建提示；后续索引刷新修复再经类型检查与 main/worker 构建 |
+| `node --import tsx --test --test-concurrency=1 test/unit/*.test.ts test/fixtures/site/site.test.ts` | **134/134** 通过，日志 `output/validation-start-unit.log`；新增 grant 的时钟/TTL、每字段绑定、一次消费、撤销、替换及返回值隔离，以及真实 HTTP 的任务专属取消和权限边界测试 |
+| `$env:BES_SKIP_UI='1'; node test/desktop/launch.js` | 最终 **19 进程矩阵整体通过**，报告 `output/desktop-1790235629049/desktop-summary.json`；main、跨进程 profile、五阶段崩溃/重开及退出生命周期检查通过 |
+| `output/desktop-1790235629049/validation-start-result.json` | 授权专项 **20 项检查通过**：可信 renderer 按钮经 preload 签发/撤销；绑定/代码/输入/lease/页面变化拒绝；普通动作仍拒绝；同 key 幂等、不同 key 并发仅启动一次；输入对象换键序仍通过；成功后交还人工；失败证据可立即查询；消费中目标变化、指纹检查中撤销、队列取消和 seal 后无 active 取消均阻止后续 worker |
+
+首轮 `output/desktop-1790235091006` 因测试误要求 HTTP 的 500 响应包含完整 schema 错误而失败，已改为保持 API 脱敏、从有界证据核对原因。第二轮 `output/desktop-1790235472292` 暴露实际可读性缺陷：`validation-start-failed` 已在 journal 原件中，但 index/state 的一秒批量发布尚未发生，job 返回后立即查询看不到失败。已在签发、撤销和失败结果发布前 flush 索引；第三轮保留原断言并通过。未以等待或放宽断言掩盖该问题。
+
+`BES_SKIP_UI` 跳过既有窗口拖动/布局专项；新增授权按钮、输入 JSON 与撤销按钮仍通过真实 React/preload 测试，不代表 Windows 物理鼠标体验验收。TTL 使用单测受控时钟验证，没有让真实账号等待两分钟。最后仅补充“无活跃 run 时先开始录制”的提示文案，再经类型检查和 renderer 构建，不重复整个桌面矩阵。技能按 skill-creator 指导只更新验收引用；`quick_validate.py` 在当前 Python 缺少 PyYAML（`ModuleNotFoundError: yaml`），未通过该工具校验，frontmatter 未改、引用已人工核对。本轮未启动用户的真实客户端、执行京东流程、改业务示例或生成发行包。
+
 ## 操作连接关闭与原始错误保留（2026-09-24）
 
 收到新诊断后，只读核对默认开发数据根的 run `eb862014-114b-41d8-8d79-fb3d3b2a10f7` / validation `1bb7d4ed-a052-4ae8-85d2-d14f3b7acbcc`，没有读取订单正文、导航、点击或封存。快照 lastSequence=5523：人工交还事件 `evt-000000002832` 于 03:41:15.235Z 保存，四个 consistent checkpoint 为 login-confirmed、profile-complete、identity-complete、addresses-complete；03:41:23.223Z 的 validation-complete 为 failed。报告 `art-000000005069` 定向字段为 `Operation transport disconnected`、30270ms、versionVerdict=pass。新启动日志入口为 `output/dev/2026-09-24T03-38-18-353Z-36688-e1c43fff`，检查时有29个控制台块，没有匹配的 WebSocket/异常错误行；日志没有记录事件不等于证明远端没有断线。

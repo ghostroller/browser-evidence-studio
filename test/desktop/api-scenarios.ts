@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Studio } from '@/main/services/studio';
+import { runValidationStartScenarios } from './validation-start-scenarios';
 
 interface JsonReply { response: Response; data: any; bytes: number; elapsedMs: number; }
 interface Accepted { jobId: string; elapsedMs: number; }
@@ -206,4 +207,5 @@ export async function runApiScenarios(studio: Studio, siteUrl: string): Promise<
     report.elapsedMs = round(performance.now() - started);
     await writeFile(path.join(studio.root, 'api-result.json'), JSON.stringify(report, null, 2));
   }
+  await runValidationStartScenarios(studio, siteUrl);
 }

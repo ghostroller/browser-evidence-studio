@@ -117,6 +117,10 @@ BrowserRegistry 保存 appInstanceId、browserSessionId、webContentsId、CDP ta
 
 UI 操作、HTTP browser action、managed runner 共用控制权状态。HTTP 动作经过 leaseEpoch 校验；原生 Puppeteer 命令不会自动经过该校验，因此 managed runner 必须使用工具注入的可撤销操作连接/transport 闸门，采集连接独立。进入人工窗口前关闭操作闸门、清理或等待在途命令结束，确认后才开放输入。人工期间拒绝操作连接的写命令，未知方法默认拒绝，不能仅靠发现竞争后终止。M0 必须用并发 Promise/定时器验证这个边界；这是传输控制，不是重做 Puppeteer Page API。
 
+人工持有控制权时，可信 UI 可通过“允许 Agent 启动一次”签发 120 秒的内存授权，仅用于已登记 workflow 的验收。授权绑定 run/project/profile/workflow/lease、登记目录、代码与依赖锁指纹、规范化输入指纹及 page/target/导航代际。HTTP 只提供认证后的授权查询和原验收启动路由的 `startGrantId` 消费，不提供签发或任意目录执行。消费在串行队列中核验后同步完成，普通导航/点击/control guard 不变；撤销不排队，在消费前可立即生效。重启、撤销和替换不能从审计记录恢复授权。
+
+验收启动在首次异步工作前登记独立的转换身份与取消信号，覆盖授权核验、封存旧 run、创建新 run、转交控制及 worker 准备；内部转场只能使用本次启动身份。每个 HTTP 启动 job 有专属取消信号，排队取消不会调用全局停止或在稍后继续执行。消费后锁住输入并记录目标 validation/run ID，再次核验来源页面；worker 创建前再次核对代码、输入与目标身份。取消或失败不退回已消费授权；旧 run 已封存而新 run 尚未建立时也可以取消。状态转换和持久事件、失败及重试规则见 [API 契约](api.md#人工控制下授权-agent-启动验收)。
+
 requestHuman 在闸门确认关闭后进入 await，正常交还经真实状态检查再恢复连接并继续。强制接管无法安全暂停时，断开/终止 runner 并确认静默后才开放人工；此路径不承诺恢复原执行栈，应从显式恢复入口或新 run 重试。脚本不得另建绕过管理的连接，也不得向页面注入跨交接持续点击的定时器；客户端不能撤回已经启动的站点异步工作。被闸门拒绝的越权操作记录为冲突并使任务失败。对本地任意恶意脚本不提供沙箱级保证。
 
 闸门关闭期间继续转发浏览器事件。Puppeteer 会据此维护自动附加的 target：当前仅对本连接实际观测过的 session 放行无参数 `Runtime.runIfWaitingForDebugger`、单 objectId 的 `Runtime.releaseObject`、父子 session 匹配的 `Target.detachFromTarget` 及固定自动附加参数的 `Target.setAutoAttach`。这些维护不恢复页面操作权限；`Runtime.evaluate` / `callFunctionOn`、导航、输入、注入及未知命令仍拒绝，failed/closed 状态一律不放行。不能简单缓存全部事件，否则 auto-attach 暂停的新 worker 可能阻塞人工导航。runner 冲突事件保存具体 method/state/validationId，不保存协议参数。
