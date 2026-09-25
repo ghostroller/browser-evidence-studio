@@ -43,3 +43,9 @@
 依赖映射 `b99a1ac→b0faf73`、`26a3a69→499f77d`。Studio 的既有 runner checkpoint hook 读取 manager 第四参数 CheckpointHostScope；固定资料的 requirementIds 仅用作选择，未知 ID 拒绝。字段 nodeAttribute/sourceUrl/pageParameter 匹配当前 SourceModel 的全部节点，最多 64 个；不选择首个，不使用示例常量，也不接受脚本 observed/值声明。逐节点调用 A.samplePresentation(signal)，把新的耐久 full identity 与实际 execution/attempt/recording 保存为 host sampleRef，回执 sourceRefs。每次 await 后检查 signal、执行/页面/文档/控制权，取消不能返回成功。无 DOM proof 的固定资料无需源节点采样。
 
 `npm.cmd run typecheck` 通过；`npm.cmd test -- test/unit/checkpoint-sources.test.ts test/unit/project-executions.test.ts test/unit/workflow-manager.test.ts` 实际 **2 文件/5 项通过，3.37 s**；最后一个不存在的文件没有产生测试，按实际计数。日志 sample-module-tests.log、sample-typecheck-2.log。新增三项覆盖多个匹配节点、完整身份、未知需求、源元数据不足、64/65预算及错误URL。真实 G 双实体 + wrong-value + evidence-partial 尚待根 Electron 集成；不能据模块测试宣称已过。
+
+## 第五包：Electron 导航与 Puppeteer observer 同文档边界
+
+Studio.navigate 调用专用 navigateObserved。先安装 Puppeteer load watcher 再调用 WebContents.loadURL；完成后实际 CDP frame/loader/URL、两侧 document.readyState/timeOrigin 相同才返回。旧 Execution context destroyed 类错误在 15 秒总期限内重试，其他异常不吞；再次导航的 loader 改变拒绝，target/page/lease 每个异步边界核对。超时停止仍属于原 owner 的导航并保留最后原始 cause，监听器/临时CDPSession清理，晚到 session 也 detach。
+
+`npm.cmd run typecheck` 通过；`npm.cmd test -- test/unit/navigation-readiness.test.ts` **1 文件/4 项通过**，navigation-typecheck-2.log/navigation-tests-2.log。验证 watcher 先行、短暂旧context、同URL不同loader拒绝、真实协议异常保留、target更换和超时cause；此为协议stub模块，根既有 desktop runner 导航回归尚待重跑。
