@@ -130,6 +130,42 @@ describe('project materials', () => {
     const next = await service.pageCollection(PROJECT, { kind: 'draft', id: draft.draftId }, 'checkpoints', { maxBytes: 2048, limit: 1, cursor: firstPage.nextCursor });
     expect(next.items[0].id).toBe('second');
     await expect(service.pageCollection(PROJECT, { kind: 'draft', id: draft.draftId }, 'fields', { maxBytes: 2048, limit: 1, cursor: firstPage.nextCursor })).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
+    const compact = await service.pageCollection(PROJECT, { kind: 'draft', id: draft.draftId }, 'recordingRefs', { maxBytes: 1024, limit: 1 });
+    expect(compact.items).toEqual(['recording-one']);
+    expect(compact.returnedBytes).toBe(Buffer.byteLength(JSON.stringify(compact), 'utf8'));
+    expect(compact.returnedBytes).toBeLessThanOrEqual(1024);
+  });
+
+  it('requires recorded-source verification for new anchors and checks the actual run project first', async () => {
+    const draft = await service.createDraft(PROJECT, 'human');
+    const withoutVerifier = new FileMaterialService(root);
+    await expect(withoutVerifier.updateDraft(PROJECT, draft.draftId, 0, fixture(), 'human')).rejects.toMatchObject({ code: 'SOURCE_VERIFIER_REQUIRED' });
+    const gapVerifier = new FileMaterialService(root, { position: async () => 'gap', target: async () => true });
+    await expect(gapVerifier.updateDraft(PROJECT, draft.draftId, 0, fixture(), 'human')).rejects.toMatchObject({ code: 'INVALID_SOURCE' });
+    const wrongProject = fixture(); wrongProject.recordingRefs = ['foreign'];
+    await expect(service.updateDraft(PROJECT, draft.draftId, 0, wrongProject, 'human')).rejects.toMatchObject({ code: 'INVALID_MATERIAL' });
+    const foreignOnly: MaterialContent = { requirements: [], fields: [], checkpoints: [], annotations: [], recordingRefs: ['foreign'] };
+    await expect(gapVerifier.updateDraft(PROJECT, draft.draftId, 0, foreignOnly, 'human')).rejects.toMatchObject({ code: 'INVALID_SOURCE' });
+  });
+
+  it('measures diff response bytes including the envelope and preserves a small page budget', async () => {
+    const draft = await service.createDraft(PROJECT, 'human');
+    await service.updateDraft(PROJECT, draft.draftId, 0, fixture(), 'human');
+    const v1 = await service.publish(PROJECT, draft.draftId, 1, 'human');
+    const current = await service.getDraft(PROJECT, draft.draftId);
+    const changed = structuredClone(current.content);
+    changed.requirements[0].description = 'Updated requirement';
+    changed.checkpoints[0].title = 'Updated title';
+    await service.updateDraft(PROJECT, draft.draftId, current.draftRevision, changed, 'human');
+    const v2 = await service.publish(PROJECT, draft.draftId, current.draftRevision + 1, 'human');
+    const page = await service.diff(PROJECT, v1.revisionId, v2.revisionId, { maxBytes: 1024, limit: 1 });
+    expect(page.items).toHaveLength(1);
+    expect(page.outputTruncated).toBe(true);
+    expect(page.returnedBytes).toBe(Buffer.byteLength(JSON.stringify(page), 'utf8'));
+    expect(page.returnedBytes).toBeLessThanOrEqual(1024);
+    const second = await service.diff(PROJECT, v1.revisionId, v2.revisionId, { maxBytes: 1024, limit: 1, cursor: page.nextCursor });
+    expect(second.items).toHaveLength(1);
+    expect(second.returnedBytes).toBe(Buffer.byteLength(JSON.stringify(second), 'utf8'));
   });
 
   it('detects revision corruption without replacing the original manifest', async () => {
@@ -149,9 +185,29 @@ describe('project materials', () => {
     const before = createHash('sha256').update(await fs.readFile(file)).digest('hex');
     const page = await projectLegacyRecording(root, PROJECT, 'recording-one', { maxBytes: 32768, limit: 10 });
     expect(page.items).toEqual([{ id: 'old-one', recordingId: 'recording-one', title: 'Old save', description: 'Observed',
-      requirementIds: ['orders'], capturedAt: '2026-09-26T00:00:00.000Z', anchorStatus: 'unavailable', sourceStatus: 'legacy-schema-1' }]);
+      requirementIds: ['orders'], capturedAt: '2026-09-26T00:00:00.000Z', captureTimeStatus: 'present', truncatedFields: [], anchorStatus: 'unavailable', sourceStatus: 'legacy-schema-1' }]);
     expect(page.sourceStatus).toBe('complete');
+    expect(page.returnedBytes).toBe(Buffer.byteLength(JSON.stringify(page), 'utf8'));
     expect(createHash('sha256').update(await fs.readFile(file)).digest('hex')).toBe(before);
     await expect(projectLegacyRecording(root, PROJECT, 'foreign', { maxBytes: 32768, limit: 10 })).rejects.toMatchObject({ code: 'INVALID_SOURCE' });
+  });
+
+  it('marks legacy field summaries and malformed records without hiding truncation', async () => {
+    const file = path.join(root, 'runs', 'recording-one', 'checkpoints.jsonl');
+    const missing = await projectLegacyRecording(root, PROJECT, 'recording-one', { maxBytes: 1024, limit: 1 });
+    expect(missing.sourceStatus).toBe('missing');
+    expect(missing.returnedBytes).toBe(Buffer.byteLength(JSON.stringify(missing), 'utf8'));
+    await fs.writeFile(file, `${JSON.stringify({ id: 'old-long', title: 'x'.repeat(510), description: 'short', requirementIds: ['orders'] })}\n{invalid-json}\n`);
+    const page = await projectLegacyRecording(root, PROJECT, 'recording-one', { maxBytes: 1024, limit: 1 });
+    expect(page.items[0].truncatedFields).toContain('title');
+    expect(page.items[0].captureTimeStatus).toBe('missing');
+    expect(page.sourceStatus).toBe('partial');
+    expect(page.outputTruncated).toBe(true);
+    expect(page.returnedBytes).toBe(Buffer.byteLength(JSON.stringify(page), 'utf8'));
+    expect(page.returnedBytes).toBeLessThanOrEqual(1024);
+    const tail = await projectLegacyRecording(root, PROJECT, 'recording-one', { maxBytes: 1024, limit: 1, cursor: page.nextCursor });
+    expect(tail.invalidRecords).toBe(1);
+    expect(tail.sourceStatus).toBe('partial');
+    expect(tail.returnedBytes).toBe(Buffer.byteLength(JSON.stringify(tail), 'utf8'));
   });
 });
