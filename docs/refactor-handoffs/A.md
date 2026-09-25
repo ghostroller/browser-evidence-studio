@@ -114,3 +114,7 @@ SourceFrameScopes只从已耐久SourceMetadata投影最多256个frame host/root�
 接续第一步：核对root最新status、此树branch/HEAD/dirty、Node/npm及桌面锁；保留fixture，先读真实attempt9记录，再由root决定审查夹具并跑CSSOM专项。静态发现`rewriteReplayEvent`尚未处理styleSheetRule.replace/replaceSync，样式规则/声明/adopted事件的URL尚未按logical frame解析；须先修这些确定遗漏。隔离world的rrweb原型hook是否漏站点main-world CSSOM目前只是待验证风险。若真实失败，拟在同一coordinator内部加入窄样式dirty通知与isolated native CSSOM读取，通知内容不作为原件；具体预算、身份、隐私、释放需审查后实现，当前没有该桥。
 
 剩余A验收：blob/data/redirect/SW资源的实际CDP字节、来源链与离线恢复尚待夹具和必要实现；CSSOM/adopted动态样式如上待真实证据；viewport/DPI重建由生产ReplayHost与根验收；同毫秒精确位置已有模块验证，真实顺序播放与随机seek一致性/释放仍待最终生产门面验收；30分钟既有soak尚未加入format2分段/随机window/索引重建/跨PID比对与capture queue峰值，也尚未运行本次重构长测。不可将这些核心未完项只写unsupported即结案。Canvas、closed shadow、跨源frame脚本/媒体没有宣称支持；同源frame/open-shadow/SVG当前真实通过范围仅attempt9的指定合成节点和资源。
+
+### 暂停后的提交归档
+
+用户随后明确要求提交并推送所有分支。主控据此将上述已 typecheck、尚未运行桌面的 CSSOM/adopted 验收夹具单独提交，保留全部断言与“尚未验证”的限制。此操作仅保存暂停现场，不表示恢复重构实施或 CSSOM 能力已通过；原录制、profile、连接文件与测试输出继续保留在 Git 之外。
