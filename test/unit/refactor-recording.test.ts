@@ -16,7 +16,7 @@ import { CaptureBudget, DeferredBodyReads } from '@/capture/budget';
 import { ResourceArchive, ResourceCapture, RESOURCE_MAX_BYTES } from '@/resources/archive';
 import { redactHtml, responsePrivacy } from '@/capture/privacy';
 import { rewriteCssUrls, rewriteSrcset } from '@/resources/rewrite';
-import { captureMetadata, credentialUrl } from '@/capture/url-privacy';
+import { captureError, captureMetadata, credentialUrl } from '@/capture/url-privacy';
 import { RequestLedger } from '@/capture/request-ledger';
 import { captureRequestBody, requestMetadata } from '@/capture/request-body';
 import { prepareResponseBody, RESPONSE_CAPTURE_BYTES } from '@/capture/response-body';
@@ -47,6 +47,25 @@ function target(records: RecordingEnvelope[], key = 'a'): HistoricalElementRef {
   return { kind: 'dom-node', position: last.position, nodeId: node.id, frameId: node.metadata!.frameId, mirrorScopeId: node.metadata!.mirrorScopeId };
 }
 describe('format-2 production recorder and bounded archive', () => {
+  it('excludes malformed JSON before saving bytes and retains safe diagnostic identity',()=>{
+    const malformed=responsePrivacy(Buffer.from('{"token":"malformed-private"'),'application/json');
+    expect(malformed.data).toBeUndefined();expect(malformed).toMatchObject({redacted:true,excludedReason:'response-json-privacy-unverifiable',privacyError:{name:'SyntaxError'}});
+    expect(JSON.stringify(malformed)).not.toContain('malformed-private');
+    expect(captureError(Object.assign(new Error('password=error-private'),{code:'ENOSPC'}))).toEqual({name:'Error',code:'ENOSPC',message:'[redacted credential-bearing error message]'});
+    expect(captureError(Object.assign(new Error('Disk write failed'),{code:'ENOSPC'}))).toEqual({name:'Error',code:'ENOSPC',message:'Disk write failed'});
+  });
+  it('keeps captured bytes after a failed cache probe but preserves failure of an actual later request',async()=>{
+    const evidence=await store(),capture=new ResourceCapture(evidence),archive=new ResourceArchive(evidence.runDir);
+    const position:ReplayPosition={recordingId:'recording',pageId:'page',documentId:'document',streamEpoch:'epoch',sourceTimeMs:1,eventSeq:5};
+    const input={position,frameId:'top',url:'https://source.invalid/font.woff',mediaType:'font/woff'};
+    const captured=await capture.capture({...input,requestId:'request-first',data:Buffer.from('original-font')});
+    const probe=await capture.capture({...input,status:'failed',reason:'browser-cached-resource-unavailable',source:{fromCache:true}});
+    expect((await archive.resolve(input.url,position))?.id).toBe(captured.id);
+    const changed=await capture.capture({...input,requestId:'request-new-version',position:{...position,eventSeq:6},status:'failed',reason:'observed-response-body-unavailable'});
+    await capture.capture({...input,position:{...position,eventSeq:6},status:'failed',reason:'browser-cached-resource-unavailable',source:{fromCache:true}});
+    expect((await archive.resolve(input.url,{...position,eventSeq:6}))?.id).toBe(changed.id);
+    expect((await archive.reference(probe.id)).status).toBe('failed');await expect(archive.read(changed.id)).rejects.toThrow('failed');
+  });
   it('persists a 9 MiB observed response as an 8 MiB prefix with measured original bytes and checks its private tail',async()=>{
     const bytes=9*1024*1024,text='{"rows":"'+'x'.repeat(bytes-11)+'"}';expect(Buffer.byteLength(text)).toBe(bytes);
     const prepared=prepareResponseBody({body:text,base64Encoded:false},'application/json');

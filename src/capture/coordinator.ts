@@ -13,7 +13,7 @@ import type { RecordingEnvelope } from './recording-types';
 import type { ReplayPosition } from '@/contracts/recording';
 import { CaptureBudget, DeferredBodyReads, type CaptureChannel } from './budget';
 import { ResourceCapture, isArchivableResource, privateResourceUrl, RESOURCE_MAX_BYTES } from '@/resources/archive';
-import { captureMetadata, credentialUrl } from './url-privacy';
+import { captureError, captureMetadata, credentialUrl } from './url-privacy';
 import { prepareResponseBody, RESPONSE_CDP_BUFFER_BYTES, RESPONSE_WORKING_BYTES } from './response-body';
 import type { ArtifactInput } from '@/evidence/contracts';
 
@@ -165,7 +165,7 @@ export class CaptureCoordinator {
           if(responseRead.invalidated)throw new Error(responseRead.invalidated);
           safe=prepareResponseBody(body,r.mime);
         } catch(error) {
-          const reason=responseRead.invalidated??'observed-response-body-unavailable',cause=captureMetadata({message:String(error)}).message.slice(0,4096);
+          const reason=responseRead.invalidated??'observed-response-body-unavailable',cause=captureError(error);
           if(resource&&resourceInput)await this.resources.capture({...resourceInput,status:'failed',reason});
           artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:responseRead.invalidated?'missing':'read-failed',reason,metadata:{cause},source:{requestKey:r.key,url:r.url}});
           await this.event('network-body',{requestKey:r.key,url:r.url,encodedDataLength:e.encodedDataLength},[artifact.id]);return;
@@ -174,7 +174,7 @@ export class CaptureCoordinator {
         // path, rather than becoming a successful body-read fallback artifact.
         if(resource&&resourceInput)await this.resources.capture({...resourceInput,...(safe.redacted?{status:'redacted' as const,reason:safe.excludedReason??'response-privacy-policy'}:safe.observedBytes?{status:'missing' as const,reason:'resource-byte-budget'}:{data:safe.data})});
         if(resource&&!/text|svg/i.test(r.mime))artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:'excluded',reason:'Binary bytes captured in offline resource archive',source:{requestKey:r.key,url:r.url}});
-        else {artifact=await this.artifact({kind:'response-body',mediaType:r.mime,data:safe.data,limitBytes:BODY_LIMIT,...(safe.excludedReason?{captureStatus:'excluded' as const,reason:safe.excludedReason}:{}),metadata:{privacyRedacted:safe.redacted,representation:safe.redacted?'privacy-redacted-response':'observed-response',...(safe.observedBytes?{originalByteBasis:'entire-observed-CDP-response-UTF8'}:{})},source:{requestKey:r.key,url:r.url,frameId:r.frameId}},safe.observedBytes);}
+        else {artifact=await this.artifact({kind:'response-body',mediaType:r.mime,data:safe.data,limitBytes:BODY_LIMIT,...(safe.excludedReason?{captureStatus:'excluded' as const,reason:safe.excludedReason}:{}),metadata:{privacyRedacted:safe.redacted,representation:safe.redacted?'privacy-redacted-response':'observed-response',...(safe.privacyError?{privacyError:safe.privacyError}:{}),...(safe.observedBytes?{originalByteBasis:'entire-observed-CDP-response-UTF8'}:{})},source:{requestKey:r.key,url:r.url,frameId:r.frameId}},safe.observedBytes);}
       }
       await this.event('network-body',{requestKey:r.key,url:r.url,encodedDataLength:e.encodedDataLength},[artifact.id]);
     }finally{responseRead.release();}},Buffer.byteLength(JSON.stringify({event:e,request:r}))+256,isArchivableResource(r?.mime||'')?'resource':'network');if(!accepted)responseRead.release();});

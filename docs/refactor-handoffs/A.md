@@ -72,3 +72,7 @@ root真实attempt2：`output/desktop-1790368992121` 的run `2044933f-4cae-413d-9
 隐私包审查返修：大JSON的旧9MiB验收不能退为read-failed。`prepareResponseBody`在现有40MiB资源工作集上限内，先分块检查完整观察文本，保留8MiB UTF8完整码点前缀及真实观察字节数；EvidenceStore.putArtifactPrefix只接受大于前缀的实测长度。CDP单资源缓冲调整为10MiB以容纳既有9MiB验收，未扩大64MiB总缓冲或40MiB工作集cap。过大base64/HTML等不支持的隐私表示明确excluded；观察字符串超过工作集范围明确失败。普通小响应仍走完整隐私策略。catch保留遮罩后4KiB cause；落盘错误移出读取catch，必须进入采集失败/耐久gap路径。
 
 `npm.cmd test -- test/unit/refactor-recording.test.ts test/unit/evidence.test.ts test/unit/request-body.test.ts`通过3文件33项，13.51s；`response-prefix-tests-attempt2.log`。首次测试误把reader总返回预算当正文1024字节，失败日志保留；修正为验证真实返回前缀及落盘8MiB。typecheck修正测试unknown窄化后通过，`response-prefix-typecheck-attempt3.log`。真实9MiB CDP/desktop仍待根验收，不把模块准备器测试当真实采集已通过。
+
+第5次根record通过，offline updated位置CSS/字体/图片/8个定位器通过，回initial字体失败。根原件`output/desktop-1790371821202`证明同seq缓存probe失败覆盖了已捕获font。resolve改为明确区分：fromCache且无requestId的failed/missing只代表probe失败，不是新资源版本；原manifest和诊断保留；真实后续request失败仍阻止使用旧captured版。查询按源seq/追加顺序找首个真实版本，只有probe时仍返回失败，没有盲目降级到任意旧字节。
+
+同包隐私加固：畸形JSON无法可靠执行键级隐私策略时excluded，保存privacy-unverifiable与安全解析错误身份；新captureError保留name/code/4KiB普通message，credential URL或裸password/token等错误消息遮罩。真实原件不回写。新增probe/新请求失败和畸形JSON/错误秘密负例；typecheck、专属录制和request-body模块测试通过，日志`resource-probe-typecheck.log`和`resource-probe-tests.log`。源sample草稿仍未提交，不混入此返修。

@@ -33,3 +33,14 @@ export function captureMetadata<T>(input: T): T {
   if (redacted && result && typeof result === 'object' && !Array.isArray(result)) Object.assign(result, { capturePrivacy: { credentialUrls: 'redacted' } });
   return result as T;
 }
+
+/** Retain diagnostic identity without copying credential-bearing exception
+ * text or URL payloads into newly captured evidence. */
+export function captureError(error: unknown): { name: string; message: string; code?: string } {
+  const sanitize = (value: string, limit: number): string => {
+    const safe = redactUrlText(value);
+    return /password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key/i.test(safe) ? '[redacted credential-bearing error message]' : safe.slice(0, limit);
+  };
+  const object = error && typeof error === 'object' ? error as Record<string, unknown> : undefined;
+  return { name: sanitize(typeof object?.name === 'string' ? object.name : 'Error', 128), message: sanitize(error instanceof Error ? error.message : String(error), 4096), ...(typeof object?.code === 'string' ? { code: sanitize(object.code, 128) } : {}) };
+}
