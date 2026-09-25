@@ -10,7 +10,7 @@ import { ArchiveReplayService } from '@/replay/service';
 import { SourceModel } from '@/replay/source-model';
 import { sourceLocators } from '@/replay/locators';
 import { prepareReplayEvents } from '@/replay/rrweb-player';
-import { OfflineResourceService, resourceUrl, rewriteReplayEvent } from '@/resources/replay-resources';
+import { OfflineResourceService, resourceUrl, rewriteReplayRecords } from '@/resources/replay-resources';
 import { ResourceArchive } from '@/resources/archive';
 import { OFFLINE_CSP } from '@/resources/rewrite';
 import rrwebSource from '../../node_modules/rrweb/dist/rrweb.umd.cjs?raw';
@@ -41,9 +41,10 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     if(request.url==='/switch-version'){styleVersion++;response.end('switched');}
     else if (request.url === '/assets/main.css') { response.setHeader('content-type', 'text/css'); response.end(`@import "nested.css"; @font-face {font-family:BesFixture;src:url("font.ttf")} #selected {color:${styleVersion?'rgb(51, 34, 17)':'rgb(17, 34, 51)'};font-family:BesFixture}`); }
     else if (request.url === '/assets/nested.css') { response.setHeader('content-type', 'text/css'); response.end('body {background:rgb(220, 230, 240)} #picture {width:13px;height:17px}'); }
+    else if (request.url === '/assets/frame.css') { response.setHeader('content-type','text/css');response.end('a {color:rgb(88, 99, 111)}'); }
     else if (request.url === '/assets/font.ttf') { response.setHeader('content-type', 'font/ttf'); response.end(font); }
     else if (request.url === '/assets/pixel.png') { response.setHeader('content-type', 'image/png'); response.end(png); }
-    else if (request.url === '/frame') { response.setHeader('content-type', 'text/html'); response.end('<!doctype html><a data-key="frame" href="../frame-target">frame child</a>'); }
+    else if (request.url === '/frame') { response.setHeader('content-type', 'text/html'); response.end('<!doctype html><link rel="stylesheet" href="/assets/frame.css"><a data-key="frame" href="../frame-target">frame child</a><img id="frame-picture" src="/assets/pixel.png">'); }
     else if (request.url?.startsWith('/privacy?')) { response.setHeader('content-type','application/json');response.end('{"ok":true}'); }
     else { response.setHeader('content-type', 'text/html'); response.end(html); }
   });
@@ -109,11 +110,31 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     });
     await current.page.waitForFunction(()=>getComputedStyle(document.querySelector('#selected')!).color==='rgb(51, 34, 17)');
     await boundary('updated', 'updated');
+    const locatorPosition=current.capture.recordingPosition!,locatorWindow=await new ArchiveReplayService(run.store.runDir).window(locatorPosition),locatorModel=new SourceModel(locatorWindow.records);
+    const sourceChecks:unknown[]=[];
+    for(const key of ['frame','shadow','svg']){
+      const node=[...locatorModel.nodes.values()].find(node=>node.metadata?.attributes['data-key']?.status==='present'&&node.metadata.attributes['data-key'].value===key);assert.ok(node?.metadata,`Source metadata for ${key} must exist`);
+      const ref:HistoricalElementRef={kind:'dom-node',position:locatorPosition,nodeId:node.id,frameId:node.metadata.frameId,mirrorScopeId:node.metadata.mirrorScopeId},candidates=sourceLocators(locatorModel,ref);
+      const results=await current.page.evaluate(({candidates,key})=>candidates.map(candidate=>{
+        let root:Document|ShadowRoot=document,found:Element[]=[];
+        for(const step of candidate.steps){
+          if(step.strategy==='css')found=[...root.querySelectorAll(step.expression)];
+          else{const doc=root.ownerDocument??root as Document;const query=doc.evaluate(step.expression,root,null,XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,null);found=Array.from({length:query.snapshotLength},(_,index)=>query.snapshotItem(index)).filter((node):node is Element=>node?.nodeType===1);}
+          if(step.kind==='frame'){if(found.length!==1)throw new Error('Ambiguous frame step');const next=(found[0] as HTMLIFrameElement).contentDocument;if(!next)throw new Error('Frame document unavailable');root=next;}
+          if(step.kind==='shadow'){if(found.length!==1||!found[0].shadowRoot)throw new Error('Shadow root unavailable');root=found[0].shadowRoot;}
+        }
+        return{count:found.length,target:found.some(node=>node.getAttribute('data-key')===key)};
+      }),{candidates,key});
+      candidates.forEach((candidate,index)=>{assert.equal(results[index].count,candidate.historical.matchCount);assert.equal(results[index].target,true);});
+      sourceChecks.push({key,ref,candidates:candidates.length,results});
+    }
+    report.sourceLocatorChecks=sourceChecks;
     const queueMetrics = current.capture.queueMetrics;
     await studio.control('human'); await studio.seal();
     const final = current.capture.recordingPosition!;
     const resources = await new ResourceArchive(run.store.runDir).list(1000);
     for (const mediaType of ['text/css', 'image/png', 'font/ttf']) assert.ok(resources.items.some(item => item.status === 'captured' && item.mediaType === mediaType), `Production archive must contain ${mediaType}`);
+    assert.ok(resources.items.some(item=>item.status==='captured'&&item.frameId.startsWith('document-')&&item.originalUrl.status==='present'&&item.originalUrl.value.endsWith('/assets/frame.css')),'Same-origin frame CSS requires an exact logical source frame mapping');
     const originalFiles=['artifacts.jsonl'];for(const directory of ['raw/rrweb','raw/cdp','journal'])for(const file of await readdir(path.join(run.store.runDir,directory)))if(file.endsWith('.jsonl'))originalFiles.push(path.join(directory,file));
     for (const file of originalFiles) {const raw=await readFile(path.join(run.store.runDir,file),'utf8');assert.ok(!raw.includes('synthetic-private'),'Production originals must not leak masked input values');assert.ok(!raw.includes('synthetic-url-private'),'Production originals must not leak credential URLs');}
     const saved: SavedRecording = { runId: run.id, originalUrl: origin + '/source', recordPid: process.pid, capturedAt: new Date().toISOString(), positions, final };
@@ -132,8 +153,9 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
   }
 }
 
-async function waitReplayAssets(doc: Document): Promise<string[]> {
+async function waitReplayAssets(doc: Document, depth=0): Promise<string[]> {
   const errors: string[] = [];
+  if(depth>8)return['Nested replay frame depth budget'];
   async function bounded(work: Promise<unknown>, label: string): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try { await Promise.race([work, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(label + ': timeout')), 5000); })]); }
@@ -147,6 +169,9 @@ async function waitReplayAssets(doc: Document): Promise<string[]> {
   // font face. Wait for the stylesheet boundary first, then request the fixture.
   await bounded(doc.fonts.load('16px BesFixture').then(() => doc.fonts.ready), 'font readiness');
   await Promise.all([...doc.images].map(image => bounded(image.decode(), 'image ' + image.src)));
+  const frames=[...doc.querySelectorAll<HTMLIFrameElement>('iframe')];
+  if(frames.length>32)errors.push('Nested replay frame count budget');
+  for(const frame of frames.slice(0,32)){if(frame.contentDocument)errors.push(...await waitReplayAssets(frame.contentDocument,depth+1));else errors.push('Replay child document unavailable');}
   return errors;
 }
 
@@ -187,12 +212,15 @@ async function offlineScenario(studio: Studio): Promise<Record<string, unknown>>
     for (const item of [...saved.positions, ...saved.positions].reverse()) {
       activePosition=item.position;activeGeneration++;const generation=activeGeneration;
       const mapping=new Map<string,string>();
-      for(const resource of resources.items){if(resource.originalUrl.status!=='present')continue;const selected=await archive.resolve(resource.originalUrl.value,item.position,'top');if(selected?.status==='captured')mapping.set(resource.originalUrl.value,resourceUrl(selected.id)+`?seek=${generation}`);}
+      for(const resource of resources.items){if(resource.originalUrl.status!=='present')continue;const selected=await archive.resolve(resource.originalUrl.value,item.position,resource.frameId);if(selected?.status==='captured')mapping.set(resource.frameId+'\0'+resource.originalUrl.value,resourceUrl(selected.id)+`?seek=${generation}`);}
       const started = performance.now(), window = await service.window(item.position), model = new SourceModel(window.records);
-      const prepared = prepareReplayEvents({ ...window, records: window.records.map(record => ({ ...record, event: rewriteReplayEvent(record.event, url => mapping.get(url) ?? 'about:blank') })) });
+      const prepared = prepareReplayEvents({ ...window, records: rewriteReplayRecords(window.records,(url,frameId)=>mapping.get(frameId+'\0'+url)??'about:blank') });
       const result = await execute(`seek-${generation}-${item.label}`, `(async()=>{window.__aPlayer?.destroy();window.__aPlayer=new rrweb.Replayer(${JSON.stringify(prepared.events)},{root:document.querySelector('#replay'),speed:1,showWarning:false,showDebug:false,UNSAFE_replayCanvas:false});window.__aPlayer.pause(${prepared.pauseOffset});const frame=document.querySelector('#replay iframe');const doc=frame.contentDocument;const assetErrors=await (${waitReplayAssets.toString()})(doc);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const a=doc.querySelector('#selected'),img=doc.querySelector('#picture');return {text:a.textContent,nodeId:window.__aPlayer.getMirror().getId(a),color:frame.contentWindow.getComputedStyle(a).color,background:frame.contentWindow.getComputedStyle(doc.body).backgroundColor,font:doc.fonts.check('16px BesFixture'),image:img.complete&&img.naturalWidth>0,sandbox:frame.getAttribute('sandbox'),scriptRan:frame.contentWindow.__sourceScriptRan===true,width:frame.width,height:frame.height,assetErrors,stylesheets:[...doc.querySelectorAll('link[rel=stylesheet]')].map(link=>({href:link.href,loaded:!!link.sheet}))};})()`);
       const seekReport: Record<string,unknown> = { position: item.position, durationMs: performance.now() - started, readBytes: window.readBytes, mapping: [...mapping], result };
       (report.seeks as unknown[]).push(seekReport);
+      const childResult=await execute(`frame-${generation}-${item.label}`,`(()=>{const frame=document.querySelector('#replay iframe').contentDocument.querySelector('#child');const doc=frame?.contentDocument;const a=doc?.querySelector('a'),img=doc?.querySelector('#frame-picture');return {available:!!a,color:a?frame.contentWindow.getComputedStyle(a).color:null,image:!!img?.complete&&img.naturalWidth>0};})()`);
+      seekReport.childResult=childResult;
+      assert.equal(childResult.available,true);assert.equal(childResult.color,'rgb(88, 99, 111)');assert.equal(childResult.image,true);
       assert.equal(result.text, item.label === 'initial' ? 'initial' : 'updated'); assert.equal(result.scriptRan, false); assert.equal(result.sandbox, 'allow-same-origin');
       assert.equal(result.color,item.label==='initial'?'rgb(17, 34, 51)':'rgb(51, 34, 17)','A seek must use that historical version of a reused stylesheet URL');
       assert.deepEqual(result.assetErrors, [], 'Every archived stylesheet/image/font must finish successfully');

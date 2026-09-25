@@ -21,6 +21,8 @@ import { RequestLedger } from '@/capture/request-ledger';
 import { captureRequestBody, requestMetadata } from '@/capture/request-body';
 import { prepareResponseBody, RESPONSE_CAPTURE_BYTES } from '@/capture/response-body';
 import { EvidenceReader } from '@/evidence/reader';
+import { SourceFrameScopes } from '@/capture/frame-scopes';
+import { rewriteReplayRecords } from '@/resources/replay-resources';
 
 const stores: EvidenceStore[] = [], windows: JSDOM[] = [];
 afterEach(async () => { for (const store of stores.splice(0)) await store.close(); for (const window of windows.splice(0)) window.window.close(); });
@@ -47,6 +49,22 @@ function target(records: RecordingEnvelope[], key = 'a'): HistoricalElementRef {
   return { kind: 'dom-node', position: last.position, nodeId: node.id, frameId: node.metadata!.frameId, mirrorScopeId: node.metadata!.mirrorScopeId };
 }
 describe('format-2 production recorder and bounded archive', () => {
+  it('maps exact source frame roots and rewrites URLs within their recorded frame scope',async()=>{
+    const {dom,records}=await source('<iframe></iframe>');
+    const frame=dom.window.document.querySelector('iframe')!;frame.contentDocument!.body.innerHTML='<img src="/frame-image.png">';
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,30));
+    const metadata=records.flatMap(record=>record.metadata).find(item=>item.tagName==='img'&&item.frameId!=='top');expect(metadata?.frameHostId).toBeDefined();
+    const scopes=new SourceFrameScopes();for(const record of records)scopes.append(record);
+    const position=records.at(-1)!.position;
+    expect(scopes.resolve(metadata!.frameHostId!,metadata!.rootId,position)).toBe(metadata!.frameId);
+    expect(scopes.resolve(metadata!.frameHostId!,metadata!.rootId+100,position)).toBeUndefined();
+    expect(scopes.resolve(metadata!.frameHostId!,metadata!.rootId,{...position,streamEpoch:'other'})).toBeUndefined();
+    const seen:Array<{url:string;frameId?:string}>=[];
+    rewriteReplayRecords(records,(url,frameId)=>{seen.push({url,frameId});return 'about:blank';});
+    expect(seen).toContainEqual({url:'https://source.invalid/frame-image.png',frameId:metadata!.frameId});
+    scopes.append({...records.at(-1)!,position:{...position,eventSeq:position.eventSeq+1},metadataComplete:false,metadata:[]});
+    expect(scopes.resolve(metadata!.frameHostId!,metadata!.rootId,position)).toBeUndefined();
+  });
   it('does not let an explicit presentation bypass the source metadata budget',async()=>{
     const {dom,records}=await source('<a>bounded node</a>'),element=dom.window.document.querySelector('a')!;
     element.setAttribute('data-near-budget','x'.repeat(4*1024*1024-4096));
