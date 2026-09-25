@@ -43,3 +43,7 @@ Git 在受限账户报 dubious ownership；仅对本仓库/本次工作树逐命
 `npm.cmd run test:integration -- --refactor-s0` 第一次因新阶段遗漏白名单失败，补齐白名单后第二次进入真实 rrweb，隐私断言发现 recording 含敏感 fixture 值（prototype-second.log）。原断言保留，不能删 fixture 值获得绿色结果；实际修正及最终结果见 handoff。
 
 本次原型是短时合成页面，完整生产录制/离线资源/跨 frame/同毫秒 seek/30 分钟增长和安装包均须继续验收。受限执行账户启动失败、正常权限实际场景失败和新原型实现错误分别记录，不互相替代。
+
+## 收口结果
+
+最终 `npm.cmd test` 为 28 文件/161 项通过；类型检查、S0 完整风险闭环均通过。`npm.cmd run test:desktop` 最终 19 进程矩阵通过，`output/desktop-1790364974479/desktop-summary.json`；另有最终恢复专项通过，`output/desktop-1790364881384`。中间在 `output/desktop-1790364750676` 出现 checkpoint popup 不可点击；添加只读 native 状态诊断后复跑通过，没有改点击方法、超时或断言。深色存档恢复和 popup 点击的间歇失败仍保留为风险，不宣布根因已修复。全部命令、工作包、AT 范围与 A/B/C 接续见 refactor-handoffs/S0.md。

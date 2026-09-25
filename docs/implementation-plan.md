@@ -2,6 +2,8 @@
 
 状态：实现进行中。以下是里程碑目标；实际命令、通过结果及待验证范围见 verification.md。更新日期：2026-09-23。
 
+2026-09-26 后续实现改按 [refactor/01-modification-plan.md](refactor/01-modification-plan.md) 的 T00–T15 依赖推进；历史 M0–M6 验收记录继续保留。S0 实际进展、隔离 worktree 协作例外和接续入口见 [refactor-status.md](refactor-status.md)、[refactor-contracts.md](refactor-contracts.md) 和 [S0.md](refactor-handoffs/S0.md)。原有性能与耐久门槛不降低；A/B/C 仅使用本次新建工作树，主目录仍为最终交付点。
+
 ## 1. 推进方式
 
 当前 M0–M5 核心已实现并有合成通过证据，M6 仍有待验收项；逐项状态与后续工作见 [progress.md](progress.md)。本文各节路径表示职责规划，不要求与当前文件拆分一一对应。

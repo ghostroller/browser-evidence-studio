@@ -1,5 +1,14 @@
 # 实际验证记录
 
+## 2026-09-26 S0 重构验收
+
+真实 Node 24.21.0 / npm 11.19.0，Electron 44.4.3 / Puppeteer 25.11.0 / rrweb 2.1.6；依赖锁未改。最终工作包命令、提交、产物、初次失败及未测项见 [S0 交接](refactor-handoffs/S0.md) 与 [基线](refactor-baseline.md)。本轮 28 文件/161 项 Vitest 通过，类型检查通过；真实 S0 专项 `npm.cmd run test:integration -- --refactor-s0` 通过，产物 `output/desktop-1790364663793`。
+
+S0 专项覆盖实际 WebContentsView 输入/现场保留、下一段 full snapshot、封存原件 hash 不变、停止失败保留及重试、beforeunload 明确拒绝和实际销毁、导航代际、当前页/从起点/默认模式、空 session、脚本普通 worker，以及真实 rrweb 源信息与独立 CSS/XPath 对照。原型是短时合成页面；并未将生产源信息、跨 frame、离线资源、资料版本/模块执行、30 分钟新格式、安装包和真人站点写成已验收。
+
+最终完整 19 进程桌面矩阵通过，产物 `output/desktop-1790364974479/desktop-summary.json`；本轮也有失败记录，具体对照见 S0 交接；不得用下面历史发行包或长测的通过替代本次源码验证。旧 UI 的深色存档恢复和 popup 首次点击出现过间歇失败，原始日志保留。没有取消断言、跳过 UI 或修改旧原件来求通过。
+
+
 更新日期：2026-09-24，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
 
 ## 整体审查修复（2026-09-24）

@@ -1,5 +1,12 @@
 # 本机 HTTP API
 
+## S0 session 与执行模式增量（2026-09-26）
+
+HTTP 仍为 /v1，旧证据 schema 1 不变。state 新增独立 session（sessionId/project/profile/recordingId/页面/控制与导航代际）；seal 成功后 active=null，但 session 和 live 页保留。下一次同项目/profile startRun 在当前现场建立新 full snapshot，不因请求 url 改掉现场；换项目/profile前应由可信 UI 显式关闭 session。closePage/closeSession/navigateHistory 目前只接可信 UI，未新增 HTTP 路由。
+
+startValidation 的 executionMode 为 current-page-test 或默认 from-start-validation。当前页必须携带匹配的 projectId/profileId/pageId/generation，使用新执行记录保留原 target；从起点总是新建页面，startUrl 可为 HTTP(S)/about:blank，省略则取当前 URL、空 session 为 about:blank。模式和起点写入 run/validation；共享 profile不等于完整隔离。已有一次启动 grant只允许从起点，显式 startUrl必须与授权原页相同；原位试跑不借该 grant扩大权限。停止仍绕过业务队列，UI 目标绑定支持 validation启动转运行的同一身份，旧执行不能停止新执行。资料 revision绑定、任务级授权和录制格式2仍待后续工作包，不是本次新增公共 API。
+
+
 本文描述 `src/main/api/server.ts` 的实现契约。浏览器和工作流效果还需以 `docs/verification.md` 中对应验证为准。API 仅监听动态 `127.0.0.1` 端口，不提供公共 CDP/WebSocket/eval 接口。
 
 ## 连接与认证

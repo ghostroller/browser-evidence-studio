@@ -99,6 +99,10 @@ Electron main 管生命周期、页面和控制权；可信 renderer 只管界�
 
 ## 3. 浏览器与 CDP
 
+2026-09-26 S0 已把 live session 所有权抽至 `main/services/browser-session.ts`。封存停止注入/监听、排空采集和 writer，保留 WebContentsView、profile、输入和 JS 现场；下一段使用新 Run/store 和 full snapshot，不导航、不续写封存原件。`state.session` 独立于 `state.active`；关闭页/会话是可信 UI 的显式操作，等待销毁确认，beforeunload 拒绝或超时保留现场。导航代际由 session observer 在未录制时继续维护。新录制/资料/执行共享类型与尚未接入的能力见 [refactor-contracts.md](refactor-contracts.md)，真实 S0 证据见 [交接](refactor-handoffs/S0.md)。
+
+执行明确使用 `current-page-test` 或默认 `from-start-validation`；前者校验 pageId/导航代际，在新验证记录中保留原页，后者在同 profile 新建页面并使用明确 startUrl（默认当前 URL，空会话为 about:blank）。两者均写入 manifest/validation 记录，不能声称不同页等于完整环境隔离。旧单次启动授权只允许从起点模式，不能借它扩大为原位试跑；任务级授权仍待 E。旧档没有模式值时保留未知，不回填历史。
+
 ### 3.1 页面身份
 
 BrowserRegistry 保存 appInstanceId、browserSessionId、webContentsId、CDP targetId、pageId、frameId、navigationGeneration、openerPageId。导航不更换逻辑 pageId；新窗口建立新 pageId；frame 销毁后不能复用旧映射。
