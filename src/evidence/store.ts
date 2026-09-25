@@ -5,6 +5,8 @@ import { Artifact, ArtifactInput, Checkpoint, CheckpointInput, EvidenceError, Ev
 import { atomicFile, atomicJson, exists, hashBytes, jsonLines, readSlice, safeFile } from './files';
 import { EvidenceIndex, evidenceSources, rebuildIndex, type CorruptRecord } from './index';
 import { claimWriterLock, type WriterLockHandle } from './writer-lock';
+import type { RawReceipt } from '@/capture/recording-types';
+import { ResourceArchive, type ArchivedResource } from '@/resources/archive';
 
 export interface StoreOptions { chunkBytes?: number; maxPendingBytes?: number; }
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
@@ -48,7 +50,7 @@ async function unreportedCorruption(runDir: string, corrupt: CorruptRecord[]): P
 
 interface SealedIntegrityIssue { file: string; reason: string; expectedSha256?: string; observedSha256?: string; }
 async function sealedIntegrityIssues(runDir: string): Promise<SealedIntegrityIssue[]> {
-  let ledger: { schemaVersion?: number; files?: Array<{ path: string; sha256: string; bytes: number }> };
+  let ledger: { schemaVersion?: number; files?: Array<{ path: string; sha256: string; bytes: number }>; resources?:Array<{id:string;blobHash:string}> };
   try { ledger = JSON.parse(await fs.readFile(await safeFile(runDir, 'integrity.json'), 'utf8')); }
   catch { return [{ file: 'integrity.json', reason: 'missing-or-unreadable' }]; }
   if (ledger.schemaVersion !== 1 || !Array.isArray(ledger.files)) return [{ file: 'integrity.json', reason: 'invalid-integrity-ledger' }];
@@ -67,6 +69,10 @@ async function sealedIntegrityIssues(runDir: string): Promise<SealedIntegrityIss
     } catch { issues.push({ file: entry.path, reason: 'missing-or-unreadable', expectedSha256: entry.sha256 }); }
   }
   for (const source of await evidenceSources(runDir)) if (!listed.has(source.file)) issues.push({ file: source.file, reason: 'unlisted-evidence-source' });
+  for(const entry of ledger.resources??[]){
+    try{const resource=await new ResourceArchive(runDir).read(entry.id);if(resource.reference.blobHash!==entry.blobHash)throw new Error('Resource seal hash mismatch');}
+    catch(error){issues.push({file:`resources/${entry.id}.json`,reason:'sealed-resource-unavailable: '+String(error)});}
+  }
   return issues;
 }
 
@@ -205,7 +211,7 @@ export class EvidenceStore {
     this.tail = result;
     return result;
   }
-  private async appendLine(kind: RecordKind, record: Record<string, unknown>, channel?: 'cdp' | 'rrweb'): Promise<void> {
+  private async appendLine(kind: RecordKind, record: Record<string, unknown>, channel?: 'cdp' | 'rrweb'): Promise<RawReceipt> {
     const data = Buffer.from(`${JSON.stringify(record)}\n`);
     let file = `${kind}.jsonl`;
     if (kind === 'events' || kind === 'raw') {
@@ -227,6 +233,7 @@ export class EvidenceStore {
       await this.index.append(entry);
       if (Date.now() - this.lastIndexPublish >= 1000) { await this.index.publish(); this.lastIndexPublish = Date.now(); }
     } catch (error) { this.fault = error as Error; throw error; }
+    return { id: entry.id, sequence: entry.sequence, file, offset, bytes: data.length, sha256: hashBytes(data) };
   }
   private identity(prefix: string): { id: string; sequence: number } { const sequence = this.index.state.lastSequence + 1; return { id: `${prefix}-${String(sequence).padStart(12, '0')}`, sequence }; }
   private async event(input: EventInput): Promise<EvidenceEvent> {
@@ -271,14 +278,13 @@ export class EvidenceStore {
       return record;
     });
   }
-  appendRaw(channel: 'cdp' | 'rrweb', payload: unknown): Promise<{ id: string; sequence: number }> {
+  appendRaw(channel: 'cdp' | 'rrweb', payload: unknown): Promise<RawReceipt> {
     if (!['cdp', 'rrweb'].includes(channel)) return Promise.reject(new EvidenceError('INVALID_CHANNEL', 'Unknown raw evidence channel.'));
     const snapshot = clone(payload);
     return this.enqueue(Buffer.byteLength(JSON.stringify(snapshot)), async () => {
       this.writable();
       const record = { schemaVersion: 1, ...this.identity('raw'), receivedAt: new Date().toISOString(), channel, payload: snapshot };
-      await this.appendLine('raw', record, channel);
-      return { id: record.id, sequence: record.sequence };
+      return this.appendLine('raw', record, channel);
     });
   }
   private async requireArtifact(id: string): Promise<IndexEntry> {
@@ -304,6 +310,7 @@ export class EvidenceStore {
       await atomicJson(path.join(this.runDir, 'manifest.json'), this.manifest);
       try {
         const files = new Map<string, { path: string; sha256: string; bytes: number }>();
+        const resources:Array<{id:string;blobHash:string}>=[];
         const acknowledgedCorruption = new Set<string>();
         for (const source of await evidenceSources(this.runDir)) if (source.kind === 'events') {
           for await (const line of jsonLines(await safeFile(this.runDir, source.file))) {
@@ -322,6 +329,13 @@ export class EvidenceStore {
               throw new EvidenceError('INTEGRITY_FAILED', `Invalid record in ${source.file}.`, 409);
             }
             const record = line.value;
+            if(source.kind==='events'&&record.type==='resource-reference'){
+              const reference=record.data as unknown as ArchivedResource;
+              const archive=new ResourceArchive(this.runDir),saved=await archive.reference(reference.id);
+              if(JSON.stringify(saved)!==JSON.stringify(reference))throw new EvidenceError('INTEGRITY_FAILED','Resource manifest no longer matches its immutable reference event',409);
+              const checked=await this.hashFile(`resources/${reference.id}.json`);files.set(checked.path,checked);
+              if(reference.status==='captured'){await archive.read(reference.id);resources.push({id:reference.id,blobHash:reference.blobHash!});}
+            }
             for (const id of (record.artifactRefs as string[] | undefined) ?? []) await this.requireArtifact(id);
             if (source.kind === 'artifacts' && ['complete', 'empty', 'truncated'].includes(String(record.captureStatus)) && (!record.path || !record.sha256)) throw new EvidenceError('INTEGRITY_FAILED', `Artifact ${record.id} is missing captured bytes.`, 409);
             if (source.kind === 'artifacts' && record.path) {
@@ -332,7 +346,7 @@ export class EvidenceStore {
           }
           const checked = await this.hashFile(source.file); files.set(checked.path, checked);
         }
-        await atomicJson(path.join(this.runDir, 'integrity.json'), { schemaVersion: 1, runId: this.manifest.id, checkedAt: new Date().toISOString(), files: [...files.values()], acknowledgedGaps: this.index.state.gaps });
+        await atomicJson(path.join(this.runDir, 'integrity.json'), { schemaVersion: 1, runId: this.manifest.id, checkedAt: new Date().toISOString(), files: [...files.values()], resources, acknowledgedGaps: this.index.state.gaps });
         await this.index.publish();
         this.manifest = { ...this.manifest, status: 'sealed', sealedAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
         await atomicJson(path.join(this.runDir, 'manifest.json'), this.manifest);
