@@ -86,8 +86,26 @@ test('new attempt reuse retains source attempt and requires matching records/pro
     const receipt = await service.append(reused);
     const stored = JSON.parse(await readFile(path.join(root, receipt.artifactId), 'utf8')) as { batch: DatasetBatch };
     assert.deepEqual(stored.batch.reusedFrom, reused.reusedFrom);
+    const metadata = await service.batchMetadata(next, 'page-1', budget);
+    assert.equal(metadata.contentVerified, true);
+    assert.deepEqual(metadata.reusedFrom, reused.reusedFrom);
+    assert.deepEqual(metadata.provenance, batch().provenance);
+    assert.equal(metadata.returnedBytes, Buffer.byteLength(JSON.stringify(metadata)));
     await assert.rejects(service.append({ ...reused, batchId: 'different', records: [{ id: 'invented' }] }), /must match/);
     assert.throws(() => service.append({ ...reused, batchId: 'invalid', reusedFrom: { ...reused.reusedFrom, validityEvidenceRefs: [] } }), /validity evidence/);
+  } finally { await service.close(); }
+}));
+
+test('step attempt lifecycle is durable and cannot be relabeled or given a second terminal result', async () => fixture(async root => {
+  const service = await PersistentDatasetService.open(root, binding);
+  const stepIdentity = { executionId: binding.executionId, stepId: 'orders', attemptId: 'step-attempt-1', entityKey: 'order-1' };
+  const occurredAt = new Date().toISOString();
+  try {
+    await service.saveStep({ identity: stepIdentity, occurredAt, state: 'running' });
+    await service.saveStep({ identity: stepIdentity, occurredAt, state: 'failed', result: { identity: stepIdentity, status: 'failed', error: { name: 'Error', message: 'original business error' } } });
+    await assert.rejects(service.saveStep({ identity: stepIdentity, occurredAt, state: 'running' }), /already has a durable terminal/);
+    const terminal = JSON.parse(await readFile(path.join(root, 'executions', binding.executionId, 'attempts', stepIdentity.attemptId, 'step-0002.json'), 'utf8')) as { result: { error: { message: string } } };
+    assert.equal(terminal.result.error.message, 'original business error');
   } finally { await service.close(); }
 }));
 
