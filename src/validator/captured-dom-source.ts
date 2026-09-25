@@ -14,7 +14,8 @@ export class CapturedDomSourceReader implements SourceReader {
   async read(sourceRef: string, budget: ReadBudget): Promise<SourceDocument | undefined> {
     if (!Number.isSafeInteger(budget.maxBytes) || budget.maxBytes < 1024 || budget.maxBytes > 1024 * 1024 || !Number.isSafeInteger(budget.limit) || budget.limit < 1 || budget.cursor) throw new Error('Invalid source read budget');
     const located = await this.locate(sourceRef); if (!located) return undefined;
-    const { replay, target, scope } = located;
+    const { replay } = located;
+    const { target, scope } = structuredClone({ target: located.target, scope: located.scope });
     if (scope.recordingId !== target.position.recordingId) throw new Error('DOM sample recording scope differs from its target');
     const window = await replay.window(target.position);
     if (window.gaps.some(gap => gap.category === 'structure' || gap.category === 'metadata')) throw new Error('DOM sample source position is not reliable');

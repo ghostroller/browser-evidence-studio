@@ -3,7 +3,7 @@ import type { MaterialService } from '@/contracts/materials';
 import type { ReadBudget } from '@/contracts/recording';
 import type { JsonValue, Verdict } from '@/contracts/workflow';
 import { materialContentHash } from '@/materials';
-import { executionId } from '@/runner/datasets';
+import { canonicalJson, executionId } from '@/runner/datasets';
 import { combine, pointer, ruleCheck } from './rules';
 import { fieldProof, paginationProof, type SourceEntityIndex } from './proofs';
 import type { Check, DatasetReader, ReviewReader, SourceDocument, SourceReader, ValidatedRequirement, ValidationReport, ValidationRequest } from './types';
@@ -80,6 +80,11 @@ export class ValidatorService {
         evidence.push(source.assessment);
         if (source.document) documents.set(ref, source.document);
       }
+      if (dataset) for (const batchId of dataset.reused) {
+        const refs = dataset.refs.get(batchId) ?? [];
+        checks.push(check('reuse-source-availability', refs.length > 0 && refs.every(ref => documents.has(ref)) ? 'pass' : 'inconclusive',
+          'Reused prior-attempt records keep their original provenance; current validity references must resolve in this exact attempt and pass the frozen content checks below'));
+      }
       const scriptAssertions = (request.assertions ?? []).filter(x => x.requirementId === requirement.id);
       for (const assertion of scriptAssertions) evidence.push({ status: 'script-declared', sourceRefs: assertion.sourceRefs, reason: `Script assertion ${assertion.name}: ${assertion.verdict}; it is not an independent check` });
       if (!dataset) checks.push(check('dataset', 'not-run', 'No dataset is defined for this requirement; script assertions cannot establish acceptance'));
@@ -87,7 +92,7 @@ export class ValidatorService {
         if (!dataset.complete) checks.push(check('dataset-coverage', 'inconclusive', dataset.reasons.join('; ') || `Dataset status is ${dataset.status}`));
         for (const rule of requirement.rules) {
           if (rule.type !== 'pagination-complete') checks.push(ruleCheck(rule, dataset.rows.map(r => r.value), dataset.complete, schemaData));
-          else if (rule.proof && dataset.complete && !dataset.reused.size) {
+          else if (rule.proof && dataset.complete) {
             const proof = paginationProof(rule, dataset.rows.map(r => r.value), [...documents.values()]);
             checks.push(proof);
             evidence.push({ status: proof.verdict === 'pass' ? 'content-verified' : 'inconclusive', sourceRefs: [...documents.keys()], reason: proof.reason });
@@ -108,9 +113,7 @@ export class ValidatorService {
         const explanations = new Set<string>();
         for (const row of dataset.rows) {
           const docs = (dataset.refs.get(row.batchId) ?? []).flatMap(ref => documents.has(ref) ? [documents.get(ref)!] : []);
-          const proof = dataset.reused.has(row.batchId)
-            ? check(`source:${materialField.id}`, 'inconclusive', 'Reused prior-attempt data requires independent current validity proof')
-            : fieldProof(materialField, row.value, docs, sourceEntityIndex);
+          const proof = fieldProof(materialField, row.value, docs, sourceEntityIndex);
           verdicts.push(proof.verdict); explanations.add(proof.reason);
         }
         const verdict = combine(verdicts);
@@ -163,8 +166,16 @@ export class ValidatorService {
     if (++consumed.reads > MAX_READS) throw new ValidatorError('READ_LIMIT', 'Validation reached 500 bounded reads', 413);
     const metadata = await this.data.batchMetadata(d.identity, receipt.batchId, READ);
     if (!metadata.contentVerified || metadata.receipt.contentHash !== receipt.contentHash) throw new ValidatorError('BATCH_MISMATCH', 'Durable batch content does not match its receipt');
-    d.refs.set(receipt.batchId, metadata.provenance.sourceRefs);
-    if (metadata.reusedFrom) d.reused.add(receipt.batchId);
+    if (metadata.reusedFrom) {
+      const prior = metadata.reusedFrom;
+      if (prior.executionId !== d.identity.executionId || prior.attemptId === d.identity.attemptId || !prior.validityEvidenceRefs.length) throw new ValidatorError('REUSE_SCOPE', 'Prior batch requires another attempt within this fixed execution and current validity references');
+      if (++consumed.reads > MAX_READS) throw new ValidatorError('READ_LIMIT', 'Validation reached 500 bounded reads', 413);
+      const original = await this.data.batchMetadata(prior, prior.batchId, READ);
+      consumed.bytes += size(original);
+      if (!original.contentVerified || original.receipt.recordCount !== receipt.recordCount || canonicalJson(original.provenance) !== canonicalJson(metadata.provenance)) throw new ValidatorError('REUSE_INTEGRITY', 'Prior batch integrity or preserved provenance differs from reused records');
+      d.reused.add(receipt.batchId);
+      d.refs.set(receipt.batchId, prior.validityEvidenceRefs);
+    } else d.refs.set(receipt.batchId, metadata.provenance.sourceRefs);
     consumed.bytes += size(metadata);
     let cursor: string | undefined;
     do {
