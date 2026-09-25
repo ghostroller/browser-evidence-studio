@@ -51,7 +51,7 @@ export function installSourceRecorder(config: RecorderConfiguration): void {
     if (nodeId < 0 || el.closest('.rr-block')) return;
     const rootId = mirror.getId(el.ownerDocument);
     if (rootId < 0) { metadataComplete = false; return; }
-    const attributes: SourceMetadata['attributes'] = {};
+    const attributes: SourceMetadata['attributes'] = Object.create(null) as SourceMetadata['attributes'];
     for (const attr of el.attributes) attributes[attr.name] = privateAttribute(attr.name, attr.value, el) ? redacted() : present(attr.value);
     const properties: SourceMetadata['properties'] = {};
     // Constructors differ across frames; use names after the Element check.

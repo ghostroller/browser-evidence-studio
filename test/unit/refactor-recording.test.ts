@@ -12,8 +12,10 @@ import { instrumentRecorder } from '@/capture/rrweb-adapter';
 import { installSourceRecorder } from '@/capture/source-recorder';
 import type { RecordingEnvelope } from '@/capture/recording-types';
 import type { HistoricalElementRef, ReplayPosition } from '@/contracts/recording';
-import { CaptureBudget } from '@/capture/budget';
+import { CaptureBudget, DeferredBodyReads } from '@/capture/budget';
 import { ResourceArchive, ResourceCapture, RESOURCE_MAX_BYTES } from '@/resources/archive';
+import { redactHtml, responsePrivacy } from '@/capture/privacy';
+import { rewriteCssUrls, rewriteSrcset } from '@/resources/rewrite';
 
 const stores: EvidenceStore[] = [], windows: JSDOM[] = [];
 afterEach(async () => { for (const store of stores.splice(0)) await store.close(); for (const window of windows.splice(0)) window.window.close(); });
@@ -40,6 +42,23 @@ function target(records: RecordingEnvelope[], key = 'a'): HistoricalElementRef {
   return { kind: 'dom-node', position: last.position, nodeId: node.id, frameId: node.metadata!.frameId, mirrorScopeId: node.metadata!.mirrorScopeId };
 }
 describe('format-2 production recorder and bounded archive', () => {
+  it('keeps privacy across rrweb, raw metadata, HTML and JSON response representations',async()=>{
+    const html='<input type="checkbox" checked value="private-checkbox"><textarea>private-textarea</textarea><div class="rr-mask">private-visible-text</div><a __proto__="original-attribute" href="/safe">safe</a>';
+    const {records}=await source(html);
+    const raw=JSON.stringify(records);for(const secret of ['private-checkbox','private-textarea','private-visible-text'])expect(raw).not.toContain(secret);
+    const redacted=redactHtml(html);expect(redacted.redacted).toBe(true);for(const secret of ['private-checkbox','private-textarea','private-visible-text'])expect(redacted.text).not.toContain(secret);
+    expect(redacted.text).toContain('checked');
+    const json=responsePrivacy(Buffer.from('{"accessToken":"private-token","rows":[{"id":1,"value":"public-value"}]}'),'application/json');expect(json.redacted).toBe(true);expect(json.data!.toString()).not.toContain('private-token');expect(json.data!.toString()).toContain('public-value');
+    const model=new SourceModel(records.slice(records.findIndex(record=>record.event.type===2))),ref=target(records);
+    expect(model.node(ref).attributes.__proto__).toEqual({status:'present',value:'original-attribute'});
+    expect(model.attribute(model.nodes.get(ref.nodeId)!,'constructor')).toEqual({status:'absent'});
+  });
+  it('rewrites CSS URL tokens and srcset candidates without rewriting ordinary strings or comments',()=>{
+    const seen:string[]=[];const resolve=(url:string)=>{seen.push(url);return 'bes-resource://archive/'+seen.length;};
+    const css='/* url(ignored.png) */ @import "nested.css"; a {content:"url(ordinary-text)";background:url("im\\61 ge.png")}';
+    const result=rewriteCssUrls(css,resolve);expect(seen).toEqual(['nested.css','image.png']);expect(result).toContain('url(ordinary-text)');expect(result).toContain('url(ignored.png)');
+    const candidates:string[]=[];expect(rewriteSrcset('one.png 1x, two.png 2x',url=>{candidates.push(url);return 'offline:'+url;})).toBe('offline:one.png 1x, offline:two.png 2x');expect(candidates).toEqual(['one.png','two.png']);
+  });
   it('captures actual rrweb source attributes, form privacy and independent original CSS/XPath matches', async () => {
     const { dom, records } = await source();
     expect(records.some(record => record.event.type === 2)).toBe(true);
@@ -128,6 +147,14 @@ describe('format-2 production recorder and bounded archive', () => {
     expect(await view.seek(async () => ({ value: 'new', dispose: () => { currentDisposed = true; } }))).toBe('new');
     resolve({ value: 'old', dispose: () => { oldDisposed = true; } }); expect(await old).toBeUndefined();
     expect(oldDisposed).toBe(true); view.dispose(); expect(currentDisposed).toBe(true);
+  });
+  it('queues a bounded number of lightweight descriptors and serializes concurrent large body reads',async()=>{
+    const queue=new DeferredBodyReads(1024,3);let active=0,peak=0,release!:()=>void;const done:number[]=[];
+    expect(queue.add(async()=>{active++;peak=Math.max(peak,active);await new Promise<void>(resolve=>{release=resolve;});done.push(1);active--;},256)).toBe(true);
+    expect(queue.add(async()=>{active++;peak=Math.max(peak,active);done.push(2);active--;},256)).toBe(true);
+    expect(queue.add(async()=>{active++;peak=Math.max(peak,active);done.push(3);active--;},256)).toBe(true);
+    expect(queue.add(async()=>{throw new Error('Must not execute a rejected descriptor');},256)).toBe(false);
+    await Promise.resolve();expect(active).toBe(1);release();await queue.flush();expect(done).toEqual([1,2,3]);expect(peak).toBe(1);expect(queue.metrics()).toMatchObject({queuedBytes:0,activeReads:0,peakDescriptorBytes:768,rejected:1});
   });
   it('archives different bytes for one URL, excludes credentials and bounds huge resources without fetching', async () => {
     const evidence = await store(), capture = new ResourceCapture(evidence), archive = new ResourceArchive(evidence.runDir);
