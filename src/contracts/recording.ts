@@ -27,6 +27,14 @@ export type SourceValue<T> =
   | { status: 'present'; value: T }
   | { status: 'absent' }
   | { status: 'redacted' | 'missing' | 'unsupported'; reason: string };
+/** One explicit source-page observation; not inferred from replay DOM or textContent. */
+export interface SourcePresentation {
+  text: string;
+  visibility: 'visible' | 'hidden' | 'offscreen' | 'occluded' | 'unknown';
+  sampledAt: ReplayPosition;
+  rect: { x: number; y: number; width: number; height: number };
+  basis: string[];
+}
 export interface SourceNode {
   ref: HistoricalElementRef;
   tagName: string;
@@ -36,6 +44,7 @@ export interface SourceNode {
   attributes: Record<string, SourceValue<string>>;
   properties: { value?: SourceValue<string>; checked?: SourceValue<boolean>; selected?: SourceValue<boolean> };
   text: SourceValue<string>;
+  presentation?: SourceValue<SourcePresentation>;
   metadataComplete: boolean;
 }
 export interface RecordingGap {
