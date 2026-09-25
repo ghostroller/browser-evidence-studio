@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { lstat, mkdir, opendir, readFile, unlink } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { link, lstat, mkdir, open, opendir, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import type { BatchReceipt, DatasetBatch, DatasetCompletion, DatasetIdentity, DatasetService, ExecutionBinding } from '../contracts/execution';
 import type { BoundedPage, ReadBudget } from '../contracts/recording';
@@ -103,6 +103,7 @@ export class PersistentDatasetService implements DatasetService {
     if (identity.executionId !== this.binding.executionId) throw new DatasetError('WRONG_EXECUTION', 'Dataset belongs to another execution');
   }
   private async index(identity: DatasetIdentity, create = false): Promise<DatasetIndex> {
+    identity = pickIdentity(identity);
     this.check(identity);
     const key = canonicalJson(identity);
     const cached = this.lock ? this.indexes.get(key) : undefined;
@@ -139,7 +140,7 @@ export class PersistentDatasetService implements DatasetService {
     const receipt = stored.receipt;
     if (stored.schemaVersion !== 1 || !Number.isSafeInteger(stored.sequence) || stored.sequence < 1 || !receipt || receipt.contentHash !== hash(canonicalJson(stored.batch)) || receipt.recordCount !== stored.batch.records.length || receipt.batchId !== stored.batch.batchId || name !== batchFile(stored.batch.batchId) || canonicalJson(pickIdentity(receipt)) !== canonicalJson(pickIdentity(stored.batch))) throw new DatasetError('CORRUPT_BATCH', 'Batch content or receipt hash does not match');
     const expectedArtifact = `executions/${stored.batch.executionId}/datasets/${stored.batch.attemptId}/${stored.batch.datasetId}/${name}`;
-    if (receipt.artifactId !== expectedArtifact || receipt.replayed !== false || typeof receipt.durableAt !== 'string' || !Number.isFinite(Date.parse(receipt.durableAt)) || new Date(receipt.durableAt).toISOString() !== receipt.durableAt) throw new DatasetError('CORRUPT_RECEIPT', 'Receipt location, durable timestamp or original commit marker is invalid');
+    if (receipt.artifactId !== expectedArtifact || path.relative(this.root, file).split(path.sep).join('/') !== expectedArtifact || receipt.replayed !== false || typeof receipt.durableAt !== 'string' || !Number.isFinite(Date.parse(receipt.durableAt)) || new Date(receipt.durableAt).toISOString() !== receipt.durableAt) throw new DatasetError('CORRUPT_RECEIPT', 'Receipt location, durable timestamp or original commit marker is invalid');
     return stored;
   }
   begin(identity: DatasetIdentity): Promise<void> { return this.operation(async () => { this.writable(); await this.index(identity, true); }); }
@@ -167,7 +168,7 @@ export class PersistentDatasetService implements DatasetService {
       const sequence = index.committedBatches + 1;
       await atomicJson(path.join(index.directory, 'pending.json'), { batchId: frozen.batchId, sequence });
       try {
-        await atomicFile(path.join(index.directory, batchFile(frozen.batchId)), Buffer.from(canonicalJson({ schemaVersion: 1, sequence, batch: frozen, receipt } satisfies StoredBatch)));
+        await immutableFile(path.join(index.directory, batchFile(frozen.batchId)), Buffer.from(canonicalJson({ schemaVersion: 1, sequence, batch: frozen, receipt } satisfies StoredBatch)));
         await atomicJson(path.join(index.directory, receiptFile(sequence)), receipt);
         await atomicJson(path.join(index.directory, 'state.json'), { schemaVersion: 1, ...index.identity, committedBatches: sequence, committedRecords: index.committedRecords + receipt.recordCount });
         await unlink(await safeFile(index.directory, 'pending.json'));
@@ -268,18 +269,29 @@ export class PersistentDatasetService implements DatasetService {
     return this.operation(async () => {
       this.writable();
       const frozen = JSON.parse(serialized) as StepEvent;
-      if (frozen.identity.executionId !== this.binding.executionId || !['running', 'succeeded', 'partial', 'failed', 'blocked', 'cancelled', 'awaiting-human'].includes(frozen.state)) throw new DatasetError('INVALID_STEP', 'Step event does not match this execution', 400);
+      validateStepEvent(frozen);
+      if (frozen.identity.executionId !== this.binding.executionId) throw new DatasetError('INVALID_STEP', 'Step event does not match this execution', 400);
       executionId(frozen.identity.attemptId); executionId(frozen.identity.stepId);
       const dir = await directory(this.root, ['executions', this.binding.executionId, 'attempts', frozen.identity.attemptId], true);
-      let count = 0;
-      for await (const file of await opendir(dir)) if (/^step-\d{4}\.json$/.test(file.name)) count++;
+      const sequences: number[] = [];
+      for await (const file of await opendir(dir)) {
+        if (!/^step-\d{4}\.json$/.test(file.name)) continue;
+        sequences.push(Number(file.name.slice(5, 9)));
+        if (sequences.length >= 129) throw new DatasetError('STEP_EVENT_LIMIT', 'Step exceeds 128 lifecycle events', 413);
+      }
+      sequences.sort((a, b) => a - b);
+      if (sequences.some((sequence, index) => sequence !== index + 1)) throw new DatasetError('CORRUPT_STEP_SEQUENCE', 'Step event sequence is incomplete; original files were preserved');
+      const count = sequences.length;
       if (count >= 128) throw new DatasetError('STEP_EVENT_LIMIT', 'Step exceeds 128 lifecycle events', 413);
       if (count > 0) {
-        const previous = JSON.parse(await readFile(await safeFile(dir, `step-${String(count).padStart(4, '0')}.json`), 'utf8')) as StepEvent;
+        const previousFile = await safeFile(dir, `step-${String(count).padStart(4, '0')}.json`);
+        if ((await lstat(previousFile)).size > 64 * 1024) throw new DatasetError('CORRUPT_STEP', 'Previous step event exceeds 64 KiB');
+        const previous = JSON.parse(await readFile(previousFile, 'utf8')) as StepEvent;
+        validateStepEvent(previous);
         if (canonicalJson(previous.identity) !== canonicalJson(frozen.identity)) throw new DatasetError('ATTEMPT_CONFLICT', 'Step attempt identity cannot change');
         if (!['running', 'awaiting-human'].includes(previous.state)) throw new DatasetError('STEP_FINISHED', 'Step attempt already has a durable terminal result');
       }
-      await atomicFile(path.join(dir, `step-${String(count + 1).padStart(4, '0')}.json`), Buffer.from(serialized));
+      await immutableFile(path.join(dir, `step-${String(count + 1).padStart(4, '0')}.json`), Buffer.from(serialized));
     }, Buffer.byteLength(serialized));
   }
   /** Explicit recovery only: validate immutable originals and rebuild the small metadata files.
@@ -321,6 +333,19 @@ export class PersistentDatasetService implements DatasetService {
 function pickIdentity(value: DatasetIdentity): DatasetIdentity { return { executionId: value.executionId, attemptId: value.attemptId, datasetId: value.datasetId }; }
 const batchFile = (id: string) => `batch-${hash(executionId(id))}.json`;
 const receiptFile = (sequence: number) => `receipt-${String(sequence).padStart(8, '0')}.json`;
+async function immutableFile(file: string, content: Uint8Array): Promise<void> {
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  const handle = await open(temporary, 'wx');
+  try { await handle.writeFile(content); await handle.sync(); } finally { await handle.close(); }
+  // link is an atomic create-if-absent operation: an existing original is never replaced.
+  await link(temporary, file);
+  await unlink(temporary);
+}
+function validateStepEvent(event: StepEvent): void {
+  if (!event?.identity || !['running', 'succeeded', 'partial', 'failed', 'blocked', 'cancelled', 'awaiting-human'].includes(event.state) || !Number.isFinite(Date.parse(event.occurredAt))) throw new DatasetError('INVALID_STEP', 'Invalid step state or timestamp', 400);
+  for (const id of [event.identity.executionId, event.identity.stepId, event.identity.attemptId]) executionId(id);
+  if (event.state === 'running' ? event.result !== undefined : !event.result || event.result.status !== event.state || canonicalJson(event.result.identity) !== canonicalJson(event.identity)) throw new DatasetError('INVALID_STEP', 'Step result identity and state must match its lifecycle event', 400);
+}
 async function readMetadata(dir: string, name: string): Promise<unknown> {
   const file = await safeFile(dir, name);
   if ((await lstat(file)).size > 16 * 1024) throw new DatasetError('CORRUPT_METADATA', 'Dataset metadata exceeds 16 KiB; rebuild required', 413);
