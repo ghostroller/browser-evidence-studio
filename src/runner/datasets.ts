@@ -345,6 +345,7 @@ function validateStepEvent(event: StepEvent): void {
   if (!event?.identity || !['running', 'succeeded', 'partial', 'failed', 'blocked', 'cancelled', 'awaiting-human'].includes(event.state) || !Number.isFinite(Date.parse(event.occurredAt))) throw new DatasetError('INVALID_STEP', 'Invalid step state or timestamp', 400);
   for (const id of [event.identity.executionId, event.identity.stepId, event.identity.attemptId]) executionId(id);
   if (event.state === 'running' ? event.result !== undefined : !event.result || event.result.status !== event.state || canonicalJson(event.result.identity) !== canonicalJson(event.identity)) throw new DatasetError('INVALID_STEP', 'Step result identity and state must match its lifecycle event', 400);
+  if (event.resultValueState !== undefined && (event.resultValueState !== 'undefined' || !event.result || !['succeeded', 'partial'].includes(event.result.status) || !('value' in event.result) || event.result.value !== null)) throw new DatasetError('INVALID_STEP', 'Undefined step result encoding does not match its value placeholder', 400);
 }
 async function readMetadata(dir: string, name: string): Promise<unknown> {
   const file = await safeFile(dir, name);
