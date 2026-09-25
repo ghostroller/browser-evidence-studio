@@ -48,3 +48,5 @@ review修正：最后oversize事件记录未知源范围且拒绝静默封存；
 桌面交接入口：`runRefactorRecordingScenario(studio, 'record' | 'offline')`，文件`test/desktop/refactor-recording.ts`。root需调度两个不同Electron PID、同一合成BES_DATA，先record后offline。record自建本机临时源站、生产Studio/CaptureCoordinator录制、保存位置与源HTML测试快照、封存后关闭HTTP server；Windows系统Arial仅作为忽略输出中的合成字体fixture。offline读取`BES_DATA/refactor-recording-fixture.json`，断言不同PID、独立非持久session，拒绝全部http/https/ws/wss/file，按manifest重写rrweb事件与CSS依赖，真实Replayer重建并在独立保存的原站DOM验证CSS/XPath。报告为`refactor-recording-{record,offline}-report.json`。
 
 root主入口须在ready之前为`bes-resource`注册standard/secure/corsEnabled/supportFetchAPI协议权限（仅专用隔离replay session安装handler，不给业务profile安装）。测试检查CSS、@import、图片、字体、Mirror节点、反复seek、脚本不运行、无原站请求、destroy释放iframe；失败保留报告，不降低断言。该场景尚不证明30分钟内存或跨源frame资源映射，子frame源逻辑ID与CDP资源ID尚未建立完整映射时应显示资源unavailable。
+
+桌面资源时点审查补丁：source fixture在initial/updated两点使用**同一**`/assets/main.css` URL返回不同颜色；offline每次seek以当时position逐URL resolve，拒绝用final资源替代initial。协议URL携带seek代际，处理开始固定position，异步完成前复核代际；CSS嵌套依赖沿用该代际。`OfflineResourceService.response`新增可选`urlForResource(id)`以支持调用方的安全路由/代际。此补丁仍只有typecheck，等待root真实桌面结果。
