@@ -27,6 +27,7 @@ import { prepareReplayEvents } from '@/replay/rrweb-player';
 import { rewriteReplayEvent } from '@/resources/replay-resources';
 import { ProjectExecutions, type ManagedExecution } from './project-executions';
 import { captureMetadata } from '@/capture/url-privacy';
+import { navigateObserved } from '../browser/navigation';
 import { commitValidation, recoverValidationCatalog, registerValidation, saveValidationCatalog, type ValidationLifecycleContext, type ValidationLifecycleObserver, type ValidationLifecycleStage, type ValidationRecord, type ValidationRecoveryDiagnostic } from './validation-lifecycle';
 export type { ValidationLifecycleContext, ValidationLifecycleObserver, ValidationLifecycleStage } from './validation-lifecycle';
 
@@ -290,7 +291,7 @@ export class Studio {
     if(this.active===r){await capture.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{...identity,view:undefined,page:undefined,capture:undefined,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});}this.window.show(view);this.onChanged();return p;
   }
   private createCapture(r:ActiveRun,p:PageIdentity&{page:Page}){return new CaptureCoordinator(p.page,p,r.store,selection=>{if(this.active===r&&r.pages.has(p.pageId)){r.selection=selection;this.onChanged();}},reason=>{if(r.ending||this.active!==r||!r.pages.has(p.pageId))return;r.capture='degraded';this.onChanged();void r.store.updateManifest({capture:'degraded',captureHealthReason:reason}).catch(error=>console.error('Could not persist capture health',error));},false);}
-  async navigate(url:string,p=this.current(),initial=false){ensure(/^https?:\/\//.test(url)||url==='about:blank','Only HTTP(S) and about:blank URLs supported');const r=this.live();if(!initial)ensure(!r.locked&&r.controller==='human'&&!r.ending,'Browser is controlled by automation or locked',409);await p.view.webContents.loadURL(url);await p.page.mainFrame().evaluate(()=>document.readyState);return {url:p.view.webContents.getURL()};}
+  async navigate(url:string,p=this.current(),initial=false){ensure(/^https?:\/\//.test(url)||url==='about:blank','Only HTTP(S) and about:blank URLs supported');const r=this.live();if(!initial)ensure(!r.locked&&r.controller==='human'&&!r.ending,'Browser is controlled by automation or locked',409);const lease=r.leaseEpoch;return navigateObserved(p.view.webContents,p.page,url,()=>ensure(this.live()===r&&r.pages.get(p.pageId)===p&&p.targetId===(r.pages.get(p.pageId)?.targetId)&&r.leaseEpoch===lease&&!r.ending&&!this.closing,'Navigation target or ownership changed',409));}
   async navigateHistory(direction:'back'|'forward'|'reload'){
     const r=this.live(),p=this.current();ensure(!r.locked&&r.controller==='human'&&!r.ending,'Browser is controlled by automation or locked',409);
     if(direction==='reload')await p.page.reload();
