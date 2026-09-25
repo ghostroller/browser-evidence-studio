@@ -62,3 +62,7 @@ root真实attempt2：`output/desktop-1790368992121` 的run `2044933f-4cae-413d-9
 原 A 原生任务消失后，根于同一工作树接续 `/root/refactor_a_resume`；HEAD `0d295c7`、全部8个dirty及未跟踪url-privacy文件原样保留。Node v24.21.0/npm11.19.0核实；共享显示值契约 `2e2258e` 顺序接为 `9c1a1d6`，未覆盖dirty。
 
 根第三次真实record通过（PID42660、font已捕获），offline新PID32900失败，原件和报告保留于根 `output/desktop-1790370699081`。静态复核定位首个executeJavaScript的CSP值内含单引号，却嵌入单引号JavaScript字符串，产生语法错误。改用DOM创建meta并以JSON.stringify传完整原政策；未放松CSP/sandbox。加入有界renderer console（100条、每条4000字符）及执行stage。`npm.cmd run typecheck`通过，日志 `output/refactor-a-resume/offline-diagnostic-typecheck.log`；真实offline重跑仍由根调度。本诊断提交不含尚未完成的隐私包。
+
+隐私续包：`src/capture/url-privacy.ts`导出`credentialUrl`和`captureMetadata<T>(input:T):T`，供E在Studio新增元数据写路径复用；复制后只改凭据URL字符串并加capturePrivacy说明，不处理artifact二进制data、更不重写旧原件。生产raw CDP/event/artifact metadata、rrweb与源属性、HTML属性/文本、JSON根值/嵌套值统一URL策略。含凭据URL的CSS/SVG文本资源明确redacted且不保存原字节；普通URL原始拼写不变。rr-mask元数据属性及跨open-shadow祖先同样受遮罩。延迟response读取在loadingFinished同步取得身份租约，排队前/读取后均复核，ID复用和capture reset不能把新请求body记到旧request key；stop先排空已接收body再reset。
+
+实际`npm.cmd run typecheck`和`npm.cmd test -- test/unit/refactor-recording.test.ts test/unit/request-body.test.ts`通过，2文件18项，5.14s；日志`output/refactor-a-resume/privacy-typecheck.log`和`privacy-tests.log`。桌面privacy fixture已加跨raw/CDP/journal/artifact原件断言但尚未运行。第4次根record仍通过，offline进入seek后CSS颜色为默认蓝色；资源加载/诊断返修接续中，不宣称离线验收通过。

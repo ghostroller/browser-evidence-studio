@@ -14,7 +14,7 @@ export interface RecorderConfiguration {
 /** Serialized into the isolated observer world. Keep runtime dependencies local.
  * Same-origin frames reuse rrweb's shared mirror; cross-origin plugin IDs are
  * deliberately not enabled until an explicit frame transform is available. */
-export function installSourceRecorder(config: RecorderConfiguration): void {
+export function installSourceRecorder(config: RecorderConfiguration, urlPrivacy: (value: string, base?: string) => boolean): void {
   interface Mirror { getId(node: Node): number; getNode(id: number): Node | null }
   const w = window as unknown as Window & {
     rrweb: { record: typeof record };
@@ -39,11 +39,19 @@ export function installSourceRecorder(config: RecorderConfiguration): void {
   const present = <T>(value: T): SourceValue<T> => ({ status: 'present', value });
   const redacted = (): SourceValue<string> => ({ status: 'redacted', reason: 'capture-privacy-policy' });
   function privateUrl(value: string): boolean {
-    try { const url = new URL(value, document.baseURI); return !!url.username || !!url.password || [...url.searchParams.keys()].some(key => credential.test(key)) || /(?:token|secret|password)=/i.test(url.hash); }
-    catch { return false; }
+    return urlPrivacy(value, document.baseURI);
   }
   function privateAttribute(name: string, value: string, element: Element): boolean {
-    return credential.test(name) || name === 'value' && /^(input|textarea|select|option)$/i.test(element.localName) || /^(href|src|action|formaction|poster|xlink:href)$/i.test(name) && privateUrl(value);
+    return masked(element) && name !== 'class' || credential.test(name) || name === 'value' && /^(input|textarea|select|option)$/i.test(element.localName) || privateUrl(value);
+  }
+  function masked(element: Element): boolean {
+    let current: Element | null = element;
+    while (current) {
+      if (current.matches('.rr-mask,.rr-block')) return true;
+      const root: Node = current.getRootNode();
+      current = current.parentElement ?? ('host' in root ? (root as ShadowRoot).host : null);
+    }
+    return false;
   }
   w.__besSourceHook = (node, mirror) => {
     if (node.nodeType !== 1) return;
@@ -80,10 +88,12 @@ export function installSourceRecorder(config: RecorderConfiguration): void {
   };
   function redactTree(node: serializedNodeWithId): void {
     if (node.type === 2) {
+      const element = w.rrweb.record.mirror.getNode(node.id) as Element | null;
       for (const [name, value] of Object.entries(node.attributes)) {
-        if (credential.test(name) || name === 'value' && /^(input|textarea|select|option)$/.test(node.tagName) || typeof value === 'string' && /^(href|src|action|formaction|poster|xlink:href)$/.test(name) && privateUrl(value)) node.attributes[name] = '[redacted]';
+        if (element?.nodeType === 1 && masked(element) && name !== 'class' || credential.test(name) || name === 'value' && /^(input|textarea|select|option)$/.test(node.tagName) || typeof value === 'string' && privateUrl(value)) node.attributes[name] = '[redacted]';
       }
     }
+    if ('textContent' in node && privateUrl(node.textContent)) node.textContent = '[redacted credential URL]';
     if ('childNodes' in node) node.childNodes.forEach(redactTree);
   }
   const stop = w.rrweb.record({
@@ -96,6 +106,7 @@ export function installSourceRecorder(config: RecorderConfiguration): void {
       if (event.type === 2) redactTree(event.data.node);
       if (event.type === 3 && event.data.source === 0) {
         event.data.adds.forEach(entry => redactTree(entry.node));
+        for (const change of event.data.texts) if (typeof change.value === 'string' && privateUrl(change.value)) change.value = '[redacted credential URL]';
         for (const change of event.data.attributes) {
           const node = w.rrweb.record.mirror.getNode(change.id) as Element | null;
           for (const [name, value] of Object.entries(change.attributes)) {

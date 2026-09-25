@@ -22,6 +22,7 @@ export interface RequestBodyRead {
 export class RequestLedger {
   private readonly active = new Map<string, CapturedRequest>();
   private readonly bodyReads = new Map<string, RequestBodyRead>();
+  private readonly responseReads = new Map<string, RequestBodyRead>();
   private sequence = 0;
   constructor(private readonly sessionId: string, private readonly targetId: string, private readonly capacity = 4096) {}
 
@@ -30,6 +31,7 @@ export class RequestLedger {
   } {
     const previous = this.active.get(input.requestId);
     this.invalidateBodyRead(input.requestId, input.redirect ? 'request-redirected-during-body-read' : 'request-id-reused-during-body-read');
+    this.invalidateResponseRead(input.requestId, 'request-id-reused-before-response-read-completed');
     const occurrence = previous && input.redirect ? previous.occurrence : ++this.sequence;
     const hop = previous && input.redirect ? previous.hop + 1 : 0;
     const current: CapturedRequest = {
@@ -78,10 +80,27 @@ export class RequestLedger {
     if (read) { read.invalidated = reason; this.bodyReads.delete(requestId); }
   }
 
+  /** Acquire synchronously at loadingFinished, BEFORE removing the active
+   * request or queueing a deferred CDP body read. */
+  acquireResponseRead(requestId: string): RequestBodyRead {
+    this.invalidateResponseRead(requestId, 'response-read-replaced');
+    const read: RequestBodyRead = {
+      ...(!this.active.has(requestId) ? { invalidated: 'response-identity-not-observed' } : {}),
+      release: () => { if (this.responseReads.get(requestId) === read) this.responseReads.delete(requestId); },
+    };
+    if (!read.invalidated) this.responseReads.set(requestId, read);
+    return read;
+  }
+  private invalidateResponseRead(requestId: string, reason: string): void {
+    const read = this.responseReads.get(requestId);
+    if (read) { read.invalidated = reason; this.responseReads.delete(requestId); }
+  }
+
   reset(): CapturedRequest[] {
     const unfinished = [...this.active.values()];
     this.active.clear();
     for (const requestId of this.bodyReads.keys()) this.invalidateBodyRead(requestId, 'capture-reset-during-body-read');
+    for (const requestId of this.responseReads.keys()) this.invalidateResponseRead(requestId, 'capture-reset-before-response-read-completed');
     return unfinished;
   }
 
