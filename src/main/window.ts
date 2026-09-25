@@ -9,6 +9,7 @@ export class StudioWindow {
   readonly mask: WebContentsView;
   private views: WebContentsView[] = [];
   private active?: WebContentsView;
+  private replay?: WebContentsView;
   private rect = {x: 236, y: 160, width: 700, height: 610};
   private locked = false;
   private browserVisible = true;
@@ -96,6 +97,16 @@ export class StudioWindow {
   private contents(view:WebContentsView) {try{const contents=view.webContents;return contents&&!contents.isDestroyed()?contents:undefined;}catch{return undefined;}}
   show(view?: WebContentsView) { this.active = view&&this.views.includes(view)&&this.contents(view)?view:undefined; this.layout(); }
   setBrowserVisible(visible: boolean) { this.browserVisible=visible;this.layout(); }
+  showReplay(view: WebContentsView) {
+    if(this.replay && this.replay!==view)this.hideReplay(this.replay);
+    this.replay=view;this.window.contentView.addChildView(view);this.layout();
+  }
+  hideReplay(view: WebContentsView) {
+    if(this.replay!==view)return;
+    this.replay=undefined;
+    if(!this.window.isDestroyed()&&this.window.contentView.children.includes(view))this.window.contentView.removeChildView(view);
+    this.layout();
+  }
   private resetUiPresentation() {
     // A new trusted document has no ownership of the old document's drag/dialogs.
     // Keep native views hidden until it reports fresh bounds, without changing the run lock.
@@ -151,9 +162,10 @@ export class StudioWindow {
     const rect = {x:Math.min(x,Math.max(0,width-1)),y:Math.min(y,Math.max(0,height-1)),width:Math.max(1,right-x),height:Math.max(1,bottom-y)};
     const visible = this.browserVisible && !this.uiNeedsBounds && !this.occlusion.size && right>x && bottom>y;
     // Commit the latest bounds before restoring visibility after a dialog or drag.
-    for (const v of this.views) {if(!this.contents(v)){if(this.active===v)this.active=undefined;continue;}this.place(v,rect,visible&&v===this.active); }
+    for (const v of this.views) {if(!this.contents(v)){if(this.active===v)this.active=undefined;continue;}this.place(v,rect,visible&&!this.replay&&v===this.active); }
+    if(this.replay&&this.contents(this.replay))this.place(this.replay,rect,visible);
     if(!this.contents(this.mask))return;
-    this.place(this.mask,rect,visible && this.locked && !!this.active);
+    this.place(this.mask,rect,visible && this.locked && !!this.active && !this.replay);
   }
   remove(view: WebContentsView) {
     const contents=this.contents(view),registered=this.views.includes(view),wasActive=this.active===view;

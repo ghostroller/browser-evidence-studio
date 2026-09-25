@@ -84,12 +84,18 @@ export class TaskAuthorizations {
     grant.remainingOperations--;
     const controller = new AbortController(), group = this.active.get(id) ?? new Set(); group.add(controller); this.active.set(id, group);
     const abort = () => controller.abort(external?.reason); external?.addEventListener('abort', abort, { once: true });
-    try { controller.signal.throwIfAborted(); return await operation(controller.signal); }
+    try { controller.signal.throwIfAborted(); const result=await operation(controller.signal);controller.signal.throwIfAborted();return result; }
     finally { external?.removeEventListener('abort', abort); group.delete(controller); if (!group.size) this.active.delete(id); }
   }
   addPage(id: string, page: TaskAuthorization['pages'][number]): void {
     const grant = this.grants.get(id); if (!grant || this.get(id).status !== 'active' || !grant.capabilities.includes('page-create') || grant.pages.length >= 32) reject('AUTHORIZATION_PAGE', 'Task may not create another page');
     if (!grant.pages.some(item => item.pageId === page.pageId)) grant.pages.push(structuredClone(page));
+  }
+  /** A from-start execution creates a fresh host-managed page within the same
+   * session; it cannot supply an arbitrary target or URL from its own script. */
+  addExecutionPage(id: string, page: TaskAuthorization['pages'][number]): void {
+    const grant=this.grants.get(id);if(!grant||this.get(id).status!=='active'||!grant.capabilities.includes('execute')||grant.pages.length>=32)reject('AUTHORIZATION_PAGE','Task may not create another execution page');
+    if(!grant.pages.some(item=>item.pageId===page.pageId))grant.pages.push(structuredClone(page));
   }
   revoke(id: string, reason = 'Revoked by the human controller', status: 'revoked' | 'expired' | 'exhausted' = 'revoked'): TaskAuthorization {
     const grant = this.grants.get(id); if (!grant) reject('AUTHORIZATION_REQUIRED', 'Unknown task authorization', 404);

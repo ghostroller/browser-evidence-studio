@@ -22,6 +22,11 @@ import { appendReview, readReviews, type ReviewQuery } from './reviews';
 import { BrowserSessionLifecycle } from './browser-session';
 import { ProjectMaterials } from './project-materials';
 import { TaskAuthorizations, type TaskCapability } from './task-authorization';
+import { ReplayHost } from './replay-host';
+import { prepareReplayEvents } from '@/replay/rrweb-player';
+import { rewriteReplayEvent } from '@/resources/replay-resources';
+import { ProjectExecutions, type ManagedExecution } from './project-executions';
+import { captureMetadata } from '@/capture/url-privacy';
 import { commitValidation, recoverValidationCatalog, registerValidation, saveValidationCatalog, type ValidationLifecycleContext, type ValidationLifecycleObserver, type ValidationLifecycleStage, type ValidationRecord, type ValidationRecoveryDiagnostic } from './validation-lifecycle';
 export type { ValidationLifecycleContext, ValidationLifecycleObserver, ValidationLifecycleStage } from './validation-lifecycle';
 
@@ -66,17 +71,20 @@ export class Studio {
   private validationLaunch?:ValidationLaunch;
   private readonly validationGrants=new ValidationStartGrants();
   readonly materials:ProjectMaterials;
+  readonly replayHost:ReplayHost;
+  readonly executions:ProjectExecutions;
   readonly tasks=new TaskAuthorizations(()=>this.taskAuthorizationChanged());
   private executingAuthorizationId?:string;
+  private browserAuthorizationId?:string;
   private closing=false;
   private humanDone?:{resolve:()=>void;reject:(e:Error)=>void};
   private validations:ValidationRecord[]=[];
   private validationRecovery:{diagnostics:ValidationRecoveryDiagnostic[];catalogStatus:'rebuilt'|'write-failed'}={diagnostics:[],catalogStatus:'rebuilt'};
   private fixture?:{url:string;close:()=>Promise<void>};
   onChanged=()=>{};
-  constructor(readonly root:string, readonly window:StudioWindow, readonly endpoint:string, private readonly lifecycleObserver?:ValidationLifecycleObserver) {this.materials=new ProjectMaterials(root);}
+  constructor(readonly root:string, readonly window:StudioWindow, readonly endpoint:string, private readonly lifecycleObserver?:ValidationLifecycleObserver) {this.materials=new ProjectMaterials(root);this.replayHost=new ReplayHost(window,this.materials,root);this.executions=new ProjectExecutions(root,this.materials);}
   private taskAuthorizationChanged(){
-    if(this.executingAuthorizationId&&this.tasks.get(this.executingAuthorizationId).status!=='active')void this.stopRunner().catch(error=>console.error('Task revocation could not complete worker shutdown',error));
+    if(!this.closing&&this.executingAuthorizationId&&this.tasks.get(this.executingAuthorizationId).status!=='active')void this.stopRunner().catch(error=>console.error('Task revocation could not complete worker shutdown',error));
     this.onChanged();
   }
   async authorizeTask(body:any){return this.serialized(async()=>{
@@ -89,7 +97,7 @@ export class Studio {
     ensure(Array.isArray(body.pageIds)&&body.pageIds.length>0,'Choose the pages covered by task authorization');
     const pages=body.pageIds.map((id:string)=>{const page=r.pages.get(id);ensure(page,'Task page does not exist',409);return {pageId:page.pageId,targetId:page.targetId};});
     const grant=await this.tasks.issue({projectId:r.projectId,sessionId:this.browserSessionId!,profileId:r.profileId,directory:project.scriptDirectory},{origins:body.origins,pages,capabilities:body.capabilities,durationMs:body.durationMs,maxOperations:body.maxOperations});
-    try {await r.store.appendEvent({type:'task-authorization-issued',source:'ui',data:grant});await r.store.flush();if(grant.capabilities.some(value=>['page-act','page-create','execute'].includes(value)))await this.control('agent');}
+    try {await r.store.appendEvent({type:'task-authorization-issued',source:'ui',data:grant});await r.store.flush();if(grant.capabilities.some(value=>['page-act','page-create','execute'].includes(value))){this.browserAuthorizationId=grant.authorizationId;await this.control('agent');}}
     catch(error){this.tasks.revoke(grant.authorizationId,'Authorization was not durably established');throw error;}
     return {...grant,leaseEpoch:r.leaseEpoch};
   });}
@@ -103,7 +111,26 @@ export class Studio {
   async authorizedOperation<T>(body:any,capability:TaskCapability,operation:(signal:AbortSignal)=>Promise<T>,signal?:AbortSignal):Promise<T>{
     const r=this.required(),page=r.pages.get(body.pageId??r.selectedPageId),project=this.projects.find(item=>item.id===r.projectId)!;
     ensure(page&&body.projectId===r.projectId&&body.profileId===r.profileId&&body.sessionId===this.browserSessionId,'Task browser identity is stale',409);
-    return this.tasks.run(body.authorizationId,capability,{projectId:r.projectId,sessionId:this.browserSessionId!,profileId:r.profileId,directory:project.scriptDirectory,pageId:page.pageId,targetId:page.targetId,url:body.type==='navigate'?body.url:page.page.url()},operation,signal);
+    if(capability!=='page-read')ensure(this.browserAuthorizationId===body.authorizationId,'This authorization does not own the agent browser lease',403);
+    return this.tasks.run(body.authorizationId,capability,{projectId:r.projectId,sessionId:this.browserSessionId!,profileId:r.profileId,...(capability==='execute'?{directory:project.scriptDirectory}:{}),pageId:page.pageId,targetId:page.targetId,url:body.type==='navigate'?body.url:body.startUrl??page.page.url()},operation,signal);
+  }
+  private navigationAllowed(url:string):boolean {
+    if(!this.browserAuthorizationId)return true;
+    const live=this.browser?.runtime;
+    if(live?.controller==='human'&&!this.validationLaunch)return true;
+    const grant=this.tasks.get(this.browserAuthorizationId);
+    if(grant.status!=='active'||grant.sessionId!==this.browserSessionId)return false;
+    if(url==='about:blank')return true;
+    try{const parsed=new URL(url);return ['http:','https:'].includes(parsed.protocol)&&!parsed.username&&!parsed.password&&grant.origins.includes(parsed.origin);}catch{return false;}
+  }
+  /** All newly persisted main metadata shares capture's URL privacy policy.
+   * Byte payloads stay separate and are never transformed by this adapter. */
+  private protectCaptureMetadata(store:EvidenceStore):void {
+    const appendEvent=store.appendEvent.bind(store),appendCheckpoint=store.appendCheckpoint.bind(store),putArtifact=store.putArtifact.bind(store),updateManifest=store.updateManifest.bind(store);
+    store.appendEvent=input=>appendEvent(captureMetadata(input));
+    store.appendCheckpoint=input=>appendCheckpoint(captureMetadata(input));
+    store.putArtifact=input=>{const {data,...metadata}=input;return putArtifact({...captureMetadata(metadata),data});};
+    store.updateManifest=input=>updateManifest(captureMetadata(input));
   }
   async init(){
     await mkdir(this.root,{recursive:true});
@@ -141,7 +168,7 @@ export class Studio {
   private pageContents(p:ManagedPage){try{const contents=p.view.webContents;return contents&&!contents.isDestroyed()?contents:undefined;}catch{return undefined;}}
   current(){const r=this.live();const p=r.pages.get(r.selectedPageId);ensure(p&&this.pageContents(p),'No live selected page',409);return p;}
   private browserState(){const browser=this.browser;if(!browser)return null;const r=browser.runtime;return {sessionId:browser.id,projectId:r.projectId,profileId:r.profileId,recordingId:browser.recordingId,controller:r.controller,leaseEpoch:r.leaseEpoch,locked:r.locked,selectedPageId:r.selectedPageId,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:!!this.active&&p.capture.inspecting,openerPageId:p.openerPageId,canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward()}]:[];})};}
-  state(){const r=this.active;return {instanceId:this.instanceId,session:this.browserState(),validationStarting:this.validationLaunch?{validationId:this.validationLaunch.validationId,validationRunId:this.validationLaunch.validationRunId}:null,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:p.capture.inspecting,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,validationStartGrant:this.validationStartGrant({runId:r.id}).grant,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
+  state(){const r=this.active;return {instanceId:this.instanceId,session:this.browserState(),validationStarting:this.validationLaunch?{validationId:this.validationLaunch.validationId,validationRunId:this.validationLaunch.validationRunId}:null,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,executionId:result?.executionBinding?.executionId,executionBinding:result?.executionBinding,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:p.capture.inspecting,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,validationStartGrant:this.validationStartGrant({runId:r.id}).grant,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
   async createProject(body:any){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');const p={id:randomUUID(),name:body.name.trim().slice(0,200),objective:String(body.objective||'').slice(0,4000),scriptDirectory:body.scriptDirectory?path.resolve(body.scriptDirectory):undefined,createdAt:now()};this.projects.push(p);await this.save();return p;}
   async updateProject(body:any){const project=this.projects.find(item=>item.id===(body.projectId||body.id));ensure(project,'Unknown project',404);if(body.name!==undefined){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');project.name=body.name.trim().slice(0,200);}if(body.objective!==undefined){ensure(typeof body.objective==='string','Objective must be text');project.objective=body.objective.slice(0,4000);}if(body.scriptDirectory!==undefined){ensure(typeof body.scriptDirectory==='string'||body.scriptDirectory===null,'Workflow directory must be a path');project.scriptDirectory=body.scriptDirectory?path.resolve(body.scriptDirectory):undefined;}await this.save();return project;}
   async createProfile(body:any){ensure(this.projects.some(p=>p.id===body.projectId),'Unknown project');ensure(typeof body.name==='string'&&body.name.trim(),'Profile name required');const p:Profile={id:randomUUID(),projectId:body.projectId,name:body.name.trim().slice(0,120),loginStatus:'unknown'};this.profiles.push(p);await this.save();return p;}
@@ -154,7 +181,9 @@ export class Studio {
     ensure(!previous||previous.pages.size>0||options.freshPage,'Close the empty browser session before starting a new one',409);
     const id=launch?.validationRunId??randomUUID();const browserSession=previous?.session??session.fromPartition(`persist:bes-${project.id}-${profile.id}`);
     browserSession.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false)); browserSession.setPermissionCheckHandler(()=>false);
-    const store=await EvidenceStore.create(path.join(this.root,'runs',id),{id,projectId:project.id,kind:body.kind==='validate'?'validate':'demonstrate',mode:process.env.BES_TEST?'synthetic':'local',objective:project.objective,profileId:profile.id,versions:this.state().versions,browserEnvironment:browserEnvironmentMetadata(browserSession),appInstanceId:this.instanceId,browserSessionId:this.browserSessionId});
+    browserSession.webRequest.onBeforeRequest((details,callback)=>callback({cancel:(details.resourceType==='mainFrame'||details.resourceType==='subFrame')&&!this.navigationAllowed(details.url)}));
+    const store=await EvidenceStore.create(path.join(this.root,'runs',id),captureMetadata({id,projectId:project.id,kind:body.kind==='validate'?'validate':'demonstrate',mode:process.env.BES_TEST?'synthetic':'local',objective:project.objective,profileId:profile.id,versions:this.state().versions,browserEnvironment:browserEnvironmentMetadata(browserSession),appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}));
+    this.protectCaptureMetadata(store);
     const r:ActiveRun={id,projectId:project.id,profileId:profile.id,store,pages:previous?.pages??new Map(),selectedPageId:previous?.selectedPageId??'',session:browserSession,controller:'none',leaseEpoch:(previous?.leaseEpoch??0)+1,capture:'starting',execution:'ready',locked:true};
     if(this.browser)this.browser.attach(r);else this.browser=new BrowserSessionLifecycle(r);
     this.active=r;this.runs.unshift(store.manifest);this.window.lock(true);
@@ -234,8 +263,9 @@ export class Studio {
     this.window.add(view);this.window.lock(true);
     const wc=view.webContents,pageId=randomUUID(),webContentsId=wc.id;let registered:ManagedPage|undefined;
     wc.once('destroyed',()=>this.pageDestroyed(owner.runtime,view,{pageId,webContentsId,openerPageId},registered));
-    wc.on('before-input-event',(e)=>{const live=owner.runtime;if(live.locked||live.controller!=='human')e.preventDefault();});wc.on('will-navigate',(e,url)=>{if(!/^https?:|^about:blank$/.test(url))e.preventDefault();});
-    wc.setWindowOpenHandler(()=>this.browser!==owner||owner.runtime.ending||this.closing?{action:'deny'}:({action:'allow',overrideBrowserWindowOptions:{webPreferences:{session:r.session,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true,backgroundThrottling:false}},createWindow:(options)=>{
+    wc.on('before-input-event',(e)=>{const live=owner.runtime;if(live.locked||live.controller!=='human')e.preventDefault();});wc.on('will-navigate',(e,url)=>{if(!/^https?:|^about:blank$/.test(url)||!this.navigationAllowed(url))e.preventDefault();});
+    wc.on('will-redirect',(event,url)=>{if(!this.navigationAllowed(url))event.preventDefault();});
+    wc.setWindowOpenHandler(details=>this.browser!==owner||owner.runtime.ending||this.closing||!this.navigationAllowed(details.url)||(owner.runtime.controller==='agent'&&!!this.browserAuthorizationId&&!this.tasks.get(this.browserAuthorizationId).capabilities.includes('page-create'))?{action:'deny'}:({action:'allow',overrideBrowserWindowOptions:{webPreferences:{session:r.session,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true,backgroundThrottling:false}},createWindow:(options)=>{
       // Electron has already created the guest WebContents. Adopting it preserves
       // window.open/opener identity; creating another one throws in openGuestWindow.
       const child=new WebContentsView(options);
@@ -256,6 +286,7 @@ export class Studio {
     page.on('framenavigated',frame=>{if(frame===page.mainFrame()){identity.navigationGeneration++;this.onChanged();}});
     const capture=this.createCapture(r,Object.assign(identity,{page}));
     const p=Object.assign(identity,{view,page,capture}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);r.selectedPageId=p.pageId;
+    if(openerPageId&&r.controller==='agent'&&this.browserAuthorizationId)this.tasks.addPage(this.browserAuthorizationId,{pageId:p.pageId,targetId:p.targetId});
     if(this.active===r){await capture.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{...identity,view:undefined,page:undefined,capture:undefined,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});}this.window.show(view);this.onChanged();return p;
   }
   private createCapture(r:ActiveRun,p:PageIdentity&{page:Page}){return new CaptureCoordinator(p.page,p,r.store,selection=>{if(this.active===r&&r.pages.has(p.pageId)){r.selection=selection;this.onChanged();}},reason=>{if(r.ending||this.active!==r||!r.pages.has(p.pageId))return;r.capture='degraded';this.onChanged();void r.store.updateManifest({capture:'degraded',captureHealthReason:reason}).catch(error=>console.error('Could not persist capture health',error));},false);}
@@ -449,6 +480,18 @@ export class Studio {
   async syntheticSite(){if(!this.fixture){const {startFixture}=await import('../../../test/fixtures/site');this.fixture=await startFixture();}return {url:this.fixture.url};}
   async replay(body:any){
     const reader=this.reader(body.runId),replayActive=this.active;if(replayActive&&replayActive.id===body.runId)await replayActive.store.flush();
+    const manifest=this.runs.find(run=>run.id===body.runId);
+    // New archives use exact source identity; never concatenate navigation epochs.
+    const service=await this.materials.replay(body.runId,manifest.projectId);
+    const streams=await service.archive.streams(100).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return {items:[]};throw error;});
+    if(streams.items.length){
+      const selected=body.position??streams.items.find(stream=>!body.pageId||stream.first.pageId===body.pageId)?.last;
+      ensure(selected,'No recording stream matches this page',404);
+      const window=await service.window(selected),prepared=prepareReplayEvents(window);
+      const events=prepared.events.map(event=>rewriteReplayEvent(event,()=> 'about:blank'));
+      const returnedBytes=Buffer.byteLength(JSON.stringify(events));ensure(returnedBytes<=16*1024*1024,'Use native bounded replay for this source window',413);
+      return {events,position:selected,pageId:selected.pageId,streams,warning:'精确单 document/streamEpoch 窗口；离线资源与选择请使用隔离回放',returnedBytes};
+    }
     // The UI gets one top-document timeline. Every navigation starts at a metadata/full-snapshot pair.
     const events:any[]=[];let bytes=2,warning='',selectedPageId=body.pageId||(replayActive&&replayActive.id===body.runId?replayActive.selectedPageId:undefined);
     let generation:unknown,pendingMetadata:any,ready=false,sawLegacy=false;
@@ -514,13 +557,15 @@ export class Studio {
     if(body.startUrl!==undefined)ensure(typeof body.startUrl==='string'&&(/^https?:\/\//.test(body.startUrl)||body.startUrl==='about:blank'),'Invalid validation start URL');
     ensure(!options.requireGrant||body.startUrl===undefined||body.startUrl===this.current().page.url(),'Start URL differs from the authorized page',409);
     body={...body,executionMode};
+    if(body.authorizationId)ensure(typeof body.materialRevisionId==='string'&&typeof body.materialContentHash==='string','Task execution requires a fixed material revision and content hash');
+    ensure((body.materialRevisionId===undefined)===(body.materialContentHash===undefined),'Material revision and content hash must be supplied together');
     if(executionMode==='current-page-test'){
       const live=this.live(),page=this.current();
       ensure(body.projectId===live.projectId&&body.profileId===live.profileId&&body.pageId===page.pageId&&body.generation===page.navigationGeneration,'Current-page test requires the exact live page and document generation',409);
     }
     const original=this.active;
     let finish!:()=>void;const launch:ValidationLaunch={abort:new AbortController(),done:new Promise<void>(resolve=>{finish=resolve;}),finish:()=>finish(),validationId:randomUUID(),validationRunId:randomUUID(),claimed:false};
-    this.validationLaunch=launch;
+    this.validationLaunch=launch;this.executingAuthorizationId=body.authorizationId;
     const abort=()=>{launch.abort.abort(options.signal?.reason??new Error('Validation startup cancelled'));void launch.handle?.cancel('Validation startup cancelled');};
     options.signal?.addEventListener('abort',abort,{once:true});if(options.signal?.aborted)abort();
     try{
@@ -560,12 +605,17 @@ export class Studio {
     ensure(this.profiles.some(profile=>profile.id===profileId&&profile.projectId===project.id),'Select a profile belonging to the validation project',409);
     // Directory registration is a trusted UI project setting, never a path accepted from an HTTP execution request.
     const directory=project.scriptDirectory;ensure(directory,'Register the workflow directory in the project first');
+    if(body.materialRevisionId)await this.materials.service.revision(project.id,body.materialRevisionId,body.materialContentHash);
     {
       const live=this.browser?.runtime,selected=old?.pages.get(old.selectedPageId)??live?.pages.get(live.selectedPageId),url=selected?this.pageContents(selected)?.getURL():'about:blank';
       if(old)await this.seal(launch);launch.abort.signal.throwIfAborted();
       await this.startRun({projectId:project.id,profileId,url:body.startUrl??url??'about:blank',kind:'validate'},launch,{freshPage:!currentPageTest});
     }
     launch.abort.signal.throwIfAborted();const r=this.required(),p=this.current();launch.target??={pageId:p.pageId,targetId:p.targetId,generation:p.navigationGeneration};await this.control('agent',launch);launch.abort.signal.throwIfAborted();
+    if(body.authorizationId){
+      if(!currentPageTest)this.tasks.addExecutionPage(body.authorizationId,{pageId:p.pageId,targetId:p.targetId});
+      await this.tasks.check(body.authorizationId,'execute',{projectId:r.projectId,sessionId:this.browserSessionId,profileId:r.profileId,directory,pageId:p.pageId,targetId:p.targetId,url:p.page.url()});
+    }
     if(retained)ensure(p===retained&&p.pageId===body.pageId&&p.navigationGeneration===body.generation,'Current-page target changed before execution',409);
     await r.store.updateManifest({executionMode:body.executionMode,executionStart:{pageId:p.pageId,generation:p.navigationGeneration,url:p.page.url(),profileReused:true}});
     const targetLease=r.leaseEpoch;
@@ -573,9 +623,12 @@ export class Studio {
     verifyTarget();r.execution='running';
     const id=launch.validationId,record:ValidationRecord={id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory,executionMode:body.executionMode,status:'starting',startedAt:now()};this.validations.unshift(record);
     const context:ValidationLifecycleContext={validationId:id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory};
+    let fixed:ManagedExecution|undefined;
+    if(body.materialRevisionId)fixed=await this.executions.begin({executionId:id,projectId:r.projectId,materialRevisionId:body.materialRevisionId,materialContentHash:body.materialContentHash,directory,dependencyLockPath:path.join(app.getAppPath(),'package-lock.json'),input:body.input??{},mode:body.executionMode,runId:r.id,pageId:p.pageId,environmentRef:`${this.instanceId}/${this.browserSessionId}/${r.profileId}`});
     let finishStartup!:()=>void;const startup={abort:launch.abort,gate:undefined as GateTransport|undefined,done:new Promise<void>(resolve=>{finishStartup=resolve;}),finish:()=>finishStartup()};this.workflowStarting=startup;
     try{const gate=new GateTransport(await SocketTransport.connect(this.endpoint,startup.abort.signal),{onConflict:conflict=>{void r.store.appendEvent({type:'control-conflict',source:'runner',data:{validationId:id,pageId:p.pageId,...conflict}}).catch(error=>console.error('Could not persist runner control conflict',error));},onClosed:details=>{void r.store.appendEvent({type:'operation-transport-closed',source:'runner',data:{validationId:id,pageId:p.pageId,...details}}).catch(error=>console.error('Could not persist runner transport closure',error));}});startup.gate=gate;startup.abort.signal.throwIfAborted();ensure(this.active===r&&r.controller==='agent'&&!r.locked,'Workflow startup lost control',409);this.workflow=await startWorkflow({directory,input:body.input??{},targetId:p.targetId,transport:gate,dependencyLockPath:path.join(app.getAppPath(),'package-lock.json'),startupSignal:startup.abort.signal,
-      beforeWorker:async prepared=>{verifyTarget();if(launch.grant){ensure(prepared.manifest.workflowId===launch.grant.workflowId&&prepared.fingerprintBefore.sha256===launch.grant.workflowSha256&&prepared.inputSha256===launch.grant.inputSha256,'Workflow or input changed after authorization',409);await r.store.appendEvent({type:'validation-start-grant-applied',source:'runner',data:{grantId:launch.grant.grantId,authorizationRunId:launch.grant.runId,validationRunId:r.id,validationId:id}});}Object.assign(record,await registerValidation(r.store,record,prepared));this.onChanged();await this.observeValidation('registered-before-worker',context,startup.abort.signal);verifyTarget();},
+      ...(fixed?{execution:{binding:fixed.binding,datasets:fixed.datasets,saveStep:(event:Parameters<ManagedExecution['saveStep']>[0])=>fixed!.saveStep(event)},snapshotDirectory:fixed.snapshotDirectory}:{}),selection:body.selection,
+      beforeWorker:async prepared=>{verifyTarget();await fixed?.prepared(prepared);if(launch.grant){ensure(prepared.manifest.workflowId===launch.grant.workflowId&&prepared.fingerprintBefore.sha256===launch.grant.workflowSha256&&prepared.inputSha256===launch.grant.inputSha256,'Workflow or input changed after authorization',409);await r.store.appendEvent({type:'validation-start-grant-applied',source:'runner',data:{grantId:launch.grant.grantId,authorizationRunId:launch.grant.runId,validationRunId:r.id,validationId:id}});}Object.assign(record,await registerValidation(r.store,record,prepared));this.onChanged();await this.observeValidation('registered-before-worker',context,startup.abort.signal);verifyTarget();},
       onStarted:async(nodeVersion,signal)=>{await r.store.appendEvent({type:'validation-running',source:'runner',data:{id,runId:r.id,startEventId:record.recovery?.startEventId,nodeVersion}});await this.observeValidation('running',context,signal);},hooks:{
        checkpoint:async(key,details,signal)=>{const cp=await this.checkpoint({key,...details},{fromRunner:true,pageId:p.pageId,signal});if(cp.metadata?.captureOutcome!=='completed'||cp.metadata?.captureStatus!=='complete'||cp.captureConsistency!=='consistent')throw new Error(`Checkpoint capture is incomplete (${cp.metadata?.captureOutcome}/${cp.metadata?.captureStatus}/${cp.captureConsistency}); retained checkpoint ${cp.id} cannot satisfy validation coverage`);return {id:cp.id};},
       emitData:async(name,records,provenance)=>{const artifact=await r.store.putArtifact({kind:'dataset',mediaType:'application/json',data:JSON.stringify({name,records,...provenance}),source:{origin:'runner'}});await r.store.appendEvent({type:'dataset',source:'runner',artifactRefs:[artifact.id],data:{name,count:records.length,provenance}});},
@@ -588,6 +641,7 @@ export class Studio {
     const catalogSnapshot=(candidate:ValidationRecord)=>this.validations.map(item=>item===record?candidate:item);
     const settlement=handle.done.then(async result=>{
       record.status='finalizing';r.execution='finalizing';r.locked=true;this.window.lock(true);
+      await fixed?.finish(result);
       terminalRecord=await commitValidation(r.store,record,result,(stage,context)=>this.observeValidation(stage,context));terminalExecution=result.status;
       // Persist a terminal projection without publishing completion while its
       // catalog write and control cleanup are still in progress.
@@ -597,15 +651,18 @@ export class Studio {
       terminalRecord={...record,status:'interrupted',error:message,recovery:{...record.recovery,state:'interrupted',reason:message}};delete terminalRecord.result;delete terminalRecord.artifactId;terminalExecution='failed';
       this.validationRecovery.diagnostics.push({runId:r.id,validationId:id,code:'validation-commit-failed',message});
       await r.store.appendEvent({type:'gap',source:'runner',data:{reason:message,validationId:id}}).catch(()=>{});await this.saveValidations(catalogSnapshot(terminalRecord));
-    }).finally(()=>{
-      if(this.active===r&&!r.stopping&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;this.window.lock(false);}
+    }).finally(async()=>{
+      await fixed?.close();
+      const continuing=!!body.authorizationId&&this.tasks.get(body.authorizationId).status==='active'&&this.browserAuthorizationId===body.authorizationId;
+      if(this.active===r&&!r.stopping&&!this.closing){r.controller=continuing?'agent':'human';r.locked=false;r.leaseEpoch++;this.window.lock(continuing);}
+      if(this.executingAuthorizationId===body.authorizationId)this.executingAuthorizationId=undefined;
       if(this.workflow===handle)this.workflow=undefined;if(this.workflowSettlement===settlement)this.workflowSettlement=undefined;
       // No await between releasing ownership and exposing the terminal record.
       if(terminalRecord){Object.assign(record,terminalRecord);if(!r.stopping)r.execution=terminalExecution!;if(r.handoff)r.handoff.status=record.status==='completed'?'completed':record.status==='cancelled'?'cancelled':'needs-attention';}
-      this.onChanged();
+      if(fixed)this.tasks.publish(r.projectId,'execution-finished',{executionId:id,runId:r.id});this.onChanged();
     });
-    this.workflowSettlement=settlement;if(this.closing||startup.abort.signal.aborted){await handle.cancel('Application closing or takeover during worker startup');await settlement;}return {id,runId:r.id,status:record.status};
-    }catch(error){startup.gate?.close();r.execution=startup.abort.signal.aborted?'cancelled':'failed';if(!r.stopping&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;this.window.lock(false);}record.status=r.execution;record.error=String(error);await r.store.appendEvent({type:'validation-launch-failed',source:'studio',data:{id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory,status:record.status,error:record.error,startEventId:record.recovery?.startEventId}}).catch(failure=>{this.validationRecovery.diagnostics.push({runId:r.id,validationId:id,code:'validation-launch-unrecorded',message:String(failure)});});await this.saveValidations();throw error;}
+    this.workflowSettlement=settlement;if(this.closing||startup.abort.signal.aborted){await handle.cancel('Application closing or takeover during worker startup');await settlement;}return {id,executionId:fixed?id:undefined,runId:r.id,status:record.status};
+    }catch(error){startup.gate?.close();await fixed?.close();this.executingAuthorizationId=undefined;r.execution=startup.abort.signal.aborted?'cancelled':'failed';if(!r.stopping&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;this.window.lock(false);}record.status=r.execution;record.error=String(error);await r.store.appendEvent({type:'validation-launch-failed',source:'studio',data:{id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory,status:record.status,error:record.error,startEventId:record.recovery?.startEventId}}).catch(failure=>{this.validationRecovery.diagnostics.push({runId:r.id,validationId:id,code:'validation-launch-unrecorded',message:String(failure)});});await this.saveValidations();throw error;}
     finally{if(this.workflowStarting===startup)this.workflowStarting=undefined;startup.finish();}
   }
   private async beginHuman(request:HumanRequest,owner:'runner'|'agent',pageId:string,signal?:AbortSignal){
@@ -699,5 +756,5 @@ export class Studio {
   async validation(id:string){const record=this.validations.find(v=>v.id===id);ensure(record,'Unknown validation',404);let currentVersion='unknown';if(record.result){const registered=this.projects.find(project=>project.id===record.projectId)?.scriptDirectory;if(!registered||path.relative(path.resolve(record.directory),path.resolve(registered))!=='')currentVersion='needs-revalidation';else try{const hash=await fingerprintWorkflow(registered,path.join(app.getAppPath(),'package-lock.json'));currentVersion=hash.sha256===record.result.fingerprintAfter.sha256?'matched':'needs-revalidation';}catch{currentVersion='unavailable';}}return {...record,currentVersion};}
   async review(body:any){ensure(this.validations.some(v=>v.id===body.id),'Unknown validation',404);return appendReview(this.root,body.id,body);}
   async reviews(id:string,options:ReviewQuery={}){ensure(this.validations.some(v=>v.id===id),'Unknown validation',404);return readReviews(this.root,id,options);}
-  async close(){this.closing=true;this.validationLaunch?.abort.abort(new Error('Application closing during validation startup'));this.active?.checkpointTask?.abort.abort(new Error('Application closing'));const startup=this.workflowStarting;startup?.abort.abort(new Error('Application closing'));startup?.gate?.close();if(this.active){this.active.ending=true;this.active.locked=true;this.active.leaseEpoch++;await this.revokeOperation(this.active);}await this.queue.catch(()=>{});if(startup)await startup.done;const settlement=this.workflowSettlement;if(this.workflow)await this.workflow.cancel('Application closing');if(settlement)await settlement;this.humanDone?.reject(new Error('Application closing'));this.humanDone=undefined;if(this.active){const r=this.active;await r.stopDownloads?.();await Promise.allSettled([...(r.pageClosures??[])]);for(const p of [...r.pages.values()])await p.capture.stop().catch(()=>{});await r.store.updateManifest({status:'interrupted',execution:'interrupted'});await r.store.close();this.window.closeViews();r.releaseDownloads?.();this.active=undefined;}await this.fixture?.close();this.observer?.disconnect();this.window.closeViews();this.browser=undefined;}
+  async close(){this.closing=true;this.replayHost.close();this.tasks.close();this.validationLaunch?.abort.abort(new Error('Application closing during validation startup'));this.active?.checkpointTask?.abort.abort(new Error('Application closing'));const startup=this.workflowStarting;startup?.abort.abort(new Error('Application closing'));startup?.gate?.close();if(this.active){this.active.ending=true;this.active.locked=true;this.active.leaseEpoch++;await this.revokeOperation(this.active);}await this.queue.catch(()=>{});if(startup)await startup.done;const settlement=this.workflowSettlement;if(this.workflow)await this.workflow.cancel('Application closing');if(settlement)await settlement;this.humanDone?.reject(new Error('Application closing'));this.humanDone=undefined;if(this.active){const r=this.active;await r.stopDownloads?.();await Promise.allSettled([...(r.pageClosures??[])]);for(const p of [...r.pages.values()])await p.capture.stop().catch(()=>{});await r.store.updateManifest({status:'interrupted',execution:'interrupted'});await r.store.close();this.window.closeViews();r.releaseDownloads?.();this.active=undefined;}await this.fixture?.close();this.observer?.disconnect();this.window.closeViews();this.browser=undefined;}
 }

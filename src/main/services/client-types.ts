@@ -3,6 +3,7 @@ import type { HistoricalElementRef, ReplayPosition, ReplayState } from '@/contra
 import type { TaskCapability, TaskAuthorization } from './task-authorization';
 export type { MaterialEdit } from './project-materials';
 export type { TaskCapability, TaskAuthorization } from './task-authorization';
+export type { ExecutionSummary, ReportSummary } from './project-executions';
 export interface AuthorizeTaskInput {
   projectId: string; capabilities: TaskCapability[]; durationMs: number; maxOperations: number;
   /** Required only for live-browser capabilities. The UI explicitly transfers control. */
