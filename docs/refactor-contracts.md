@@ -75,3 +75,8 @@ A/B/C 的实际路径与命令在 S0 handoff。每流独立 BES_DATA、output、
 沿用 `implementation-plan.md` §10 的固定负载：30 分钟每秒唯一点击 + 64 KiB JSON，每分钟 1 MiB + checkpoint，100 ms DOM 更新。checkpoint P95 ≤2 s、摘要 P95 ≤500 ms、job 提交 P95 ≤300 ms；主进程 RSS 1 GiB、页面 private 512 MiB 是测试保护上限；已确认原件零丢失。不得减少负载/flush 承诺换通过。
 
 S0 小 fixture 的 rrweb 录制耗时、序列化字节、反复 seek 分位及 renderer/主进程内存记入原型报告；这是短原型的实测基线，不能外推 30 分钟增长趋势。分通道队列峰值、持久吞吐、replay worker 内存尚需 A 的真实流水线测量后由 owner 冻结新增门槛；本次不伪造通用零增长阈值。
+## 2026-09-26：checkpoint 的宿主证据回执
+
+`CheckpointDetails.stepAttemptId` 是查找键，不是可信 scope。manager 只接受自身执行中已登记、仍 running 且无进行中持久状态切换的步骤；省略时绑定当前 workflow attempt。`RunnerHooks.checkpoint` 第四参数 `CheckpointHostScope` 由 manager 解析 execution/attempt/step 身份，E 用它持久关联采样，不能从脚本传入的同名字段取值。采样期间拒绝同一步骤的状态切换及并发 checkpoint；非法调用保持现有执行失败语义。
+
+`CheckpointReceipt` 保留 `id`，增加可选 `sourceRefs`，最多 64 个、每个最多 512 UTF-8 字节、禁止控制字符。引用必须由宿主生成并持久化；manager 验证并向普通脚本透传，作为数据批次来源引用。接口及真实 worker 协议测试通过不等于源端采样与 F 的端到端验收通过。

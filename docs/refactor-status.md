@@ -97,3 +97,10 @@
 - root `node test/desktop/launch.js` 既有回归第 1 次失败（PID 5252，`output/desktop-1790370887919`，`ABC-desktop-regression-attempt-1.log`）：先前 UI/控制/runner/人工合成场景通过，到 iframe 原件检查仍按旧 navigationGeneration 过滤。根修正测试为 format2 的 recording/page/document/epoch + 耐久 eventSeq/time，保留 full snapshot/只录顶层/体积上限断言；`format2-lifecycle-typecheck.log` 通过，实际重跑待 A/E 修复。E 的旧 Studio.replay 也已要求按完整 stream 边界分离导航，不能继续以全 undefined 的旧字段分组。
 - E `e686e5f` 已收到，4 项子流授权测试和 typecheck 通过；根暂不合入：省略 authorizationId 时旧 API 仍可绕过新 grant 范围，要求同一 E 接续任务补强制授权/越域/撤销测试后审查集成。A `0ef6a37` 隐私/请求 ID 包已收到，子流 18 项通过，暂不合入：要求保留有界脱敏后的原错误原因，以及恢复已有 9 MiB JSON 明确截断为 8 MiB 的验收语义。未通过不标完成，不转交用户排查。
 - 根接管已完成 F 的后续纯领域扩展：新增冻结 `dom-text` 来源约束及 `CapturedDomSourceReader` 宿主适配，按精确源显示采样、语义属性、同 frame/shadow 实体属性验证，拒隐藏/遮罩/跨 frame/过期/无关节点。`dom-proof-typecheck.log` 首次因旧 JSON 测试对 union 未收窄失败，明确 kind 后 `dom-proof-typecheck-2.log` 通过；`dom-proof-tests.log` **3 文件/23 项通过，6.56 s**。此处是契约/纯证明模块验证，A 源端采样和 E 持久引用映射仍待真实接入，不标页面显示值端到端已完成。
+### 恢复后的源码证据与离线返修接续
+
+- 当前实施任务仍为 `/root/refactor_a_resume`、`/root/refactor_d_resume`、`/root/refactor_e_resume`，原生列表均 running；原树复用，未重建、重置或启动额外流。
+- A `0ef6a37/38c03cc/d29fa33 → a00dd3e/963b583/3f64241` 已审查接入：新证据的 credential URL 遮罩、延后 body 读取的请求身份、离线资产等待及 9 MiB 实测响应的 8 MiB 前缀/原始字节数。`A-prefix-typecheck.log/A-prefix-build.log` 通过，`A-prefix-tests.log` **3 文件/33 项，12.46 s**。原错误原因须保留有界脱敏身份，不吞持久化异常。
+- A 第五次专项 `A-desktop-attempt-5.log`：record PID 42232 通过，offline PID 13936 失败，7.27 s；原件 `output/desktop-1790371821202`、run `ba3e9d3f-a3be-40da-84bd-531361d7c085` 保留。updated seek 的 CSS、图片、字体和 8 个源 CSS/XPath 对照通过；initial seek 的字体被同 seq 后到的失败 cache probe 覆盖。根定位后交 A；`5850f88` 修复已收到待集成复测，不能记离线整体通过。桌面进程均已退出，锁空闲。
+- 根补 checkpoint 回执和 host scope：未知/已终止步骤拒绝，采样与步骤状态切换互斥，引用字节预算固定。首次 `checkpoint-scope-tests.log` 两项失败（负例错误地期待执行继续，且测试 hook 未响应 abort），保留原日志；按既有非法 reporter 致执行失败协议修正测试与合成 hook，`checkpoint-scope-tests-2.log` **2 文件/19 项通过，3.92 s**，typecheck 通过。未降低生产错误标准，A/E 真实采样链仍待集成。
+- D `d245a88` 首个 UI 包收到，根审查要求修正资料读取错误被隐藏、跨 execution/attempt 迟到请求覆盖、native replay 迟到打开的清理及按 sourceTime 播放；尚未集成。E 强制授权和真实 B/C/F 门面仍在原任务实现；A `17ab383` 源显示值采样包已收到待审查。下一动作：依次集成已审查 A 包、重跑录制/离线专项，再接入 E/D 和最终系统验证。
