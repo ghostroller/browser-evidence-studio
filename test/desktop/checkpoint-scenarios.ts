@@ -76,7 +76,8 @@ export async function runCheckpointScenarios(studio:Studio,url:string){
       const child=await waitUntil(()=>[...run.pages.values()].find(candidate=>candidate.pageId!==page.pageId),Boolean,'checkpoint popup');
       assert.ok(child);await studio.serialized(async()=>{});await child.page.waitForSelector('#popup-button');
       await dispatch('selectPage',{pageId:child.pageId});
-      await studio.action({type:'click',selector:'#popup-button',pageId:child.pageId,generation:child.navigationGeneration,leaseEpoch:run.leaseEpoch});
+      try{await studio.action({type:'click',selector:'#popup-button',pageId:child.pageId,generation:child.navigationGeneration,leaseEpoch:run.leaseEpoch});}
+      catch(error){throw new Error(`Checkpoint popup click failed; native=${JSON.stringify(studio.window.presentationStatus())}`,{cause:error});}
       if(controller==='human')await studio.control('human');
       const operation=run.operation,childContents=child.view.webContents;
       const childEvaluate=child.page.evaluate,childCapture=childContents.capturePage;
