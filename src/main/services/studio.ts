@@ -2,7 +2,7 @@ import { WebContentsView, session, app, type Session, type DownloadItem, type We
 import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import puppeteer, { type Browser, type Page } from 'puppeteer-core';
+import puppeteer, { type Browser, type Page, type Dialog } from 'puppeteer-core';
 import { StudioWindow } from '../window';
 import { SocketTransport } from '../browser/connection';
 import { browserEnvironmentMetadata } from '../browser/environment';
@@ -253,11 +253,19 @@ export class Studio {
     // beforeunload rejection must leave a visible, usable page in the session.
     await new Promise<void>((resolve,reject)=>{
       let settled=false;
-      const finish=(error?:unknown)=>{if(settled)return;settled=true;clearTimeout(timer);contents.removeListener('destroyed',destroyed);contents.removeListener('will-prevent-unload',prevented);if(error)reject(error);else resolve();};
+      const finish=(error?:unknown)=>{if(settled)return;settled=true;clearTimeout(timer);contents.removeListener('destroyed',destroyed);contents.removeListener('will-prevent-unload',prevented);p.page.off('dialog',beforeUnloadDialog);if(error)reject(error);else resolve();};
       const destroyed=()=>finish();
       const prevented=()=>finish(new StudioError(409,'page_close_prevented','The page prevented closing; its live session is retained'));
+      // The permanent Puppeteer observer enables CDP Page. Chromium may route
+      // beforeunload through javascriptDialogOpening and await its response,
+      // before Electron can report will-prevent-unload. Dismiss only this close
+      // attempt's beforeunload dialog (cancel closing), never arbitrary dialogs.
+      const beforeUnloadDialog=(dialog:Dialog)=>{
+        if(dialog.type()!=='beforeunload')return;
+        void dialog.dismiss().then(prevented,error=>finish(new StudioError(409,'page_close_dialog_failed','Could not cancel the beforeunload dialog; close remains unconfirmed: '+String(error))));
+      };
       const timer=setTimeout(()=>finish(new StudioError(409,'page_close_timeout','The page did not confirm closing within 5 seconds; its live session is retained')),5000);
-      contents.once('destroyed',destroyed);contents.once('will-prevent-unload',prevented);
+      contents.once('destroyed',destroyed);contents.once('will-prevent-unload',prevented);p.page.on('dialog',beforeUnloadDialog);
       try{contents.close({waitForBeforeUnload:true});}catch(error){finish(error);}
     });
   }
