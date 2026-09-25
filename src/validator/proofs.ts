@@ -18,7 +18,7 @@ export function matchesUrl(actual: string | undefined, expected: string, pagePar
 export type SourceEntityIndex = Map<SourceDocument, Map<string, Map<string, JsonValue[]>>>;
 export function fieldProof(f: MaterialField, row: JsonValue, docs: SourceDocument[], index: SourceEntityIndex = new Map()): Check {
   const name = `source:${f.id}`;
-  if (!f.outputPath) return { name, verdict: 'inconclusive', reason: 'Field has no frozen outputPath; its display name is not an output mapping' };
+  if (f.outputPath === undefined) return { name, verdict: 'inconclusive', reason: 'Field has no frozen outputPath; its display name is not an output mapping' };
   const proof = f.sourceProof;
   if (!proof) return { name, verdict: 'inconclusive', reason: 'Field has no frozen content proof; a source ID or script-selected pointer alone cannot prove its meaning' };
   if (f.sourcePolicy === 'page-displayed') return { name, verdict: 'inconclusive', reason: 'A JSON response cannot independently prove displayed text or a displayed mask' };

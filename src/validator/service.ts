@@ -99,7 +99,7 @@ export class ValidatorService {
       const fields = revision.content.fields.filter(f => requirement.fieldIds.includes(f.id));
       for (const materialField of fields) {
         if (!dataset || !dataset.rows.length) { sourceChecks.push(check(`source:${materialField.id}`, 'inconclusive', 'No output rows to compare with source content')); continue; }
-        if (materialField.valueType && materialField.outputPath) {
+        if (materialField.valueType && materialField.outputPath !== undefined) {
           const values = dataset.rows.map(row => pointer(row.value, materialField.outputPath!));
           const matches = values.every(v => v.exists && (materialField.valueType === 'null' ? v.value === null : materialField.valueType === 'array' ? Array.isArray(v.value) : materialField.valueType === 'object' ? v.value !== null && typeof v.value === 'object' && !Array.isArray(v.value) : typeof v.value === materialField.valueType));
           checks.push(check(`field-type:${materialField.id}`, matches ? dataset.complete ? 'pass' : 'inconclusive' : 'fail', `Frozen output ${materialField.outputPath} must be ${materialField.valueType}`));
