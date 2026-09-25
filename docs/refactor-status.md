@@ -11,13 +11,13 @@
 | T04 | T02/T03 | A | implementing | A 包内按依赖推进；有界随机回放/eventSeq/释放待实现验证 |
 | T05 | T00/T02/T04 | A | implementing | A 包内按依赖推进；生产源属性/隐私/frame mapping 待验证，S0 spike 不是生产功能 |
 | T06 | T00 | B | module-integrated | 最终 B 已审查集成，主树材料/契约 13 项通过；真实 A sourceVerifier、E/UI 接入未验证 |
-| T07 | T04/T05/T06 | D | not-started | 历史 checkpoint 创建、编辑、复制和注释 |
-| T08 | T05/T06/T07 | D | not-started | 字段 UI、历史选择、去元素 tab、蒙版 |
-| T09 | T00/T01 | C | implementing | 原生 C 已启动；step/attempt 依赖、独立失败、真实取消与重试待验证 |
-| T10 | T00/T09 | C | implementing | C 包内推进；批次持久化、幂等、部分输出与分页声明待验证 |
-| T11 | T06/T09/T10 | F+D | implementing | F 后端已实际启动，固定资料验收与来源读取；D 结果视图未启动 |
-| T12 | T01/T06/T09；历史读接 A | E | not-started | 任务授权、后台目标读取、撤销；保留人工确认边界 |
-| T13 | T06/T11/T12 | E | not-started | 固定版本交接、差异和订阅 |
+| T07 | T04/T05/T06 | D | implementing | D 已实际启动；历史 checkpoint 创建、编辑、复制和注释 |
+| T08 | T05/T06/T07 | D | implementing | D 接 E 历史选择桥与材料门面；字段、去元素 tab、蒙版待集成 |
+| T09 | T00/T01 | C | module-integrated | 真实桌面 partial/cancel/timeout 专项通过；E 的资料绑定与最终 UI 未验收 |
+| T10 | T00/T09 | C | module-integrated | 持久增量批次、复用声明、显式选择、快照和输出预算已集成；最终独立业务产物待验收 |
+| T11 | T06/T09/T10 | F+D | module-integrated / implementing | F 真 JSON/逐页来源模块已集成，显示值与复用有效性仍证据不足；D 结果视图实施中 |
+| T12 | T01/T06/T09；历史读接 A | E | implementing | E 已实际启动，任务授权、后台读取、撤销和真实执行门面 |
+| T13 | T06/T11/T12 | E | implementing | E 实施固定版本交接、差异和订阅 |
 | T14 | 持续 | S0/G | implementing | 本轮 161 项、S0 专项、最终 19 进程矩阵通过；此前间歇 UI 风险记录保留；新架构长测仍待 A/G |
 | T15 | 全部接入 | G | not-started | 安装包、独立交付、新 Agent/真人与完整长测 |
 
@@ -31,15 +31,15 @@
 
 | 流 / 依赖 | worktree / branch | base | 原生任务 ID | 模型 / effort / 上下文 | 当前动作 / 提交 / 证据 |
 |---|---|---|---|---|---|
-| A / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-A` / `codex/refactor-a-20260926` | `4c4b293` | `/root/refactor_a` | `gpt-6-astra` / `xhigh` / `none` | 首四包已审查集成至主树 `c6a2a56`；生产桌面首跑失败，UUID 修复后第二次实跑中；继续原任务返修/边界采集 |
+| A / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-A` / `codex/refactor-a-20260926` | `4c4b293` | `/root/refactor_a` | `gpt-6-astra` / `xhigh` / `none` | `0d295c7 → 441eef9` 资源队列返修已集成；第二次桌面失败记录保留，第三次待新 build；继续隐私/显示值采样 |
 | B / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-B` / `codex/refactor-b-20260926` | `4c4b293` | `/root/refactor_b` | `gpt-6-sol` / `high` / `none` | completed，HEAD `e65b774` clean；最终两包已集成 `b762786/7ee2ab0`；有返修时按原 ID 接续 |
-| C / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-C` / `codex/refactor-c-20260926` | `4c4b293` | `/root/refactor_c` | `gpt-6-astra` / `xhigh` / `none` | 前三包已审查集成并主树复验；继续 manager/worker、代码快照及有界批次来源读取 |
-| D / A+B；结果接 F | 未建树 | 待已验证集成提交 | 未启动 | 计划 Sol high，尚未配置 | A/B 接口可用后由根创建；不要求用户操作 |
-| E / B+C；历史接 A、交接接 F | 未建树 | 待已验证集成提交 | 未启动 | 计划 Astra xhigh，尚未配置 | B/C 接口可用后在三流额度内启动 |
-| F / B+C；来源接 A | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-F` / `codex/refactor-f-20260926` | `dedb272e6554a134236617e3a4033f0a3ab549ad` | `/root/refactor_f` | `gpt-6-astra` / `high` / `none` | B completed 后原生启动，目录/HEAD/独立 npm ci 核实；B 最终两包获准接入为本树 `4f20933/8a3a482`；BES_DATA 为本树 `output\data-F` |
+| C / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-C` / `codex/refactor-c-20260926` | `4c4b293` | `/root/refactor_c` | `gpt-6-astra` / `xhigh` / `none` | completed，HEAD `19a6a321` clean；最后 `324e46a/19a6a321 → 604b52e/b143227`；有返修按原 ID 接续 |
+| D / A+B；结果接 F | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-D` / `codex/refactor-d-20260926` | `2e2258ea6833860cf76c25cbc8fbc9a1e887e37c` | `/root/refactor_d` | `gpt-6-sol` / `high` / `none` | 原生已启动且 clean/分支/base/Node/npm 核实；独立依赖与 `output\data-D`，与 E 协调真实 UI API |
+| E / B+C；历史接 A、交接接 F | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-E` / `codex/refactor-e-20260926` | `dd06e95bd5955902075d3d1f77af1240c8fe4d59` | `/root/refactor_e` | `gpt-6-astra` / `xhigh` / `none` | 原生已启动，clean/环境/独立 npm ci 682 包核实；主树 F 两包与 C 收尾获准接入为 `2f845aa/867f4b0/6cdc537/38e611c`，独立 `output\data-E` |
+| F / B+C；来源接 A | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-F` / `codex/refactor-f-20260926` | `dedb272e6554a134236617e3a4033f0a3ab549ad` | `/root/refactor_f` | `gpt-6-astra` / `high` / `none` | completed，HEAD `d69a14a` clean；`cae5e6e/d69a14a → 060d7d9/0507b41` 已集成，17 项专属测试通过；显示值真实接入待 A |
 | G / 实际 A–F | 主集成目录 | 逐提交记录 | `/root`（审查上下文按需另记） | 沿用根实际配置 | 持续集成；最终系统验收尚未开始 |
 
-各流 BES_DATA 为自己的 worktree 下 `output\data-A` / `data-B` / `data-C`，不得共享 node_modules、profile、connection 或开发 latest。桌面/物理输入/长测独占锁当前 **空闲**，仅根可分配；三条实施流均已收到不得自行启动的指令。当前没有新重构功能被标为 verified。
+各流 BES_DATA 为自己的 worktree 下 `output\data-<流名>`，cache 为自己的 `output/npm-cache-<流名>`，不得共享 node_modules、profile、connection 或开发 latest。当前主要实施流 A/D/E。桌面/物理输入/长测独占锁由根预留给 A 第三次专项；各流均不得自行启动。根唯一写共享契约、配置/锁、`src/main/app.ts`、`test/desktop/launch.js` 和调度状态；E 独写其余 main/preload，D 独写 renderer。当前没有新重构功能被整体标为 verified。
 
 恢复步骤：先 `collaboration.list_agents`，按上表 ID 发消息/接续，核对工作树 HEAD/status 与 handoff；仍 running 的流不重复派发。原生 ID 不存在时核对留存成果后原树接续并登记替代 ID。根仅审查已明确 SHA 的提交，再串行集成、测受影响范围。每个结果更新本记录的提交、测试路径、阻塞和下一动作；不将任务“完成”直接改成 T 项 verified。
 
@@ -66,3 +66,12 @@
 - A `4bd3ad7/b65d485` 集成为 `6b126b4/59264f6`，5 文件/41 项通过、13.78 s（`A-production-module-tests.log`），typecheck/build 通过。根接入 `--refactor-recording` 两进程串行专项和 ready 前 `bes-resource` scheme，实际 handler 仅由隔离 replay partition 安装。首跑 PID 32736 在初始 document 注入失败：`crypto.randomUUID is not a function`；`output/desktop-1790368796190` 原件与 `A-desktop-attempt-1.log` 保留，offline 未跑。
 - A 后续 `fc74fdc/87b1669` 集成为 `e0e9daa/c6a2a56`：测试按每个历史位置选择同 URL 不同 CSS 版本；crypto.getRandomValues 为每次文档注入生成独立 ID。第二次真实桌面正串行运行（`A-desktop-attempt-2.log`，工具 exec session 80793），恢复时先检查进程/日志，不重复启动。桌面锁此时由根持有。
 - C `9c2650d` 集成为 `a200e0a`：实际 worker 增量 reporter、执行快照、导入字节 hash 校验，4 文件/26 项通过、11.44 s（`C-production-module-tests.log`）。根新增 `--refactor-runner` 专项入口，等待 A 桌面释放后启动。独立 `portable-runner.mjs` 由现有 `npm run build` 和 Forge build 生成，9.36 kB、仅 Node built-in runtime；本轮 AC typecheck/build 通过（`AC-typecheck.log/AC-build.log`），未以 bundle 生成代替独立安装运行验收。
+
+### A 失败返修、C/F 集成与 D/E 实际启动
+
+- A 第二次桌面已结束：PID 20444，`output/desktop-1790368992121`，录制 run `2044933f-4cae-413d-9100-ab71ff4822f8`。180 s launcher timeout，原始 CSS/image 已捕获，但 font/ttf 出现 `browser-cached-resource-unavailable`；finally 中活连接阻止测试退出。`A-desktop-attempt-2.log` 与原件保留，offline 阶段未执行。根将问题交回原 A 任务，未删 font 断言。A `0d295c7` 审查集成为 `441eef9`：1 MiB/256 个轻量描述符、串行真实 body 读取、保留原工作集 cap，并先保存断言错误再关自身 fixture；第三次真实专项待本轮 build。
+- C 生产专项 `node test/desktop/launch.js --refactor-runner` **通过**，PID 40452，`output/desktop-1790369223309`，日志 `C-desktop-attempt-1.log`。partial 保留 5 条数据，cancelled/timeout 无迟到 Puppeteer 点击（再等 1.2 s 为 0）。该专项绑定合成 V1，尚非 B/F/权限/UI 端到端。主树 `dd06e95` 另运行完整 `npm.cmd test`，**35 文件/206 项通过，76.98 s**（`ABC-unit.log`）；并行流只做模块开发，耗时不是性能验收。
+- F `cae5e6e/d69a14a → 060d7d9/0507b41` 审查集成：真实 EvidenceReader JSON 字节及 hash、URL/分页/实体内容验证，来源执行映射要求可信宿主提供；遮罩正文显式 redacted，不能变成内容已核验。RFC 6901 根指针和跨 16 KiB 页 UTF-8 解码已测；page-displayed/旧批次复用有效性仍不能独立证明，不标完成。
+- C 收尾 `324e46a/19a6a321 → 604b52e/b143227`：业务选择按 step/entity 生效，总 worker 输出 64 KiB 上限，void 步骤原件明确 `resultValueState=undefined`、不冒充 null。根 `CF-final-typecheck.log` 通过；`CF-final-module-tests.log` **6 文件/46 项通过，20.02 s**。最后两包未重复跑桌面，后续 E 实际绑定再跑系统验证。
+- 根唯一源显示值契约 `2e2258e`，`presentation-typecheck.log` 通过；A/E 获准只接该共享提交。它只是端口，A 明确选定节点源端取样和 F 核验尚待实现。
+- E 从 `dd06e95bd5955902075d3d1f77af1240c8fe4d59` 新建；C/F 完成释放槽位后实际启动 `/root/refactor_e`。D 从 `2e2258ea6833860cf76c25cbc8fbc9a1e887e37c` 新建并实际启动 `/root/refactor_d`，均未复用/重置旧树。原生工具接受的模型/effort/base 见表；下一动作是根重跑 A 桌面、E/D 对齐实际门面并提交可审查包。没有要求用户创建会话或搬运结果。

@@ -31,6 +31,8 @@ DatasetService 的 append 完成意味着已持久保存；幂等键是 executio
 
 2026-09-26 F 接入补充：`MaterialField.name` 是显示名，`outputPath?` 用 RFC 6901 JSON Pointer 显式映射输出字段，不从显示名推断键。可选 `sourceProof: json-record` 固定来源 URL、记录集合/实体/字段指针及输出实体指针。`pagination-complete.proof?: numbered-pages` 固定逐页实体集合和结束约束，支持总页数或 hasNext + 总记录数；这些配置属于用户资料、进入 revision hash，脚本不能另定验收标准。只允许明确 `pageParameter` 的查询值变化，其余固定 URL（包括筛选 query）必须匹配；指针是数据定位，不执行代码。F 从真实捕获的 request URL/正文核验页序、实体集合、字段内容，不把 script complete 或引用存在当成内容证明。未配置 proof/输出路径时保留语义资料并明确证据不足，不能自动补值；network JSON 不能独自证明 page-displayed 或隐私遮罩要求。G 唯一修改共享类型及已完成 B 的严格输入适配；旧 revision 不添加字段、不改 hash。
 
+显示值观察的最小端口：`SourceNode.presentation?` 保留明确源页取样的文本、visibility、rect、basis 与精确 `sampledAt`。A 只在明确选择/请求的节点读取一次布局/innerText，通过原录制通道追加事件，不对所有节点增加递归显示值采集；表单/rr-mask/rr-block 延续隐私政策。未取样/旧资料为缺失或 unsupported，不能从结构 textContent、回放像素或当前 live 页补造。F 使用时必须核对同一完整位置、DOM 目标身份、可见性依据、执行来源，不能把 sampledAt 的观察推延至其他事件；此类型尚待 A 生产实现及 F 接入，存在类型不代表完成。
+
 ## 落盘与旧材料
 
 根为每个实例的 `BES_DATA`，相对目录冻结如下：
