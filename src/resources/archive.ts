@@ -7,12 +7,13 @@ import { EvidenceError } from '@/evidence/contracts';
 import { atomicFile, atomicJson, exists, hashBytes, safeFile } from '@/evidence/files';
 import type { EvidenceStore } from '@/evidence/store';
 import { jsonLines } from '@/evidence/files';
+import { credentialUrl } from '@/capture/url-privacy';
+import { responsePrivacy } from '@/capture/privacy';
 
 export const RESOURCE_MAX_BYTES = 8 * 1024 * 1024;
 export const RESOURCE_TOTAL_BYTES = 256 * 1024 * 1024;
-const credential = /password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key/i;
 export function privateResourceUrl(value: string): boolean {
-  try { const url = new URL(value); return !!url.username || !!url.password || [...url.searchParams.keys()].some(key => credential.test(key)) || /(?:token|secret|password)=/i.test(url.hash); }
+  try { new URL(value); return credentialUrl(value); }
   catch { return true; }
 }
 export interface ArchivedResource extends ResourceReference {
@@ -60,6 +61,7 @@ export class ResourceCapture {
       if (privateUrl) { status = 'redacted'; reason = 'credential-bearing-resource-url'; }
       else if (!isArchivableResource(input.mediaType)) { status = 'unsupported'; reason = 'resource-media-type-not-supported'; }
       else if ((suppliedBytes ?? 0) > RESOURCE_MAX_BYTES || this.writer.totalBytes + (suppliedBytes ?? 0) > RESOURCE_TOTAL_BYTES) { status = 'missing'; reason = 'resource-byte-budget'; }
+      else if (data && responsePrivacy(data, input.mediaType).redacted) { status = 'redacted'; reason = 'credential-url-in-resource-body'; }
       if ((status === 'captured' || status === 'late-fetched') && !data) throw new EvidenceError('RESOURCE_BYTES_MISSING', 'Captured resources require their observed bytes');
       const originalUrl: SourceValue<string> = privateUrl ? { status: 'redacted', reason: reason! } : { status: 'present', value: input.url };
       const captured = status === 'captured' || status === 'late-fetched';

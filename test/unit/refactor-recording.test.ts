@@ -16,6 +16,9 @@ import { CaptureBudget, DeferredBodyReads } from '@/capture/budget';
 import { ResourceArchive, ResourceCapture, RESOURCE_MAX_BYTES } from '@/resources/archive';
 import { redactHtml, responsePrivacy } from '@/capture/privacy';
 import { rewriteCssUrls, rewriteSrcset } from '@/resources/rewrite';
+import { captureMetadata, credentialUrl } from '@/capture/url-privacy';
+import { RequestLedger } from '@/capture/request-ledger';
+import { captureRequestBody, requestMetadata } from '@/capture/request-body';
 
 const stores: EvidenceStore[] = [], windows: JSDOM[] = [];
 afterEach(async () => { for (const store of stores.splice(0)) await store.close(); for (const window of windows.splice(0)) window.window.close(); });
@@ -32,7 +35,7 @@ async function source(html = '<main id="main"><a data-key="订单\'&quot;" href=
   const bundle = await fs.readFile(path.resolve('node_modules/rrweb/dist/rrweb.umd.cjs'), 'utf8');
   if(fixedTime)dom.window.Date.now=()=>fixedTime;
   dom.window.eval(instrumentRecorder(bundle));
-  dom.window.eval(`(${installSourceRecorder.toString()})(${JSON.stringify({ binding: 'syntheticBinding', recordingId: 'recording', pageId: 'page', checkoutEveryNms: 30000, checkoutEveryNth: 500 })})`);
+  dom.window.eval(`(${installSourceRecorder.toString()})(${JSON.stringify({ binding: 'syntheticBinding', recordingId: 'recording', pageId: 'page', checkoutEveryNms: 30000, checkoutEveryNth: 500 })},${credentialUrl.toString()})`);
   await new Promise<void>(resolve => dom.window.setTimeout(resolve, 0));
   return { dom, records };
 }
@@ -42,10 +45,35 @@ function target(records: RecordingEnvelope[], key = 'a'): HistoricalElementRef {
   return { kind: 'dom-node', position: last.position, nodeId: node.id, frameId: node.metadata!.frameId, mirrorScopeId: node.metadata!.mirrorScopeId };
 }
 describe('format-2 production recorder and bounded archive', () => {
+  it('redacts credential URLs in every newly captured representation while preserving public URL literals',async()=>{
+    const privateUrl='https://source.invalid/submit?access_token=synthetic-url-private',publicUrl='../orders/42?sort=descending&empty=';
+    const html=`<a href="${privateUrl}">private link</a><img src="${privateUrl}"><form action="${privateUrl}"></form><a href="${publicUrl}">public link</a><p>${privateUrl}</p>`;
+    const {records}=await source(html);expect(JSON.stringify(records)).not.toContain('synthetic-url-private');
+    expect(redactHtml(html).text).not.toContain('synthetic-url-private');expect(redactHtml(`<a href="${publicUrl}">public</a>`).text).toBe(`<a href="${publicUrl}">public</a>`);
+    const evidence=await store();const request={method:'GET',url:privateUrl,headers:{Referer:privateUrl}};
+    const metadata=requestMetadata(request),artifact=await captureRequestBody(request,{source:{url:privateUrl},acquireRead:()=>({release(){}}),readPostData:async()=>({})});
+    await evidence.appendRaw('cdp',metadata);await evidence.appendEvent({type:'navigation',source:'cdp',data:captureMetadata({url:privateUrl})});await evidence.putArtifact(artifact);await evidence.flush();
+    const files=['artifacts.jsonl'];for(const directory of ['raw/cdp','journal'])for(const name of await fs.readdir(path.join(evidence.runDir,directory))){if(name.endsWith('.jsonl'))files.push(path.join(directory,name));}
+    for(const file of files)expect(await fs.readFile(path.join(evidence.runDir,file),'utf8')).not.toContain('synthetic-url-private');
+    expect(captureMetadata({url:publicUrl})).toEqual({url:publicUrl});expect(captureMetadata({url:privateUrl})).toMatchObject({capturePrivacy:{credentialUrls:'redacted'}});
+    for(const url of ['https://user:private@source.invalid/', '/page#access_token=private','/page#/route?api_key=private','/page?%74oken=private'])expect(credentialUrl(url)).toBe(true);
+    expect(responsePrivacy(Buffer.from(JSON.stringify(privateUrl)),'application/json').data?.toString()).not.toContain('synthetic-url-private');
+    const resourceCapture = new ResourceCapture(evidence), position = records.at(-1)!.position;
+    const resource = await resourceCapture.capture({position,frameId:'top',url:'https://source.invalid/public.css',mediaType:'text/css',data:Buffer.from(`a{background:url("${privateUrl}")}`)});
+    expect(resource.status).toBe('redacted');expect(resource.blobHash).toBeUndefined();
+  });
+  it('invalidates queued and in-flight response reads when a request ID is reused',async()=>{
+    const ledger=new RequestLedger('session','target'),queue=new DeferredBodyReads();let unblock!:()=>void;const blocker=new Promise<void>(resolve=>{unblock=resolve;});
+    queue.add(()=>blocker,100);const first=ledger.begin({requestId:'same',url:'https://a.invalid/first',redirect:false}).current;
+    const read=ledger.acquireResponseRead('same');expect(ledger.finish('same')).toBe(first);
+    let acceptedBody=false;queue.add(async()=>{acceptedBody=!read.invalidated;read.release();},100);
+    ledger.begin({requestId:'same',url:'https://a.invalid/second',redirect:false});unblock();await queue.flush();expect(acceptedBody).toBe(false);
+    const second=ledger.acquireResponseRead('same');ledger.finish('same');expect(second.invalidated).toBeUndefined();ledger.reset();expect(second.invalidated).toContain('capture-reset');second.release();
+  });
   it('keeps privacy across rrweb, raw metadata, HTML and JSON response representations',async()=>{
-    const html='<input type="checkbox" checked value="private-checkbox"><textarea>private-textarea</textarea><div class="rr-mask">private-visible-text</div><a __proto__="original-attribute" href="/safe">safe</a>';
+    const html='<input type="checkbox" checked value="private-checkbox"><textarea>private-textarea</textarea><div class="rr-mask" aria-label="private-label">private-visible-text</div><a __proto__="original-attribute" href="/safe">safe</a>';
     const {records}=await source(html);
-    const raw=JSON.stringify(records);for(const secret of ['private-checkbox','private-textarea','private-visible-text'])expect(raw).not.toContain(secret);
+    const raw=JSON.stringify(records);for(const secret of ['private-checkbox','private-textarea','private-visible-text','private-label'])expect(raw).not.toContain(secret);
     const redacted=redactHtml(html);expect(redacted.redacted).toBe(true);for(const secret of ['private-checkbox','private-textarea','private-visible-text'])expect(redacted.text).not.toContain(secret);
     expect(redacted.text).toContain('checked');
     const json=responsePrivacy(Buffer.from('{"accessToken":"private-token","rows":[{"id":1,"value":"public-value"}]}'),'application/json');expect(json.redacted).toBe(true);expect(json.data!.toString()).not.toContain('private-token');expect(json.data!.toString()).toContain('public-value');

@@ -44,6 +44,7 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     else if (request.url === '/assets/font.ttf') { response.setHeader('content-type', 'font/ttf'); response.end(font); }
     else if (request.url === '/assets/pixel.png') { response.setHeader('content-type', 'image/png'); response.end(png); }
     else if (request.url === '/frame') { response.setHeader('content-type', 'text/html'); response.end('<!doctype html><a data-key="frame" href="../frame-target">frame child</a>'); }
+    else if (request.url?.startsWith('/privacy?')) { response.setHeader('content-type','application/json');response.end('{"ok":true}'); }
     else { response.setHeader('content-type', 'text/html'); response.end(html); }
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -56,6 +57,10 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     await studio.startRun({ projectId: project.id, profileId: profile.id, url: origin + '/source' });
     await studio.control('agent');
     const current = studio.current(), run = studio.required();
+    // Exercise actual network, navigation and attribute collectors. The secret
+    // is passed as an argument, never embedded in a fixture script source.
+    const privateUrl=origin+'/privacy?access_token=synthetic-url-private';
+    await current.page.evaluate(async url=>{const link=document.createElement('a');link.id='privacy-link';link.href=url;link.textContent='private link';document.body.appendChild(link);history.replaceState(null,'',url);await fetch(url);},privateUrl);
     await current.page.waitForFunction(async () => { await document.fonts.load('16px BesFixture'); const image = document.querySelector('#picture') as HTMLImageElement | null; return !!image?.complete && image.naturalWidth > 0 && document.fonts.check('16px BesFixture') && !!document.querySelector('#child')?.getAttribute('src'); });
     const positions: SavedRecording['positions'] = [];
     async function boundary(label: string, text: string): Promise<void> {
@@ -93,10 +98,8 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     const final = current.capture.recordingPosition!;
     const resources = await new ResourceArchive(run.store.runDir).list(1000);
     for (const mediaType of ['text/css', 'image/png', 'font/ttf']) assert.ok(resources.items.some(item => item.status === 'captured' && item.mediaType === mediaType), `Production archive must contain ${mediaType}`);
-    for (const file of await readdir(path.join(run.store.runDir, 'raw/rrweb'))) {
-      const raw = await readFile(path.join(run.store.runDir, 'raw/rrweb', file), 'utf8');
-      assert.ok(!raw.includes('synthetic-private'), 'Production rrweb/source stream must not leak masked input values');
-    }
+    const originalFiles=['artifacts.jsonl'];for(const directory of ['raw/rrweb','raw/cdp','journal'])for(const file of await readdir(path.join(run.store.runDir,directory)))if(file.endsWith('.jsonl'))originalFiles.push(path.join(directory,file));
+    for (const file of originalFiles) {const raw=await readFile(path.join(run.store.runDir,file),'utf8');assert.ok(!raw.includes('synthetic-private'),'Production originals must not leak masked input values');assert.ok(!raw.includes('synthetic-url-private'),'Production originals must not leak credential URLs');}
     const saved: SavedRecording = { runId: run.id, originalUrl: origin + '/source', recordPid: process.pid, capturedAt: new Date().toISOString(), positions, final };
     await writeFile(path.join(studio.root, 'refactor-recording-fixture.json'), JSON.stringify(saved, null, 2));
     Object.assign(report, { passed: true, runId: run.id, positions: positions.map(item => ({ label: item.label, position: item.position })), resources: resources.items.map(item => ({ id: item.id, mediaType: item.mediaType, status: item.status, bytes: item.bytes })), queueMetrics });
@@ -139,10 +142,10 @@ async function offlineScenario(studio: Studio): Promise<Record<string, unknown>>
   });
   const execute = async (stage: string, script: string) => { report.stage = stage; return replay.webContents.executeJavaScript(script); };
   try {
+    report.stage = 'load-shell';
     await replay.loadURL('about:blank');
     await execute('install-csp', `const policy=document.createElement('meta');policy.httpEquiv='Content-Security-Policy';policy.content=${JSON.stringify(OFFLINE_CSP)};document.head.appendChild(policy);document.body.innerHTML='<div id="replay"></div>';true`);
     await execute('install-rrweb', rrwebSource);
-    report.stage = 'load-shell';
     const resources = await archive.list(1000);
     for (const item of [...saved.positions, ...saved.positions].reverse()) {
       activePosition=item.position;activeGeneration++;const generation=activeGeneration;
