@@ -8,6 +8,7 @@ import type { Studio } from '@/main/services/studio';
 import { makeDispatch } from '@/main/services/dispatch';
 import type { Artifact, QueryPage } from '@/evidence/contracts';
 import type { EvidenceReader } from '@/evidence/reader';
+import { sameStream } from '@/capture/recording-types';
 import { clickSyntheticHuman as nativeFixtureClick } from './native-input';
 import { verifySoakEvidenceSnapshot, type SoakEvidenceSnapshot } from './soak-evidence';
 
@@ -179,8 +180,13 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
   assert.equal(studio.required().capture, 'recording', 'Resuming with an iframe must request only ready main-document recorders');
   await parent.capture.flush();
   const raw = await rrwebRecords(run.store.runDir);
-  const topFrames = raw.filter(record => record.pageId === parent.pageId && record.navigationGeneration === parent.navigationGeneration);
+  const currentPosition = parent.capture.recordingPosition;
+  assert.ok(currentPosition, 'The current document must have a durable source position');
+  assert.equal(currentPosition.recordingId, run.id);
+  assert.equal(currentPosition.pageId, parent.pageId);
+  const topFrames = raw.filter(record => record.formatVersion === 2 && record.position && sameStream(record.position, currentPosition));
   assert.ok(topFrames.some(record => record.event.type === 2), 'The iframe-containing top document needs a persisted full rrweb snapshot');
+  assert.ok(topFrames.some(record => record.position.eventSeq === currentPosition.eventSeq && record.position.sourceTimeMs === currentPosition.sourceTimeMs), 'The acknowledged source boundary must exist in the raw current-document stream');
   assert.ok(raw.every(record => record.isTop === true), 'Only top-document recorder streams may be saved; nested independent rrweb snapshots would corrupt playback');
   assert.ok(topFrames.length < 500, 'A single static iframe must not recursively inflate recording');
   const replay = await studio.replay({ runId: run.id, pageId: parent.pageId });
