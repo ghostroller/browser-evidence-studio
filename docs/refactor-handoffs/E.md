@@ -27,3 +27,13 @@
 模块实跑：`npm.cmd run typecheck` 通过。`npm.cmd test -- test/unit/project-executions.test.ts` 1 项通过，2.42 s；真实 Node worker、真实 B/C/EvidenceReader/F，重开后独立 JSON source 判 pass、固定hash/binding、错误project/伪attempt拒绝、批次读取、review不改原报告。`npm.cmd test -- test/unit/refactor-agent-api.test.ts` 3 项通过，820 ms：省略/撤销授权、human只读/拒写、旧证据入口范围、HTTP假人工操作和越域拒绝。4项 task-authorization 测试此前通过。最初 fixtures 缺 schemaVersion/workflow requirement 导致失败，及 control 先触发409而非明确UI403，均保留输出并修正，未降低拒绝断言。
 
 此包尚未跑 Electron/真实网络跳转/原生选择；根负责串行 fixture。旧 API 单元 fixture 仍按旧裸 lease 结构，需要按新 task scope 更新 fixture 后回归，不保留绕过以迁就测试。后续包继续：真实 source sampling、机器 handoff/skill、桌面专项及权限返修。
+
+## 第三包：审查返修与明确负例
+
+- ReplayHost 从 open 入口开始限制 lifetime，初始化与 selection 每个异步边界检查，关闭期间 ready 失败被明确消费；seek/selection 独立代际防迟到焦点和蒙版操作。回放加载时隐藏 native view，资源等候结束才显示。
+- bes-resource 缺失为 404，读取/完整性失败为 500；保留有界脱敏 resource/generation/code/name/message，并在 ReplayHostState.resources 显示 partial。资源等候覆盖 stylesheet、image、font，最大 5 秒，未就绪明确诊断。
+- 选择递归同源 frame/open shadow，按每层缩放映射矩形，未知 iframe 返回不可解析。新单元仅证明 helper 和 Electron stub 生命周期，真实 native/frame 仍由根专项验证。
+- Host scope 首次 running 追加保存，合法 awaiting-human→running 与 prior 复跑只核对既存 identity，原起点不覆盖。JSON 来源按所有曾 running 的真实 host attempt 判断歧义，固定使用 source.responseObservedAt，缺该字段的历史材料不足，不用 body 落盘 createdAt 猜归属。等待 A 对新 response-body 写入观测时间。
+- 只有 ENOENT/ARTIFACT_NOT_FOUND 是缺失；读取权限/损坏错误到 F，报告仍区分 Original-source read failed。recordSample 在每次 await 后核查 active/abort，克隆目标；报告 discovery 的 returnedBytes 包含自身字段，固定点计量。
+
+`npm.cmd run typecheck` 通过（repair-typecheck.log）。首次新增模块测试失败 2 项，原因合成 awaiting-human 缺 C 必需的 result identity；原日志保留，补合法协议后 `npm.cmd test -- test/unit/task-authorization.test.ts test/unit/refactor-agent-api.test.ts test/unit/project-executions.test.ts test/unit/replay-host.test.ts` **4 文件/14 项通过，3.96 s**（repair-module-tests-2.log）。证明实际 Node worker 合法恢复、少选 dataset 仍保持并发歧义、元数据读取故障传递、报告精确预算，及 stub replay 迟到打开/关闭/选择、损坏与缺失分离、frame/shadow 命中。未启动 Electron。
