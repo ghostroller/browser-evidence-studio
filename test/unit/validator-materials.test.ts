@@ -147,20 +147,22 @@ describe('fixed material validation using real B/C stores', () => {
     const f = await fixture(); await f.append();
     await expect(f.validator().validate(f.request, { maxBytes: 1024, limit: 10 })).rejects.toMatchObject({ code: 'REPORT_LIMIT', statusCode: 413 });
   });
-  it('uses captured JSON artifact bytes and request metadata through the real production reader', async () => {
+  it('reads UTF-8 Chinese and emoji across 16 KiB source chunks and detects original corruption', async () => {
     const f = await fixture();
     const runDir = path.join(f.root, 'runs', 'recording-f');
     const store = await EvidenceStore.create(runDir, { id: 'recording-f', projectId: 'project-f', kind: 'validate', mode: 'synthetic', objective: 'F reader integration' });
     const refs: string[] = [];
     try {
       for (let i = 0; i < 2; i++) {
-        const artifact = await store.putArtifact({ kind: 'response-body', mediaType: 'application/json', data: JSON.stringify({ page: i + 1, total: 2, hasNext: i === 0, items: [output[i]], padding: 'x'.repeat(20000) }), source: { requestKey: `request-${i}`, url: `${sourceUrl}&page=${i + 1}` } });
+        const artifact = await store.putArtifact({ kind: 'response-body', mediaType: 'application/json', data: JSON.stringify({ page: i + 1, total: 2, hasNext: i === 0, items: [output[i]], padding: '中文🙂'.repeat(4000) }), source: { requestKey: `request-${i}`, url: `${sourceUrl}&page=${i + 1}` } });
         refs.push(artifact.id);
       }
     } finally { await store.close(); }
     await f.append(output, refs);
     const reader = new EvidenceReader(runDir);
     const source = new CapturedJsonSourceReader(async ref => refs.includes(ref) ? { reader, scope: { executionId: f.binding.executionId, attemptId: f.identity.attemptId, recordingId: 'recording-f' } } : undefined);
+    const original = await source.read(refs[0], { maxBytes: 65536, limit: 1 });
+    expect(original?.content).toEqual({ status: 'present', value: { page: 1, total: 2, hasNext: true, items: [output[0]], padding: '中文🙂'.repeat(4000) } });
     const report = await new ValidatorService(f.materials, f.data, source).validate(f.request);
     expect(report.overall).toBe('pass');
     await expect(source.read(refs[0], { maxBytes: 1024, limit: 1 })).rejects.toMatchObject({ code: 'SOURCE_LIMIT' });
@@ -169,6 +171,38 @@ describe('fixed material validation using real B/C stores', () => {
     const damaged = await new ValidatorService(f.materials, f.data, source).validate(f.request);
     expect(damaged.overall).not.toBe('pass');
     expect(damaged.requirements[0].evidence.some(e => /integrity|hash/i.test(e.reason))).toBe(true);
+  });
+  it('treats captured privacy replacements as redacted instead of verifying matching mask strings', async () => {
+    const f = await fixture();
+    const runDir = path.join(f.root, 'runs', 'recording-redacted');
+    const store = await EvidenceStore.create(runDir, { id: 'recording-redacted', projectId: 'project-f', kind: 'validate', mode: 'synthetic', objective: 'Capture privacy metadata' });
+    const refs: string[] = [], masked = output.map(row => ({ ...row, amount: '[redacted]' }));
+    try {
+      for (let i = 0; i < 2; i++) {
+        const artifact = await store.putArtifact({ kind: 'response-body', mediaType: 'application/json', data: JSON.stringify({ page: i + 1, total: 2, hasNext: i === 0, items: [masked[i]] }), source: { requestKey: `request-${i}`, url: `${sourceUrl}&page=${i + 1}` }, metadata: i === 0 ? { privacyRedacted: true } : { representation: 'privacy-redacted-response' } });
+        refs.push(artifact.id);
+      }
+    } finally { await store.close(); }
+    await f.append(masked, refs);
+    const reader = new EvidenceReader(runDir);
+    const source = new CapturedJsonSourceReader(async ref => refs.includes(ref) ? { reader, scope: { executionId: f.binding.executionId, attemptId: f.identity.attemptId, recordingId: 'recording-redacted' } } : undefined);
+    for (const ref of refs) expect((await source.read(ref, { maxBytes: 65536, limit: 1 }))?.content.status).toBe('redacted');
+    const report = await new ValidatorService(f.materials, f.data, source).validate(f.request);
+    expect(report.overall).toBe('inconclusive');
+    expect(report.requirements[0].evidence.some(e => e.status === 'content-verified')).toBe(false);
+    expect(report.requirements[0].evidence.filter(e => e.reason.includes('redacted'))).toHaveLength(2);
+  });
+  it('accepts an explicitly empty root output pointer and applies its frozen field type', async () => {
+    const content = material(); content.fields[0].outputPath = ''; content.fields[0].valueType = 'object'; content.fields[0].sourceProof!.valuePointer = '';
+    const f = await fixture(content); await f.append();
+    const report = await f.validator().validate(f.request);
+    expect(report.overall).toBe('pass');
+    expect(report.requirements[0].checks.find(c => c.name === 'field-type:amount')?.verdict).toBe('pass');
+    content.fields[0].valueType = 'string';
+    const wrongType = await fixture(content); await wrongType.append();
+    const failed = await wrongType.validator().validate(wrongType.request);
+    expect(failed.overall).toBe('fail');
+    expect(failed.requirements[0].checks.find(c => c.name === 'field-type:amount')?.verdict).toBe('fail');
   });
   it('selects each real step attempt explicitly and rejects mixed/latest identity guesses', async () => {
     const f = await fixture();
