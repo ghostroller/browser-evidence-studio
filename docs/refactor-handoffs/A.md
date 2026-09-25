@@ -100,3 +100,7 @@ SourceFrameScopes只从已耐久SourceMetadata投影最多256个frame host/root�
 根第7次`output/desktop-1790373434512` record失败：正常about:blank→目标导航期间，旧缓存任务按独立navigationGeneration判错为fatal。返修改用observer context同步固定的CDP main frame/loader与触发full snapshot的源position；旧任务在排队、resource tree/content读取后失效时记录`resource-cache-probe-skipped`并退出。当前loader读取失败仍保留错误，落盘失败仍致采集失败。旧context的迟到原件继续保存，但不能更新当前源位置或解除新document的baseline等待。删除start末尾无身份的重复probe。response任务也在完成回调核对request loader，不把旧request资源归新stream。
 
 新增协调器级交错测试：真实EvidenceStore/RecordingIndexWriter配合可控CDP响应，暂停旧resource tree读取，切到新loader并延后独立generation更新，再释放旧任务；仅新document资源入archive，旧任务有诊断、无伪造fatal。`npm.cmd test -- test/unit/capture-navigation.test.ts test/unit/refactor-recording.test.ts`2文件17项通过5.98s（`navigation-tests.log`）；typecheck通过（`navigation-typecheck-final.log`）。第7次失败材料保留，真实重跑仍由根串行执行。
+
+根第8次受限权限下GPU进程加载前失败（`output/desktop-1790374046808`），保留原件；第9次正常审批权限record/offline均通过，`output/desktop-1790374061582`、PID13004→27804、6.34s。同源frame资源/CDP映射及源frame/open-shadow/SVG定位器专项实际通过；仍不代表所有资产边界或长测完成。
+
+`Network.loadingFinished`同步固定`responseObservedAt` ISO，与`pageId/requestKey/frameId/loaderId`一起保存所有该完成回调产生的response-body artifact.source，包括成功、隐私排除、ID失效与正文读取失败。createdAt仍为落盘时间；既有旧原件和未观察完成的stream/unfinished材料不补造此时间。这仅表示完成响应的观察归属，不断言步骤导致该请求。协调器测试固定完成时间，延后一分钟释放body读取，核对成功及失败artifact保留原观察时间且createdAt为后一分钟。typecheck、1文件2项通过1.69s（`response-observed-typecheck.log`、`response-observed-tests.log`）。
