@@ -29,6 +29,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const [error, setError] = useState('');
   const [scrubTime, setScrubTime] = useState<number | null>(null);
   const hostRef = useRef<Host | null>(null);
+  const mounted = useRef(false);
   const seekToken = useRef(0);
   const loadToken = useRef(0);
   const pollSelection = useRef(0);
@@ -39,6 +40,8 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const nextOrdinalRef = useRef<number | undefined>(undefined);
   const streamRef = useRef<Stream | null>(null);
   const playRef = useRef(false);
+  const selectingRef = useRef(selecting);
+  selectingRef.current = selecting;
   const speedRef = useRef(speed);
   speedRef.current = speed;
   const call = useCallback((method: string, body: Record<string, unknown> = {}) => window.studio.call(method, { projectId, ...body }), [projectId]);
@@ -51,23 +54,29 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const seek = useCallback(async (target: ReplayPosition) => {
     const token = ++seekToken.current;
     setSeeking(true); setError(''); setPlaying(false); playRef.current = false;
+    const current = hostRef.current;
+    const opened = !current;
     try {
-      const current = hostRef.current;
       const next: Host = current
         ? await call('seekReplay', { replayId: current.replayId, position: target })
         : await call('openReplay', { position: target });
+      if (!mounted.current || token !== seekToken.current) {
+        if (opened) void call('closeReplay', { replayId: next.replayId }).catch(() => undefined);
+        return;
+      }
       applyHost(next, token);
-    } catch (failure) { if (token === seekToken.current) setError(String(failure)); }
-    finally { if (token === seekToken.current) setSeeking(false); }
+    } catch (failure) { if (mounted.current && token === seekToken.current) setError(String(failure)); }
+    finally { if (mounted.current && token === seekToken.current) setSeeking(false); }
   }, [applyHost, call]);
   const loadPositions = useCallback(async (selected: Stream, ordinal = 0) => {
     const result: { items: PositionRow[]; nextOrdinal?: number } = await call('recordingPositions', { position: selected.first, ordinal, limit: 100 });
-    if (streamRef.current !== selected) return;
-    const next = ordinal ? [...positionsRef.current, ...result.items] : result.items;
+    if (!mounted.current || streamRef.current !== selected) return;
+    const next = ordinal ? [...positionsRef.current, ...result.items].slice(-500) : result.items;
     positionsRef.current = next; nextOrdinalRef.current = result.nextOrdinal;
     setPositions(next); setNextOrdinal(result.nextOrdinal);
   }, [call]);
   useEffect(() => {
+    mounted.current = true;
     const token = ++loadToken.current;
     setStreams([]); setStream(null); setPositions([]); setStreamCursor(''); setError('');
     void call('recordingStreams', { recordingId, limit: 50 }).then((page: { items: Stream[]; nextCursor?: string }) => {
@@ -78,7 +87,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
         requestedHandled.current = requestedPosition ? `${requestedPosition.recordingId}/${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}/${requestedPosition.eventSeq}` : '';
         void seek(requestedPosition || first.first); }
     }).catch(failure => { if (token === loadToken.current) setError(String(failure)); });
-    return () => { ++loadToken.current; ++seekToken.current; playRef.current = false; setPlaying(false); const current = hostRef.current;
+    return () => { mounted.current = false; ++loadToken.current; ++seekToken.current; playRef.current = false; const current = hostRef.current;
       hostRef.current = null; if (current) void call('closeReplay', { replayId: current.replayId }).catch(() => undefined); };
   }, [projectId, recordingId, call, loadPositions, seek]);
   const requestedKey = requestedPosition && `${requestedPosition.recordingId}/${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}/${requestedPosition.eventSeq}`;
@@ -92,19 +101,22 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   }, [requestedKey, streams, loadPositions, seek]);
   useEffect(() => {
     const current = hostRef.current;
-    if (!current) return;
+    if (!current || current.status !== 'ready' || current.selecting === selecting) return;
+    const generation = current.generation;
     void call('selectReplay', { replayId: current.replayId, enabled: selecting }).then((next: Host) => {
-      if (hostRef.current?.replayId === next.replayId) { hostRef.current = next; setHost(next); }
-    }).catch(failure => setError(String(failure)));
-  }, [selecting, call, host?.replayId]);
+      if (mounted.current && hostRef.current?.replayId === next.replayId && hostRef.current.generation === generation &&
+        next.generation === generation && selectingRef.current === selecting) { hostRef.current = next; setHost(next); }
+    }).catch(failure => { if (mounted.current && hostRef.current?.replayId === current.replayId && hostRef.current.generation === generation) setError(String(failure)); });
+  }, [selecting, call, host?.replayId, host?.status]);
   useEffect(() => {
     if (!host?.replayId) return;
     const timer = setInterval(() => {
       const current = hostRef.current;
       if (!current) return;
+      const token = seekToken.current;
       void call('replayStatus', { replayId: current.replayId }).then((next: Host) => {
         const previous = hostRef.current;
-        if (previous?.replayId !== next.replayId || next.generation < previous.generation) return;
+        if (!mounted.current || token !== seekToken.current || previous?.replayId !== next.replayId || next.generation < previous.generation) return;
         hostRef.current = next; setHost(next);
         if (next.status === 'failed') setError(next.error || '历史回放不可用');
         if (next.position && (!same(previous.position, next.position) || previous.state?.reliability !== next.state?.reliability)) {
@@ -112,36 +124,60 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
         }
         if (next.selection && (next.selectionSequence || 0) > pollSelection.current) { pollSelection.current = next.selectionSequence || 0; onTarget(next.selection); }
         if (selecting && !next.selecting && previous.selecting) onCancelSelection();
-      }).catch(failure => setError(String(failure)));
+      }).catch(failure => { if (mounted.current && token === seekToken.current && hostRef.current?.replayId === current.replayId && hostRef.current.generation === current.generation) setError(String(failure)); });
     }, 200);
     return () => clearInterval(timer);
   }, [host?.replayId, call, onTarget, onPosition, selecting, onCancelSelection]);
-  const advance = useCallback(async () => {
-    if (!playRef.current || !streamRef.current || advancePending.current) return;
-    advancePending.current = true;
-    try {
-    const current = positionRef.current;
-    let rows = positionsRef.current;
-    let next = rows.find(item => current && item.position.eventSeq > current.eventSeq)?.position;
-    if (!next && nextOrdinalRef.current !== undefined) {
-      await loadPositions(streamRef.current, nextOrdinalRef.current);
-      rows = positionsRef.current;
-      next = rows.find(item => current && item.position.eventSeq > current.eventSeq)?.position;
+  const nextPosition = useCallback(async (): Promise<ReplayPosition | null> => {
+    const selected = streamRef.current, current = positionRef.current;
+    if (!selected || !current) return null;
+    const loaded = positionsRef.current.find(item => item.position.eventSeq > current.eventSeq);
+    if (loaded) return loaded.position;
+    // A direct seek may be far beyond the loaded page. Binary search archive ordinals
+    // instead of scanning or retaining the entire recording in renderer memory.
+    let low = 0, high = selected.events;
+    while (low < high && playRef.current && streamRef.current === selected) {
+      const middle = Math.floor((low + high) / 2);
+      const page: { items: PositionRow[] } = await call('recordingPositions', { position: selected.first, ordinal: middle, limit: 1 });
+      const row = page.items[0];
+      if (!row) throw new Error('历史位置索引不完整。');
+      if (row.position.eventSeq <= current.eventSeq) low = middle + 1; else high = middle;
     }
-    if (!playRef.current) return;
-    if (!next) { playRef.current = false; setPlaying(false); return; }
-    const token = ++seekToken.current;
-    try { const currentHost = hostRef.current; if (!currentHost) return;
-      const updated: Host = await call('seekReplay', { replayId: currentHost.replayId, position: next });
-      applyHost(updated, token);
-    } catch (failure) { playRef.current = false; setPlaying(false); setError(String(failure)); }
-    } finally { advancePending.current = false; }
-  }, [applyHost, call, loadPositions]);
+    if (!playRef.current || streamRef.current !== selected || low >= selected.events) return null;
+    await loadPositions(selected, low);
+    return positionsRef.current.find(item => item.position.eventSeq > current.eventSeq)?.position || null;
+  }, [call, loadPositions]);
   useEffect(() => {
     if (!playing) return;
-    const timer = setInterval(() => void advance(), Math.max(100, 500 / speed));
-    return () => clearInterval(timer);
-  }, [playing, speed, advance]);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = async () => {
+      if (cancelled || !playRef.current || advancePending.current) return;
+      advancePending.current = true;
+      try {
+        const next = await nextPosition();
+        if (cancelled || !playRef.current) return;
+        if (!next) { playRef.current = false; setPlaying(false); return; }
+        const elapsed = Math.max(0, next.sourceTimeMs - (positionRef.current?.sourceTimeMs ?? next.sourceTimeMs));
+        // Keep same-millisecond events ordered and compress long idle periods.
+        const delay = Math.max(16, Math.min(3000, elapsed / speedRef.current));
+        timer = setTimeout(async () => {
+          if (cancelled || !playRef.current) return;
+          const currentHost = hostRef.current;
+          if (!currentHost) { playRef.current = false; setPlaying(false); return; }
+          const token = ++seekToken.current;
+          try {
+            const updated: Host = await call('seekReplay', { replayId: currentHost.replayId, position: next });
+            if (!cancelled && mounted.current && token === seekToken.current) applyHost(updated, token);
+          } catch (failure) { if (!cancelled) { playRef.current = false; setPlaying(false); setError(String(failure)); } }
+          finally { advancePending.current = false; if (!cancelled && playRef.current) void schedule(); }
+        }, delay);
+      } catch (failure) { if (!cancelled) { playRef.current = false; setPlaying(false); setError(String(failure)); } }
+      finally { if (!timer) advancePending.current = false; }
+    };
+    void schedule();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); advancePending.current = false; };
+  }, [playing, speed, nextPosition, call, applyHost]);
   useEffect(() => {
     if (!selecting) return;
     const cancel = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation();
