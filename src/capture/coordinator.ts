@@ -14,6 +14,8 @@ import type { ReplayPosition } from '@/contracts/recording';
 import { CaptureBudget, DeferredBodyReads, type CaptureChannel } from './budget';
 import { ResourceCapture, isArchivableResource, privateResourceUrl, RESOURCE_MAX_BYTES } from '@/resources/archive';
 import { responsePrivacy } from './privacy';
+import { captureMetadata, credentialUrl } from './url-privacy';
+import type { ArtifactInput } from '@/evidence/contracts';
 
 export interface PageIdentity { pageId:string; targetId:string; webContentsId:number; navigationGeneration:number; openerPageId?:string; }
 const BODY_LIMIT = 8 * 1024 * 1024;
@@ -79,7 +81,7 @@ export class CaptureCoordinator {
     const release=this.budget.reserve(channel,estimatedBytes);
     if(!release) { this.drops++;this.droppedChannels.set(channel,(this.droppedChannels.get(channel)||0)+1);if(channel==='structure'||channel==='metadata')this.recoveryNeeded=true;this.fail('Capture queue reached its bounded '+channel+' budget');return false; }
     this.pendingBytes+=estimatedBytes;
-    const p=work().catch(async error=>{this.fail(String(error));await this.store.appendEvent({type:'gap',source:'capture',pageId:this.identity.pageId,data:{reason:String(error),category:channel==='network'?'resource':channel,from:this.lastPosition}}).catch(failure=>{this.fail('Cannot persist capture gap: '+String(failure));});}).finally(()=>{this.pending.delete(p);this.pendingBytes-=estimatedBytes;release();this.recoverSnapshot();});
+    const p=work().catch(async error=>{this.fail(String(error));await this.store.appendEvent({type:'gap',source:'capture',pageId:this.identity.pageId,data:captureMetadata({reason:String(error),category:channel==='network'?'resource':channel,from:this.lastPosition})}).catch(failure=>{this.fail('Cannot persist capture gap: '+String(failure));});}).finally(()=>{this.pending.delete(p);this.pendingBytes-=estimatedBytes;release();this.recoverSnapshot();});
     this.pending.add(p);
     return true;
   }
@@ -91,9 +93,10 @@ export class CaptureCoordinator {
     void task;
   }
   private async unfinished(requests:CapturedRequest[],reason:string){
-    for(const request of requests){const artifact=await this.store.putArtifact({kind:'response-body',mediaType:request.mime||'application/octet-stream',captureStatus:request.streaming?'unknown':'missing',reason,source:{requestKey:request.key,url:request.url,frameId:request.frameId}});await this.event('gap',{reason,requestKey:request.key,url:request.url,startedAt:request.startedAt,endedAt:new Date().toISOString(),streaming:!!request.streaming},[artifact.id]);}
+    for(const request of requests){const artifact=await this.artifact({kind:'response-body',mediaType:request.mime||'application/octet-stream',captureStatus:request.streaming?'unknown':'missing',reason,source:{requestKey:request.key,url:request.url,frameId:request.frameId}});await this.event('gap',{reason,requestKey:request.key,url:request.url,startedAt:request.startedAt,endedAt:new Date().toISOString(),streaming:!!request.streaming},[artifact.id]);}
   }
-  private event(type:string,data:unknown, artifactRefs?:string[],navigationGeneration=this.identity.navigationGeneration) { return this.store.appendEvent({type,source:'cdp',pageId:this.identity.pageId,navigationGeneration,data,artifactRefs}); }
+  private event(type:string,data:unknown, artifactRefs?:string[],navigationGeneration=this.identity.navigationGeneration) { return this.store.appendEvent({type,source:'cdp',pageId:this.identity.pageId,navigationGeneration,data:captureMetadata(data),artifactRefs}); }
+  private artifact(input:ArtifactInput){const{data,...metadata}=input;return this.store.putArtifact({...captureMetadata(metadata),data});}
   async start() {
     this.cdp=await this.page.createCDPSession();
     const cdp=this.cdp as any;
@@ -132,9 +135,9 @@ export class CaptureCoordinator {
         if(previous&&!e.redirectResponse)await this.unfinished([previous],'request-id-reused-before-completion');
         if(e.redirectResponse&&previous)await this.event('network-redirect',{requestKey:previous.key,nextRequestKey:current.key,response:{...e.redirectResponse,headers:redact(e.redirectResponse.headers)}});
         else if(e.redirectResponse)await this.event('gap',{reason:'redirect-origin-not-observed',requestKey:current.key});
-        const artifact=await this.store.putArtifact(await body);
+        const artifact=await this.artifact(await body);
         const captured={...data,requestBodyArtifactId:artifact.id};
-        await this.store.appendRaw('cdp',{method:'Network.requestWillBeSent',...captured}); await this.event('network-request',captured,[artifact.id],navigationGeneration);
+        await this.store.appendRaw('cdp',captureMetadata({method:'Network.requestWillBeSent',...captured})); await this.event('network-request',captured,[artifact.id],navigationGeneration);
         await this.event('network-request-body',{requestKey:current.key,captureStatus:artifact.captureStatus,capturedBytes:artifact.capturedBytes,originalBytes:artifact.originalBytes,reason:artifact.reason},[artifact.id],navigationGeneration);
         if(['missing','truncated','read-failed','unknown'].includes(artifact.captureStatus))await this.event('gap',{reason:artifact.reason||'request-body-incomplete',requestKey:current.key,captureStatus:artifact.captureStatus},[artifact.id],navigationGeneration);
       },Buffer.byteLength(JSON.stringify(data))+(typeof e.request.postData==='string'?Math.min(Buffer.byteLength(e.request.postData),REQUEST_BODY_LIMIT):e.request.hasPostData||e.request.postDataEntries?.length?REQUEST_BODY_LIMIT:0));
@@ -142,31 +145,33 @@ export class CaptureCoordinator {
     cdp.on('Network.responseReceived',(e:any)=>{if(this.paused||this.stopped)return;const r=this.requests.response(e.requestId,e.response.mimeType);this.task(async()=>{
       await this.event('network-response',{requestKey:r?.key,response:{...e.response,headers:redact(e.response.headers)}});
       if(!r)await this.event('gap',{reason:'response-without-observed-request',requestId:e.requestId,url:e.response.url});
-      if(r?.streaming){const artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime,captureStatus:'unknown',reason:'SSE payload completeness unsupported; connection may remain open',source:{requestKey:r.key,url:r.url}});await this.event('network-stream',{requestKey:r.key,url:r.url,completeness:'unsupported'},[artifact.id]);}
+      if(r?.streaming){const artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:'unknown',reason:'SSE payload completeness unsupported; connection may remain open',source:{requestKey:r.key,url:r.url}});await this.event('network-stream',{requestKey:r.key,url:r.url,completeness:'unsupported'},[artifact.id]);}
     });});
-    cdp.on('Network.loadingFinished',(e:any)=>{if(this.paused||this.stopped)return;const r=this.requests.finish(e.requestId);this.bodyTask(async()=>{
+    cdp.on('Network.loadingFinished',(e:any)=>{if(this.paused||this.stopped)return;const responseRead=this.requests.acquireResponseRead(e.requestId),r=this.requests.finish(e.requestId);const accepted=this.bodyTask(async()=>{try{
       if(!r){await this.event('gap',{reason:'completion-without-observed-request',requestId:e.requestId});return;}
       if(r.streaming){await this.event('network-stream-ended',{requestKey:r.key,encodedDataLength:e.encodedDataLength,completeness:'unsupported'});return;}
       let artifact;
       const resource=isArchivableResource(r.mime),position=await this.currentSourcePosition();
       const resourceInput=position?{position,frameId:!r.frameId||r.frameId===this.frameId?'top':r.frameId,requestId:r.key,url:r.url,mediaType:r.mime,source:{encodedDataLength:e.encodedDataLength}}:undefined;
-      if(!resource&&!/json|text|html|xml|javascript|svg|x-www-form-urlencoded/i.test(r.mime)) artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime||'application/octet-stream',captureStatus:'excluded',reason:'Binary response metadata only',source:{requestKey:r.key,url:r.url}});
+      if(!resource&&!/json|text|html|xml|javascript|svg|x-www-form-urlencoded/i.test(r.mime)) artifact=await this.artifact({kind:'response-body',mediaType:r.mime||'application/octet-stream',captureStatus:'excluded',reason:'Binary response metadata only',source:{requestKey:r.key,url:r.url}});
       else if(privateResourceUrl(r.url)){
         if(resource&&resourceInput)await this.resources.capture({...resourceInput,status:'redacted',reason:'credential-bearing-resource-url'});
-        artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime,captureStatus:'excluded',reason:'credential-bearing-response-url',source:{requestKey:r.key,url:'[redacted]'}});
+        artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:'excluded',reason:'credential-bearing-response-url',source:{requestKey:r.key,url:'[redacted]'}});
       } else try {
+        if(responseRead.invalidated)throw new Error(responseRead.invalidated);
         const body=await cdp.send('Network.getResponseBody',{requestId:e.requestId});
+        if(responseRead.invalidated)throw new Error(responseRead.invalidated);
         if(body.body.length>(body.base64Encoded?Math.ceil(BODY_LIMIT/3)*4:BODY_LIMIT))throw new Error('response-decoded-byte-budget');
         const bytes=Buffer.from(body.body,body.base64Encoded?'base64':'utf8');
         if(bytes.length>BODY_LIMIT)throw new Error('response-decoded-byte-budget');
         if(resource&&resourceInput)await this.resources.capture({...resourceInput,data:bytes});
-        if(resource&&!/text|svg/i.test(r.mime))artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime,captureStatus:'excluded',reason:'Binary bytes captured in offline resource archive',source:{requestKey:r.key,url:r.url}});
-        else {const safe=responsePrivacy(bytes,r.mime);artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime,data:safe.data,limitBytes:BODY_LIMIT,...(safe.excludedReason?{captureStatus:'excluded' as const,reason:safe.excludedReason}:{}),metadata:{privacyRedacted:safe.redacted,representation:safe.redacted?'privacy-redacted-response':'observed-response'},source:{requestKey:r.key,url:r.url,frameId:r.frameId}});}
+        if(resource&&!/text|svg/i.test(r.mime))artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:'excluded',reason:'Binary bytes captured in offline resource archive',source:{requestKey:r.key,url:r.url}});
+        else {const safe=responsePrivacy(bytes,r.mime);artifact=await this.artifact({kind:'response-body',mediaType:r.mime,data:safe.data,limitBytes:BODY_LIMIT,...(safe.excludedReason?{captureStatus:'excluded' as const,reason:safe.excludedReason}:{}),metadata:{privacyRedacted:safe.redacted,representation:safe.redacted?'privacy-redacted-response':'observed-response'},source:{requestKey:r.key,url:r.url,frameId:r.frameId}});}
       }
-      catch(error){if(resource&&resourceInput)await this.resources.capture({...resourceInput,status:'failed',reason:'observed-response-body-unavailable'});artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime,captureStatus:'read-failed',reason:String(error),source:{requestKey:r.key,url:r.url}});}
+      catch{const reason=responseRead.invalidated??'observed-response-body-unavailable';if(resource&&resourceInput)await this.resources.capture({...resourceInput,status:'failed',reason});artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:responseRead.invalidated?'missing':'read-failed',reason,source:{requestKey:r.key,url:r.url}});}
       await this.event('network-body',{requestKey:r.key,url:r.url,encodedDataLength:e.encodedDataLength},[artifact.id]);
-    },Buffer.byteLength(JSON.stringify({event:e,request:r}))+256,isArchivableResource(r?.mime||'')?'resource':'network');});
-    cdp.on('Network.loadingFailed',(e:any)=>{if(this.paused||this.stopped)return;const r=this.requests.finish(e.requestId);this.task(async()=>{const artifact=r?await this.store.putArtifact({kind:'response-body',mediaType:r.mime||'application/octet-stream',captureStatus:'missing',reason:e.errorText||'Network request failed',source:{requestKey:r.key,url:r.url}}):undefined;await this.event('network-failed',{...e,requestKey:r?.key},artifact?[artifact.id]:undefined);});});
+    }finally{responseRead.release();}},Buffer.byteLength(JSON.stringify({event:e,request:r}))+256,isArchivableResource(r?.mime||'')?'resource':'network');if(!accepted)responseRead.release();});
+    cdp.on('Network.loadingFailed',(e:any)=>{if(this.paused||this.stopped)return;const r=this.requests.finish(e.requestId);this.task(async()=>{const artifact=r?await this.artifact({kind:'response-body',mediaType:r.mime||'application/octet-stream',captureStatus:'missing',reason:e.errorText||'Network request failed',source:{requestKey:r.key,url:r.url}}):undefined;await this.event('network-failed',{...e,requestKey:r?.key},artifact?[artifact.id]:undefined);});});
     cdp.on('Network.webSocketCreated',(e:any)=>{if(!this.paused)this.task(()=>this.event('gap',{reason:'WebSocket payload completeness unsupported',...e}));});
     cdp.on('Disconnected',()=>{if(!this.stopped){this.fail('Capture CDP disconnected');const unfinished=this.requests.reset();this.task(async()=>{await this.event('gap',{reason:'capture CDP disconnected'});await this.unfinished(unfinished,'capture-disconnected-in-flight');});}});
     await cdp.send('Runtime.enable'); await cdp.send('Page.enable');
@@ -176,7 +181,7 @@ export class CaptureCoordinator {
     // recursively would instrument those helpers and create an iframe loop.
     // P0 records the top document; rrweb handles reachable child DOM itself.
     const config={binding:this.binding,recordingId:this.store.manifest.id,pageId:this.identity.pageId,checkoutEveryNms:30000,checkoutEveryNth:500};
-    const script = `(function(){if(window!==window.top)return;\n${instrumentRecorder(recorder)}\n;(${installSourceRecorder.toString()})(${JSON.stringify(config)});(${observe.toString()})(${JSON.stringify(this.binding)});})();`;
+    const script = `(function(){if(window!==window.top)return;\n${instrumentRecorder(recorder)}\n;const urlPrivacy=(${credentialUrl.toString()});(${installSourceRecorder.toString()})(${JSON.stringify(config)},urlPrivacy);(${observe.toString()})(${JSON.stringify(this.binding)},urlPrivacy);})();`;
     this.scriptId=(await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:script,worldName:this.world})).identifier;
     const {frameTree}=await cdp.send('Page.getFrameTree'); this.frameId=frameTree.frame.id;
     const {executionContextId}=await cdp.send('Page.createIsolatedWorld',{frameId:this.frameId,worldName:this.world});
@@ -250,10 +255,10 @@ export class CaptureCoordinator {
       }
     }
     const wasPaused=this.paused;this.stopped=true;this.inspectionEnabled=false;
-    this.unfinishedOnStop??=this.requests.reset();
     // Accepted body descriptors still need the capture CDP connection. Stop
     // accepting new events first, drain durable reads, then detach the observer.
     await this.flush();
+    this.unfinishedOnStop??=this.requests.reset();
     if(this.cdp&&!this.cdp.detached)await this.cdp.detach().catch(error=>{if(!this.page.isClosed()&&!this.documentGone)throw error;});
     await this.flush();if(this.unknownStructuralLoss){await this.event('gap',{category:'structure',reason:'oversized-final-recorder-event-unknown-boundary',from:this.lastPosition,to:'unknown',finalEmissionLost:true});await this.store.flush();throw new Error('Final source event exceeded its budget; capture remains incomplete');}if(wasPaused&&!this.pausedStopRecorded){await this.event('gap',{reason:'recording-paused',startedAt:this.pauseAt,endedAt:new Date().toISOString(),endedBy:'capture-stop'});this.pausedStopRecorded=true;}
     while(this.unfinishedOnStop.length){await this.unfinished([this.unfinishedOnStop[0]!],'capture-stopped-in-flight');this.unfinishedOnStop.shift();}
@@ -261,10 +266,10 @@ export class CaptureCoordinator {
   }
 }
 
-function observe(binding:string) {
+function observe(binding:string,urlPrivacy:(value:string,base?:string)=>boolean) {
   const w=window as any; if(w.__besInstalled)return; w.__besInstalled=true;
   const emit=(data:Record<string,unknown>)=>{try{w[binding](JSON.stringify({...data,isTop:window===window.top}));}catch{}};
-  const describe=(el:Element)=>{const privateText=!!el.closest('.rr-mask,.rr-block')||/^(input|textarea|select|option)$/i.test(el.localName);return{tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),name:privateText?'[redacted]':el.getAttribute('aria-label'),text:privateText?'[redacted]':(el.textContent||'').trim().slice(0,400),selectors:privateText?[]:[el.id?'#'+CSS.escape(el.id):null,el.getAttribute('data-testid')?'[data-testid='+JSON.stringify(el.getAttribute('data-testid'))+']':null].filter(Boolean),rect:el.getBoundingClientRect().toJSON(),url:location.href};};
+  const describe=(el:Element)=>{const privateText=!!el.closest('.rr-mask,.rr-block')||/^(input|textarea|select|option)$/i.test(el.localName);return{tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),name:privateText?'[redacted]':el.getAttribute('aria-label'),text:privateText?'[redacted]':(el.textContent||'').trim().slice(0,400),selectors:privateText?[]:[el.id?'#'+CSS.escape(el.id):null,el.getAttribute('data-testid')?'[data-testid='+JSON.stringify(el.getAttribute('data-testid'))+']':null].filter(Boolean),rect:el.getBoundingClientRect().toJSON(),url:urlPrivacy(location.href)?'[redacted credential URL]':location.href};};
   const listeners=new AbortController(),options={capture:true,signal:listeners.signal};
   let highlighted:HTMLElement|undefined;
   document.addEventListener('pointermove',e=>{if(!w.__besInspect)return; if(highlighted)highlighted.style.removeProperty('outline');highlighted=e.target as HTMLElement; highlighted.style.outline='2px solid #19bda0';},options);

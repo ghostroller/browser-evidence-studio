@@ -1,5 +1,6 @@
 import type { ArtifactInput } from '@/evidence/contracts';
 import type { RequestBodyRead } from './request-ledger';
+import { captureMetadata, redactUrlText } from './url-privacy';
 
 export const REQUEST_BODY_LIMIT = 8 * 1024 * 1024;
 const credentialPattern = /password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key/i;
@@ -15,13 +16,13 @@ export interface NetworkRequest {
 }
 
 export const redactHeaders = (headers: Record<string, unknown> = {}) => Object.fromEntries(
-  Object.entries(headers).map(([key, value]) => [key, credentialPattern.test(key) ? '[excluded credential]' : value]),
+  Object.entries(headers).map(([key, value]) => [key, credentialPattern.test(key) ? '[excluded credential]' : typeof value === 'string' ? redactUrlText(value) : value]),
 );
 
 /** Never duplicate either textual or base64-encoded bodies into raw/event metadata. */
 export function requestMetadata(request: NetworkRequest): Omit<NetworkRequest, 'postData' | 'postDataEntries'> {
   const { postData: _postData, postDataEntries: _entries, ...metadata } = request;
-  return { ...metadata, headers: redactHeaders(request.headers) };
+  return captureMetadata({ ...metadata, headers: redactHeaders(request.headers) });
 }
 
 function header(request: NetworkRequest, name: string): string | undefined {
@@ -50,7 +51,7 @@ export interface RequestBodyOptions {
 export async function captureRequestBody(request: NetworkRequest, options: RequestBodyOptions): Promise<ArtifactInput> {
   const contentType = header(request, 'content-type');
   const mediaType = contentType?.split(';', 1)[0].trim().toLowerCase() || 'text/plain';
-  const base: ArtifactInput = { kind: 'request-body', mediaType, limitBytes: options.limitBytes ?? REQUEST_BODY_LIMIT, source: options.source };
+  const base: ArtifactInput = { kind: 'request-body', mediaType, limitBytes: options.limitBytes ?? REQUEST_BODY_LIMIT, source: captureMetadata(options.source) };
   const state = (captureStatus: ArtifactInput['captureStatus'], reason: string): ArtifactInput => ({ ...base, captureStatus, reason });
   const declared = header(request, 'content-length');
   const declaredBytes = declared !== undefined && /^\d+$/.test(declared) && Number.isSafeInteger(Number(declared)) ? Number(declared) : undefined;
