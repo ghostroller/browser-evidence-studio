@@ -1,5 +1,5 @@
 import { parse, serialize, type DefaultTreeAdapterTypes } from 'parse5';
-import { credentialUrl, redactUrlText } from './url-privacy';
+import { captureError, credentialUrl, redactUrlText } from './url-privacy';
 import { rewriteCssUrls } from '@/resources/rewrite';
 
 const credential = /password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key/i;
@@ -23,12 +23,12 @@ export function redactHtml(html: string): { text: string; redacted: boolean } {
   visit(document); return { text: redacted ? serialize(document) : html, redacted };
 }
 
-export function responsePrivacy(bytes: Buffer, mediaType: string): { data?: Buffer; redacted: boolean; excludedReason?: string } {
+export function responsePrivacy(bytes: Buffer, mediaType: string): { data?: Buffer; redacted: boolean; excludedReason?: string; privacyError?: ReturnType<typeof captureError> } {
   if (/^(text\/html|application\/xhtml\+xml)(?:;|$)/i.test(mediaType)) {
     const result = redactHtml(bytes.toString('utf8')); return { data: result.redacted ? Buffer.from(result.text) : bytes, redacted: result.redacted };
   }
   if (/json/i.test(mediaType)) {
-    let value: unknown; try { value = JSON.parse(bytes.toString('utf8')); } catch { return { data: bytes, redacted: false }; }
+    let value: unknown; try { value = JSON.parse(bytes.toString('utf8')); } catch(error) { return { redacted: true, excludedReason: 'response-json-privacy-unverifiable', privacyError: captureError(error) }; }
     let redacted = false;
     function visit(input: unknown, depth = 0): unknown {
       if (depth > 256) throw new Error('Response privacy nesting budget');

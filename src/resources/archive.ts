@@ -110,17 +110,25 @@ export class ResourceArchive {
   async resolve(url:string,position:ReplayPosition,frameId='top'):Promise<ArchivedResource|undefined>{
     const relative=`resource-url-index/${hashBytes(url)}.jsonl`;
     if(!await exists(path.join(this.runDir,relative)))return undefined;
-    let selected:{id:string;position:ReplayPosition;frameId:string}|undefined,count=0;
+    const candidates:Array<{id:string;position:ReplayPosition;frameId:string}>=[];let count=0;
     for await(const line of jsonLines(await safeFile(this.runDir,relative))){
       if(++count>10000)throw new EvidenceError('RESOURCE_INDEX_BUDGET','Resource URL history exceeds bounded scan budget',413);
       if(line.invalid)throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Resource URL index is incomplete; rebuild from resource-reference events',409);
       const entry=line.value as unknown as {id:string;position:ReplayPosition;frameId:string};
-      if(entry.frameId===frameId&&entry.position.recordingId===position.recordingId&&entry.position.pageId===position.pageId&&entry.position.documentId===position.documentId&&entry.position.streamEpoch===position.streamEpoch&&entry.position.eventSeq<=position.eventSeq&&(!selected||entry.position.eventSeq>=selected.position.eventSeq))selected=entry;
+      parseReplayPosition(entry.position);
+      if(entry.frameId===frameId&&entry.position.recordingId===position.recordingId&&entry.position.pageId===position.pageId&&entry.position.documentId===position.documentId&&entry.position.streamEpoch===position.streamEpoch&&entry.position.eventSeq<=position.eventSeq)candidates.push(entry);
     }
-    if(!selected)return undefined;
-    const reference=await this.reference(selected.id);
-    if(reference.originalUrl.status!=='present'||reference.originalUrl.value!==url||!sameReplayPosition(reference.position,selected.position)||reference.frameId!==selected.frameId||reference.frameId!==frameId)throw new EvidenceError('RESOURCE_INDEX_MISMATCH','Resource URL index does not match its immutable manifest',409);
-    return reference;
+    let probeFailure:ArchivedResource|undefined;
+    for(const selected of candidates.reverse().sort((a,b)=>b.position.eventSeq-a.position.eventSeq)){
+      const reference=await this.reference(selected.id);
+      if(reference.originalUrl.status!=='present'||reference.originalUrl.value!==url||!sameReplayPosition(reference.position,selected.position)||reference.frameId!==selected.frameId||reference.frameId!==frameId)throw new EvidenceError('RESOURCE_INDEX_MISMATCH','Resource URL index does not match its immutable manifest',409);
+      // A cache probe returning no bytes is an observation failure, not a new
+      // resource version. Keep its original, but never let it erase an actual
+      // request's captured OR failed version at this historical position.
+      if(reference.source.fromCache&&!reference.requestId&&['failed','missing'].includes(reference.status)){probeFailure??=reference;continue;}
+      return reference;
+    }
+    return probeFailure;
   }
   /** Manifest listing is bounded by count; callers use the next ID as cursor. */
   async list(limit = 128, after?: string): Promise<{ items: ArchivedResource[]; nextCursor?: string }> {
