@@ -72,6 +72,10 @@ async function createJson(file: string, value: unknown): Promise<void> {
 }
 
 interface ProjectPaths { material: string; drafts: string; revisions: string }
+export type DraftSummary = { draftId: string; status: 'available'; draftRevision: number; updatedAt: string; author: MaterialAuthor; baseRevisionId?: string } |
+  { draftId: string; status: 'unavailable'; reason: string };
+export type RevisionSummary = { revisionId: string; status: 'available'; contentHash: string; createdAt: string; author: MaterialAuthor; parentRevisionId?: string } |
+  { revisionId: string; status: 'unavailable'; reason: string };
 /** Production adapter must resolve these against A's recorded replay/source index. */
 export interface MaterialSourceVerifier {
   position(position: ReplayPosition): Promise<'reliable' | 'gap' | 'unsupported'>;
@@ -269,6 +273,82 @@ export class FileMaterialService implements MaterialService {
       ...(next < all.length ? { nextCursor: Buffer.from(JSON.stringify({ query, offset: next })).toString('base64url') } : {}) });
     if (page.returnedBytes > maxBytes) throw new MaterialError('READ_BUDGET_EXCEEDED', 'Material page exceeds maxBytes.', 413);
     return page;
+  }
+  listDrafts(projectId: string, budget: ReadBudget): Promise<BoundedPage<DraftSummary>> {
+    return this.listSummaries(projectId, 'draft', budget);
+  }
+  listRevisions(projectId: string, budget: ReadBudget): Promise<BoundedPage<RevisionSummary>> {
+    return this.listSummaries(projectId, 'revision', budget);
+  }
+  private async listSummaries(projectId: string, kind: 'draft', budget: ReadBudget): Promise<BoundedPage<DraftSummary>>;
+  private async listSummaries(projectId: string, kind: 'revision', budget: ReadBudget): Promise<BoundedPage<RevisionSummary>>;
+  private async listSummaries(projectId: string, kind: 'draft' | 'revision', budget: ReadBudget): Promise<BoundedPage<DraftSummary | RevisionSummary>> {
+    const { maxBytes, limit, cursor } = budget;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > 1024 * 1024 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
+      throw new MaterialError('INVALID_BUDGET', 'Material listing budget is outside supported limits.');
+    }
+    return this.withProject(projectId, async (root, paths) => {
+      const folder = kind === 'draft' ? paths.drafts : paths.revisions;
+      const before = await fs.stat(folder, { bigint: true });
+      const query = createHash('sha256').update(`${projectId}:${kind}:${before.dev}:${before.ino}:${before.mtimeNs}`).digest('hex');
+      let afterId = '';
+      if (cursor !== undefined) {
+        if (cursor.length > 4096) throw new MaterialError('INVALID_CURSOR', 'Material listing cursor is too long.');
+        let parsed: unknown;
+        try { parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { throw new MaterialError('INVALID_CURSOR', 'Material listing cursor is malformed.'); }
+        if (!isRecord(parsed) || parsed.query !== query || typeof parsed.afterId !== 'string') throw new MaterialError('INVALID_CURSOR', 'Material listing cursor is stale or belongs to another collection.');
+        afterId = id(parsed.afterId, 'cursor.afterId');
+      }
+      // opendir need not return sorted entries; keep only the next limit+1 IDs.
+      const candidates: string[] = [];
+      for await (const entry of await fs.opendir(folder)) {
+        if (!entry.name.endsWith('.json')) continue;
+        if (entry.isSymbolicLink()) throw new MaterialError('INVALID_PATH', 'Material listing contains a symbolic link.');
+        if (!entry.isFile()) throw new MaterialError('INVALID_PATH', 'Material listing contains a non-file entry.');
+        const entryId = entry.name.slice(0, -5);
+        id(entryId, 'material file ID');
+        if (entryId <= afterId) continue;
+        candidates.push(entryId);
+        candidates.sort();
+        if (candidates.length > limit + 1) candidates.pop();
+      }
+      const items: Array<DraftSummary | RevisionSummary> = [];
+      for (const candidateId of candidates.slice(0, limit)) {
+        let summary: DraftSummary | RevisionSummary;
+        try {
+          if (kind === 'draft') {
+            const draft = await this.storedDraft(projectId, candidateId, root, paths);
+            summary = { draftId: candidateId, status: 'available', draftRevision: draft.draftRevision,
+              updatedAt: draft.updatedAt, author: draft.author, ...(draft.baseRevisionId ? { baseRevisionId: draft.baseRevisionId } : {}) };
+          } else {
+            const revision = await this.storedRevision(projectId, candidateId, root, paths);
+            summary = { revisionId: candidateId, status: 'available', contentHash: revision.contentHash,
+              createdAt: revision.createdAt, author: revision.author, ...(revision.parentRevisionId ? { parentRevisionId: revision.parentRevisionId } : {}) };
+          }
+        } catch (error) {
+          if (!(error instanceof MaterialError) || !['INVALID_RECORD', 'HASH_MISMATCH', 'NOT_FOUND', 'MATERIAL_TOO_LARGE'].includes(error.code)) throw error;
+          summary = kind === 'draft' ? { draftId: candidateId, status: 'unavailable', reason: error.code } :
+            { revisionId: candidateId, status: 'unavailable', reason: error.code };
+        }
+        const candidate = [...items, summary];
+        const hasMore = candidateId !== candidates.at(-1) || candidates.length > limit;
+        const preview = measured<BoundedPage<DraftSummary | RevisionSummary>>({ items: candidate, outputTruncated: hasMore,
+          ...(hasMore ? { nextCursor: Buffer.from(JSON.stringify({ query, afterId: candidateId })).toString('base64url') } : {}) });
+        if (preview.returnedBytes > maxBytes) {
+          if (!items.length) throw new MaterialError('READ_BUDGET_EXCEEDED', 'One material summary exceeds maxBytes.', 413);
+          break;
+        }
+        items.push(summary);
+      }
+      const after = await fs.stat(folder, { bigint: true });
+      if (before.mtimeNs !== after.mtimeNs || before.ino !== after.ino || before.dev !== after.dev) throw new MaterialError('LIST_CHANGED', 'Material listing changed during this read; restart from the first page.', 409);
+      const lastId = items.length ? kind === 'draft' ? (items.at(-1) as DraftSummary).draftId : (items.at(-1) as RevisionSummary).revisionId : afterId;
+      const hasMore = candidates.some(candidate => candidate > lastId);
+      const page = measured<BoundedPage<DraftSummary | RevisionSummary>>({ items, outputTruncated: hasMore,
+        ...(hasMore ? { nextCursor: Buffer.from(JSON.stringify({ query, afterId: lastId })).toString('base64url') } : {}) });
+      if (page.returnedBytes > maxBytes) throw new MaterialError('READ_BUDGET_EXCEEDED', 'Material summary page exceeds maxBytes.', 413);
+      return page;
+    });
   }
   async diff(projectId: string, fromRevisionId: string, toRevisionId: string, budget: ReadBudget): Promise<BoundedPage<MaterialDifference>> {
     const { maxBytes, limit, cursor } = budget;
