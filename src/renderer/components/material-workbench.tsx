@@ -145,13 +145,16 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   const saveCard = async () => {
     const selected = draftRef.current;
     if (!selected) return;
+    const scope = projectId, token = selectionRequest.current;
     if (!position && !card) { setError('先在可靠的历史时间轴上选择位置。'); return; }
     const anchor = card?.anchor ?? position!;
     const next: CheckpointCard = { id: card?.id ?? newId('checkpoint'), kind, anchor, capturedAt: card?.capturedAt ?? new Date(anchor.sourceTimeMs).toISOString(),
       createdAt: card?.createdAt ?? new Date().toISOString(), title: title.trim(), notes, requirementIds: unique(requirementIds.split(/[,，\s]+/).filter(Boolean)), annotationIds: card?.annotationIds ?? [] };
     if (!next.title) { setError('输入 checkpoint 标题。'); return; }
     if (next.requirementIds.some(id => !currentRequirements.some(requirement => requirement.id === id))) { setError('先创建所引用的需求。'); return; }
-    const refs = await allRecordingRefs(selected);
+    let refs: string[];
+    try { refs = await allRecordingRefs(selected); }
+    catch (failure) { if (selectedDraft(scope, token, selected.draftId, selected.draftRevision)) setError(`录制引用读取失败：${String(failure)}`); return; }
     const edits: Edit[] = [...(!refs.includes(anchor.recordingId) ? [{ operation: 'recordings' as const, recordingRefs: [...refs, anchor.recordingId] }] : []),
       { operation: 'upsert', collection: 'checkpoints', item: next }];
     if (await mutate(edits, card ? '已更新 checkpoint 草稿。' : '已在历史位置新增 checkpoint 草稿。', selected)) setCardId(next.id);

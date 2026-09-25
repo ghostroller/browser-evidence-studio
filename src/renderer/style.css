@@ -392,6 +392,13 @@
 .result-data { margin: 12px 0; padding: 8px; border: 1px solid var(--border); }
 .result-data > [data-slot="button"] { margin: 2px; }
 .result-check { display: flex; align-items: baseline; gap: 5px; padding: 3px 0; overflow-wrap: anywhere; }
+.task-authorizations { max-width: 880px; margin: 0 auto; }
+.task-capabilities { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 6px 16px; }
+.task-capabilities label { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+.task-capabilities input { flex: none; }
+.task-grant { display: grid; gap: 6px; padding: 10px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.task-grant small { color: var(--muted-foreground); }
+.task-grant [data-slot="button"] { justify-self: start; }
 
 .run-list, .recovery-run-list { display: flex; flex-direction: column; gap: 0; }
 .run-item, .recovery-run { display: flex; align-items: center; gap: 6px; width: 100%; height: auto; min-height: 44px; padding: 8px 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--foreground); text-align: left; white-space: normal; }

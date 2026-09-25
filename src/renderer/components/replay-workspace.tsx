@@ -6,7 +6,8 @@ import { NativeSelect } from './ui/native-select';
 type Stream = { first: ReplayPosition; last: ReplayPosition; events: number; monotonicTime: boolean };
 type PositionRow = { position: ReplayPosition; type: number; source: number };
 type Host = { replayId: string; generation: number; status: 'loading' | 'ready' | 'failed' | 'closed'; position?: ReplayPosition;
-  state?: ReplayState; selection?: HistoricalElementRef; selectionSequence?: number; selecting: boolean; error?: string };
+  state?: ReplayState; selection?: HistoricalElementRef; selectionSequence?: number; selecting: boolean; error?: string; selectionError?: string;
+  resources?: { status: 'loading' | 'ready' | 'partial'; blockedRequests: number; failures: Array<{ resourceId?: string; generation: number; code?: string; name: string; message: string }> } };
 const same = (a?: ReplayPosition | null, b?: ReplayPosition | null) => a && b && a.recordingId === b.recordingId && a.pageId === b.pageId &&
   a.documentId === b.documentId && a.streamEpoch === b.streamEpoch && a.eventSeq === b.eventSeq && a.sourceTimeMs === b.sourceTimeMs;
 const streamId = (value: Stream) => `${value.first.pageId}/${value.first.documentId}/${value.first.streamEpoch}`;
@@ -220,9 +221,11 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
       <span>{position ? `${new Date(position.sourceTimeMs).toLocaleTimeString('zh-CN', { hour12: false })} · event #${position.eventSeq}` : '读取中'}</span>
       <Button disabled={!position || seeking || selecting} onClick={() => { const previous = [...positions].reverse().find(item => position && item.position.eventSeq < position.eventSeq); if (previous) void seek(previous.position); }}>上一步</Button>
       <Button disabled={!position || seeking || selecting} onClick={() => { const next = positions.find(item => position && item.position.eventSeq > position.eventSeq); if (next) void seek(next.position); else if (nextOrdinal !== undefined && stream) void loadPositions(stream, nextOrdinal); }}>下一步</Button></div>}
-    <div className="replay-status" role="status">{host?.state?.reliability === 'reliable' ? '历史状态可靠' : host?.state?.reliability === 'gap' ? '结构缺口：元素绑定不可用' : host?.state?.reliability === 'unsupported' ? '此位置不支持精确还原' : host?.status || '正在读取'}
+    <div className="replay-status" role="status">{host?.state?.reliability === 'reliable' ? '历史结构可靠' : host?.state?.reliability === 'gap' ? '结构缺口：元素绑定不可用' : host?.state?.reliability === 'unsupported' ? '此位置不支持精确还原' : host?.status || '正在读取'}
       {selecting && <span> · 检查模式：选中历史元素后返回资料编辑</span>}{seeking && <span> · 正在定位</span>}</div>
-    {error && <p className="error-inline" role="alert">{error}</p>}
+    {host?.resources && <p className={host.resources.status === 'partial' ? 'error-inline' : 'hint'}>历史资源：{host.resources.status === 'partial' ? '部分缺失' : host.resources.status === 'ready' ? '已就绪' : '读取中'} · 拦截外部请求 {host.resources.blockedRequests} 次{host.resources.failures.length > 0 ? ` · ${host.resources.failures.length} 项读取失败` : ''}</p>}
+    {host?.resources?.failures.length ? <details><summary>历史资源读取失败</summary>{host.resources.failures.slice(0, 20).map((failure, index) => <p key={`${failure.resourceId || failure.name}-${index}`}>{failure.code || failure.name}：{failure.message}</p>)}</details> : null}
+    {(error || host?.error || host?.selectionError) && <p className="error-inline" role="alert">{error || host?.error || host?.selectionError}</p>}
     <div className="replay-sequence" aria-label="已加载历史事件">{positions.map(row => <Button key={`${row.position.streamEpoch}-${row.position.eventSeq}`} className={same(position, row.position) ? 'selected' : ''} disabled={seeking || selecting}
       onClick={() => void seek(row.position)}>#{row.position.eventSeq}</Button>)}{nextOrdinal !== undefined && stream && <Button disabled={selecting} onClick={() => void loadPositions(stream, nextOrdinal)}>后续事件</Button>}</div>
   </div>;
