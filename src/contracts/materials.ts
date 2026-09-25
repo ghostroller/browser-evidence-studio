@@ -11,6 +11,10 @@ export interface MaterialField {
   valueType?: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null';
   sourcePolicy: 'any-evidenced' | 'page-displayed';
   target?: HistoricalTarget;
+  /** Optional example-card ownership, including binding without an annotation. */
+  checkpointId?: string;
+  /** Retains the old target when moving a card requires revalidation. */
+  bindingStatus?: 'bound' | 'needs-rebind' | 'unavailable';
   annotationId?: string;
 }
 export interface MaterialRequirement {

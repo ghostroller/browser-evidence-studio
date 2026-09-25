@@ -25,6 +25,8 @@
 
 MaterialService 使用完整内容条件更新：`expectedDraftRevision` 冲突返回 current，不覆盖；发布时也检查预期版本。B 校验关联、ID、字段、内容限额、项目路径和 source 引用，原子落 manifest + hash。复制卡片及注释生成新 ID，保留 anchor/原采集时间，不复制业务需求定义。移动 anchor 后必须复核绑定。
 
+2026-09-26 主控补充 v1 字段绑定语义：`MaterialField.checkpointId?` 显式关联样例卡片（无需 annotation），`bindingStatus?` 记录 bound/needs-rebind/unavailable。二者仅在 target 存在时允许；bound 且指定 checkpointId 时，target 位置须与卡片 anchor 精确相同。卡片移动时保留旧 target 和原位置并标 needs-rebind，不能删除旧证据或仅凭 nodeId 自动重绑。未指定卡片的字段仍可保存；旧资料没有这些可选字段时只读投影不能伪造已复核绑定。B 实现运行时验证与迁移投影，D 显式选择/复核，E/F 不把待重绑目标当成已核验来源。共享业务字段定义不因复制样例卡片自动变成重复字段。
+
 DatasetService 的 append 完成意味着已持久保存；幂等键是 execution/attempt/dataset/batch。相同键同内容返回原回执，异内容拒绝。finish 不能覆盖已提交批次，失败保留之前的回执。批次 hash 覆盖 records、provenance、复用来源。取消在持久边界前后均检查；已持久保存后取消不能撤回原件。StepResult 分开业务错误、blocked、partial、awaiting-human；辅助截图失败不吞业务数据。
 
 ## 落盘与旧材料
