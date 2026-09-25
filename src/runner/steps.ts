@@ -44,6 +44,7 @@ export class StepPersistenceError extends Error { constructor(cause: unknown) { 
 /** Portable ordinary-JS helper. It schedules no workflow, navigates no page and invents no dependencies. */
 export function createStepRunner(options: StepRunnerOptions): { run<T>(step: StepOptions<T>): Promise<StepResult<T>> } {
   const resources = new Map<string, Promise<unknown>>();
+  const unsafeResources = new Map<string, Error>();
   let fatal: unknown;
   const save = async (event: StepEvent): Promise<void> => {
     try { await options.save(event); } catch (error) { fatal = new StepPersistenceError(error); throw fatal; }
@@ -54,6 +55,7 @@ export function createStepRunner(options: StepRunnerOptions): { run<T>(step: Ste
   };
   async function execute<T>(step: StepOptions<T>, resourceKey: string): Promise<StepResult<T>> {
     if (fatal) throw fatal;
+    if (unsafeResources.has(resourceKey)) throw unsafeResources.get(resourceKey);
     const identity = (): StepIdentity => ({ executionId: options.executionId, stepId: step.stepId, attemptId: randomUUID(), ...(step.entityKey === undefined ? {} : { entityKey: step.entityKey }) });
     if (options.signal.aborted) return record({ status: 'cancelled', identity: identity(), error: originalError(options.signal.reason) });
     const failedDependencies = step.dependencies?.filter(result => result.status !== 'succeeded') ?? [];
@@ -91,7 +93,16 @@ export function createStepRunner(options: StepRunnerOptions): { run<T>(step: Ste
             catch (error) { fatal = new StepPersistenceError(error); throw fatal; }
           }
           controller.signal.throwIfAborted();
-          return value;
+          let outcome: StepResult<T> = { status: 'succeeded', identity: current, value };
+          if (step.evidence) {
+            try { await step.evidence(value, context); controller.signal.throwIfAborted(); }
+            catch (error) {
+              if (controller.signal.aborted) throw error;
+              diagnostics.push({ phase: 'evidence', error: originalError(error) });
+              outcome = { status: 'partial', identity: current, value, error: originalError(error) };
+            }
+          }
+          return outcome;
         })();
         // This race only detects cancellation; interrupt must establish a real stop boundary.
         const interrupted = new Promise<never>((_resolve, reject) => {
@@ -104,17 +115,8 @@ export function createStepRunner(options: StepRunnerOptions): { run<T>(step: Ste
           removeAbort = () => controller.signal.removeEventListener('abort', onAbort);
           if (controller.signal.aborted) onAbort();
         });
-        const value = await Promise.race([work, interrupted]);
+        result = await Promise.race([work, interrupted]);
         controller.signal.throwIfAborted();
-        result = { status: 'succeeded', identity: current, value };
-        if (step.evidence) {
-          try { await step.evidence(value, context); controller.signal.throwIfAborted(); }
-          catch (error) {
-            if (controller.signal.aborted) throw error;
-            diagnostics.push({ phase: 'evidence', error: originalError(error) });
-            result = { status: 'partial', identity: current, value, error: originalError(error) };
-          }
-        }
       } catch (error) {
         if (fatal) throw fatal;
         result = { status: options.signal.aborted ? 'cancelled' : 'failed', identity: current, error: originalError(controller.signal.aborted ? controller.signal.reason : error) };
@@ -125,12 +127,15 @@ export function createStepRunner(options: StepRunnerOptions): { run<T>(step: Ste
         if (timer) clearTimeout(timer);
         options.signal.removeEventListener('abort', abort);
         try { await step.cleanup?.(context); }
-        catch (error) { diagnostics.push({ phase: 'cleanup', error: originalError(error) }); }
+        catch (error) {
+          diagnostics.push({ phase: 'cleanup', error: originalError(error) });
+          unsafeResources.set(resourceKey, new Error('Resource cleanup failed; replace the resource before another step', { cause: error }));
+        }
       }
       if (fatal) throw fatal;
       if (diagnostics.some(item => item.phase === 'cleanup') && result.status === 'succeeded') result = { ...result, status: 'partial', error: diagnostics.find(item => item.phase === 'cleanup')!.error };
       await record(result, diagnostics);
-      if (result.status !== 'failed' || committed || !step.retry || attempt + 1 >= maxAttempts || options.signal.aborted || Date.now() - startedAt + step.retry.backoffMs >= step.retry.totalBudgetMs) return result;
+      if (result.status !== 'failed' || committed || unsafeResources.has(resourceKey) || !step.retry || attempt + 1 >= maxAttempts || options.signal.aborted || Date.now() - startedAt + step.retry.backoffMs >= step.retry.totalBudgetMs) return result;
       // Unsafe/non-idempotent steps have no retry option; every retry gets a new attempt identity.
       try { await delay(step.retry.backoffMs, undefined, { signal: options.signal }); }
       catch { return record({ status: 'cancelled', identity: identity(), error: originalError(options.signal.reason) }); }

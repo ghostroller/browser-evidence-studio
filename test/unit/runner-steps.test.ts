@@ -91,3 +91,18 @@ test('work rejecting first and evidence cancellation both await delayed quiescen
     assert.equal((await queued).status, 'cancelled');
   }
 });
+
+test('uncooperative evidence is interrupted at a real worker stop boundary; cleanup failure poisons only its resource', async () => {
+  const events: StepEvent[] = []; let late = 0; let saved = false;
+  const worker = new Worker(`const { parentPort } = require('node:worker_threads'); parentPort.postMessage('ready'); setTimeout(() => parentPort.postMessage('late'), 200);`, { eval: true });
+  worker.on('message', value => { if (value === 'late') late++; });
+  await new Promise<void>(resolve => worker.once('message', () => resolve()));
+  try {
+    const steps = createStepRunner({ executionId: 'evidence-timeout', signal: new AbortController().signal, save: async event => { events.push(event); }, interrupt: async () => { await worker.terminate(); } });
+    const result = await steps.run({ stepId: 'save-first', timeoutMs: 25, run: async () => 'business-data', commit: async () => { saved = true; }, evidence: () => new Promise<never>(() => {}), cleanup: async () => { throw new Error('cleanup uncertain'); } });
+    assert.equal(result.status, 'failed'); assert.equal(saved, true);
+    await assert.rejects(steps.run({ stepId: 'must-not-reuse', run: async () => { throw new Error('unsafe action'); } }), /cleanup failed/);
+    assert.equal((await steps.run({ stepId: 'other-owned-page', resourceKey: 'other-page', run: async () => 'ok' })).status, 'succeeded');
+    await delay(220); assert.equal(late, 0);
+  } finally { await worker.terminate(); }
+});
