@@ -16,6 +16,10 @@ import type { HumanReview, ValidationReport } from '@/validator/types';
 import { ensure } from '@/shared/errors';
 import type { ProjectMaterials } from './project-materials';
 import { materialBudget } from './project-materials';
+import { checkpointSourceProofs, checkpointSourceTargets } from './checkpoint-sources';
+import { SourceModel } from '@/replay/source-model';
+import type { CaptureCoordinator } from '@/capture/coordinator';
+import type { CheckpointHostScope } from '@/runner/manager';
 
 const hash=(value:unknown)=>createHash('sha256').update(canonicalJson(value)).digest('hex');
 interface HostExecution {
@@ -145,6 +149,20 @@ export class ProjectExecutions {
     const stored:StoredReport={reportId:randomUUID(),contentHash:hash(report),report};await this.original(directory,`report-${stored.reportId}.json`,stored);return reportSummary(stored);
   }
   private async dataReader(id:string){return this.active.get(id)??PersistentDatasetService.openReader(this.root,id);}
+  async sampleCheckpoint(projectId:string,scope:CheckpointHostScope,capture:Pick<CaptureCoordinator,'recordingPosition'|'samplePresentation'|'flush'>,requirementIds:unknown,assertCurrent:()=>void,signal?:AbortSignal):Promise<string[]>{
+    scope=structuredClone(scope);requirementIds=structuredClone(requirementIds);
+    const current=()=>{signal?.throwIfAborted();assertCurrent();ensure(this.active.has(scope.executionId)&&!this.terminal.has(scope.executionId),'Checkpoint execution is no longer active',409);};
+    current();const value=await this.state(projectId,scope.executionId);current();
+    const revision=await this.materials.service.revision(projectId,value.binding.materialRevisionId,value.binding.materialContentHash);current();
+    if(!checkpointSourceProofs(revision.content,requirementIds).length)return [];
+    await capture.flush();current();const position=capture.recordingPosition;
+    ensure(position&&position.recordingId===value.runId&&position.pageId===value.pageId,'Checkpoint has no current source recording position',409);
+    const replay=await this.materials.replay(value.runId,projectId);current();const window=await replay.window(position,signal);current();
+    ensure(!window.gaps.some(gap=>gap.category==='structure'||gap.category==='metadata'),'Checkpoint source has a structural or metadata gap',409);
+    const targets=checkpointSourceTargets(revision.content,requirementIds,new SourceModel(window.records),position),refs:string[]=[];
+    for(const target of targets){current();const sample=await capture.samplePresentation(target,signal);current();refs.push(await this.recordSample(projectId,scope.executionId,scope.attemptId,sample.ref,signal));current();}
+    return refs;
+  }
   /** Only called after manager supplies an actual active attempt and capture
    * supplies a durable sample. No public route accepts this host scope. */
   async recordSample(projectId:string,id:string,attemptId:string,target:HistoricalElementRef,signal?:AbortSignal):Promise<string>{
