@@ -20,6 +20,8 @@ import { connectManagedPage } from '@/runner/puppeteer';
 import { captureCheckpointMaterials } from '@/capture/checkpoint';
 import { appendReview, readReviews, type ReviewQuery } from './reviews';
 import { BrowserSessionLifecycle } from './browser-session';
+import { ProjectMaterials } from './project-materials';
+import { TaskAuthorizations, type TaskCapability } from './task-authorization';
 import { commitValidation, recoverValidationCatalog, registerValidation, saveValidationCatalog, type ValidationLifecycleContext, type ValidationLifecycleObserver, type ValidationLifecycleStage, type ValidationRecord, type ValidationRecoveryDiagnostic } from './validation-lifecycle';
 export type { ValidationLifecycleContext, ValidationLifecycleObserver, ValidationLifecycleStage } from './validation-lifecycle';
 
@@ -63,13 +65,46 @@ export class Studio {
   private workflowStarting?:{abort:AbortController;gate?:GateTransport;done:Promise<void>;finish:()=>void};
   private validationLaunch?:ValidationLaunch;
   private readonly validationGrants=new ValidationStartGrants();
+  readonly materials:ProjectMaterials;
+  readonly tasks=new TaskAuthorizations(()=>this.taskAuthorizationChanged());
+  private executingAuthorizationId?:string;
   private closing=false;
   private humanDone?:{resolve:()=>void;reject:(e:Error)=>void};
   private validations:ValidationRecord[]=[];
   private validationRecovery:{diagnostics:ValidationRecoveryDiagnostic[];catalogStatus:'rebuilt'|'write-failed'}={diagnostics:[],catalogStatus:'rebuilt'};
   private fixture?:{url:string;close:()=>Promise<void>};
   onChanged=()=>{};
-  constructor(readonly root:string, readonly window:StudioWindow, readonly endpoint:string, private readonly lifecycleObserver?:ValidationLifecycleObserver) {}
+  constructor(readonly root:string, readonly window:StudioWindow, readonly endpoint:string, private readonly lifecycleObserver?:ValidationLifecycleObserver) {this.materials=new ProjectMaterials(root);}
+  private taskAuthorizationChanged(){
+    if(this.executingAuthorizationId&&this.tasks.get(this.executingAuthorizationId).status!=='active')void this.stopRunner().catch(error=>console.error('Task revocation could not complete worker shutdown',error));
+    this.onChanged();
+  }
+  async authorizeTask(body:any){return this.serialized(async()=>{
+    const project=this.projects.find(item=>item.id===body.projectId);ensure(project,'Unknown project',404);
+    ensure(Array.isArray(body.capabilities),'Choose task capabilities');
+    const browser=body.capabilities.some((value:string)=>['page-read','page-act','page-create','execute'].includes(value));
+    if(!browser)return this.tasks.issue({projectId:project.id},{origins:[],pages:[],capabilities:body.capabilities,durationMs:body.durationMs,maxOperations:body.maxOperations});
+    this.assertValidationIdle();const r=this.required();ensure(r.controller==='human','Task authorization requires human ownership',409);
+    ensure(body.projectId===r.projectId&&body.profileId===r.profileId&&body.sessionId===this.browserSessionId&&body.leaseEpoch===r.leaseEpoch,'Task authorization target or lease is stale',409);
+    ensure(Array.isArray(body.pageIds)&&body.pageIds.length>0,'Choose the pages covered by task authorization');
+    const pages=body.pageIds.map((id:string)=>{const page=r.pages.get(id);ensure(page,'Task page does not exist',409);return {pageId:page.pageId,targetId:page.targetId};});
+    const grant=await this.tasks.issue({projectId:r.projectId,sessionId:this.browserSessionId!,profileId:r.profileId,directory:project.scriptDirectory},{origins:body.origins,pages,capabilities:body.capabilities,durationMs:body.durationMs,maxOperations:body.maxOperations});
+    try {await r.store.appendEvent({type:'task-authorization-issued',source:'ui',data:grant});await r.store.flush();if(grant.capabilities.some(value=>['page-act','page-create','execute'].includes(value)))await this.control('agent');}
+    catch(error){this.tasks.revoke(grant.authorizationId,'Authorization was not durably established');throw error;}
+    return {...grant,leaseEpoch:r.leaseEpoch};
+  });}
+  async revokeTask(body:any){
+    const grant=this.tasks.get(body.authorizationId);ensure(grant.projectId===body.projectId,'Task belongs to another project',403);
+    this.tasks.revoke(grant.authorizationId);
+    if(this.executingAuthorizationId===grant.authorizationId)await this.stopRunner();
+    const r=this.active;if(r&&this.browserSessionId===grant.sessionId){await this.revokeOperation(r);if(r.controller==='agent'&&!this.workflow&&!this.workflowStarting&&!this.workflowSettlement)await this.control('human');await r.store.appendEvent({type:'task-authorization-revoked',source:'ui',data:{authorizationId:grant.authorizationId}});}
+    return this.tasks.get(grant.authorizationId);
+  }
+  async authorizedOperation<T>(body:any,capability:TaskCapability,operation:(signal:AbortSignal)=>Promise<T>,signal?:AbortSignal):Promise<T>{
+    const r=this.required(),page=r.pages.get(body.pageId??r.selectedPageId),project=this.projects.find(item=>item.id===r.projectId)!;
+    ensure(page&&body.projectId===r.projectId&&body.profileId===r.profileId&&body.sessionId===this.browserSessionId,'Task browser identity is stale',409);
+    return this.tasks.run(body.authorizationId,capability,{projectId:r.projectId,sessionId:this.browserSessionId!,profileId:r.profileId,directory:project.scriptDirectory,pageId:page.pageId,targetId:page.targetId,url:body.type==='navigate'?body.url:page.page.url()},operation,signal);
+  }
   async init(){
     await mkdir(this.root,{recursive:true});
     try{const ws=JSON.parse(await readFile(path.join(this.root,'workspace.json'),'utf8'));this.projects=ws.projects;this.profiles=ws.profiles;}catch(e:any){if(e.code!=='ENOENT')throw e;}
@@ -334,12 +369,15 @@ export class Studio {
     r.controller=controller;r.locked=false;this.window.lock(controller!=='human');
     await r.store.appendEvent({type:'control',source:'studio',data:{controller,leaseEpoch:r.leaseEpoch}});return this.state().active;
   }
-  async action(body:any){const r=this.required(),p=this.current(),leaseEpoch=r.leaseEpoch;ensure(Number.isSafeInteger(body.generation)&&body.generation>=0,'Navigation generation is required',409);this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(body.leaseEpoch===leaseEpoch&&body.pageId===p.pageId,'Stale lease or wrong page identity',409);
+  async action(body:any,signal?:AbortSignal){signal?.throwIfAborted();const r=this.required(),p=this.current(),leaseEpoch=r.leaseEpoch;ensure(Number.isSafeInteger(body.generation)&&body.generation>=0,'Navigation generation is required',409);this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(body.leaseEpoch===leaseEpoch&&body.pageId===p.pageId,'Stale lease or wrong page identity',409);
+    let stopping:Promise<void>|undefined;const abort=()=>{r.leaseEpoch++;stopping=this.revokeOperation(r);};signal?.addEventListener('abort',abort,{once:true});
+    try{
     const op=await this.operation(r,p,leaseEpoch);this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(op.targetId===p.targetId&&r.operation===op,'Target mismatch',409);
     const commandId=randomUUID();await r.store.appendEvent({type:'command',source:'api',pageId:p.pageId,data:{commandId,type:body.type,selector:body.selector,controller:r.controller}});
     this.assertOperationOwner(r,p,leaseEpoch,body.generation);
     switch(body.type){case 'navigate':ensure(/^https?:\/\//.test(body.url),'HTTP(S) URL required');await op.page.goto(body.url);break;case 'click':await op.page.click(String(body.selector));break;case 'fill':await op.page.$eval(String(body.selector),(el:any)=>{el.value='';el.dispatchEvent(new Event('input',{bubbles:true}));});await op.page.type(String(body.selector),String(body.value));break;case 'press':await op.page.keyboard.press(body.key);break;case 'scroll':await op.page.evaluate(({x,y})=>window.scrollBy(x,y),{x:Number(body.x)||0,y:Number(body.y)||0});break;case 'select':await op.page.select(String(body.selector),String(body.value));break;default:ensure(false,'Unsupported action');}
-    return {commandId,generation:p.navigationGeneration};
+    signal?.throwIfAborted();return {commandId,generation:p.navigationGeneration};
+    }finally{signal?.removeEventListener('abort',abort);await stopping;}
   }
   async checkpoint(body:any,options:{fromRunner?:boolean;pageId?:string;signal?:AbortSignal}={}){
     options.signal?.throwIfAborted();

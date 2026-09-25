@@ -3,9 +3,11 @@ import type { Studio } from './studio';
 import { ensure } from '@/shared/errors';
 import { loadWorkflow } from '@/runner/fingerprint';
 import { inspectRunRecovery, recoverRun } from './run-recovery';
+import { dispatchProject, PROJECT_METHODS } from './project-dispatch';
 const READ=new Set(['state','projects','project','profiles','workflows','runs','run','pages','snapshot','checkpoints','summary','gaps','events','artifacts','artifact','artifactContent','handoffs','validations','validation','validationStartGrant','reviews','history','replay']);
 export function makeDispatch(studio:Studio){
   return async function dispatch(method:string,body:any={},source:'api'|'ui'='ui',context:{signal?:AbortSignal}={}):Promise<any>{
+    if(PROJECT_METHODS.has(method))return dispatchProject(studio,method,body,source,context.signal);
     // Presentation never enters the run queue: a capture can take seconds while
     // trusted dialogs and resize gestures still need to hide native surfaces.
     if(['presentation','uiPreferences','showBrowser'].includes(method)){
@@ -47,7 +49,7 @@ export function makeDispatch(studio:Studio){
       case 'registerWorkflow':{const p=studio.projects.find(p=>p.id===body.projectId);ensure(p?.scriptDirectory,'Register directory in the client UI first',409);ensure(!body.directory||body.directory===p.scriptDirectory,'Directory does not match registration',403);return (await loadWorkflow(p.scriptDirectory)).manifest;}
       case 'pages':ensure(studio.active?.id===body.runId,'Run is not active',409);return {items:studio.state().active!.pages};
       case 'snapshot':if(source==='api')ensure(studio.active?.id===body.runId,'Run is not active',409);return studio.snapshot(body);
-      case 'navigate':return studio.navigate(body.url);case 'action':return studio.action(body);
+      case 'navigate':ensure(source==='ui','Direct navigation is available in the trusted client only; use actions with a page identity',403);return studio.navigate(body.url);case 'action':return studio.action(body,context.signal);
       case 'selectPage':return studio.selectPage(body.pageId);
       case 'navigateHistory':ensure(source==='ui','Session navigation requires the trusted UI',403);ensure(['back','forward','reload'].includes(body.direction),'Unknown navigation direction');return studio.navigateHistory(body.direction);
       case 'closePage':ensure(source==='ui','Closing live pages requires the trusted UI',403);return studio.closePage(body.pageId);
@@ -70,6 +72,11 @@ export function makeDispatch(studio:Studio){
       default:ensure(false,'Unknown operation: '+method,404);
     }};
     // Read-only state and handoff replies must remain responsive during long operations.
-    return READ.has(method)||['replyHuman','releaseHuman','stopRunner','cancelJob','cancelHandoff','cancelCheckpoint','inspectRunRecovery','revokeValidationStart'].includes(method)?execute():studio.serialized(execute);
+    const invoke=()=>READ.has(method)||['replyHuman','releaseHuman','stopRunner','cancelJob','cancelHandoff','cancelCheckpoint','inspectRunRecovery','revokeValidationStart'].includes(method)?execute():studio.serialized(execute);
+    if(source==='api'&&body.authorizationId&&['snapshot','action','checkpoint','startValidation'].includes(method)){
+      const capability=method==='snapshot'?'page-read':method==='startValidation'?'execute':'page-act';
+      return studio.authorizedOperation(body,capability,async signal=>{context={...context,signal};signal.throwIfAborted();return invoke();},context.signal);
+    }
+    return invoke();
   };
 }
