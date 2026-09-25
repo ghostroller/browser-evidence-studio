@@ -37,3 +37,9 @@
 - 只有 ENOENT/ARTIFACT_NOT_FOUND 是缺失；读取权限/损坏错误到 F，报告仍区分 Original-source read failed。recordSample 在每次 await 后核查 active/abort，克隆目标；报告 discovery 的 returnedBytes 包含自身字段，固定点计量。
 
 `npm.cmd run typecheck` 通过（repair-typecheck.log）。首次新增模块测试失败 2 项，原因合成 awaiting-human 缺 C 必需的 result identity；原日志保留，补合法协议后 `npm.cmd test -- test/unit/task-authorization.test.ts test/unit/refactor-agent-api.test.ts test/unit/project-executions.test.ts test/unit/replay-host.test.ts` **4 文件/14 项通过，3.96 s**（repair-module-tests-2.log）。证明实际 Node worker 合法恢复、少选 dataset 仍保持并发歧义、元数据读取故障传递、报告精确预算，及 stub replay 迟到打开/关闭/选择、损坏与缺失分离、frame/shadow 命中。未启动 Electron。
+
+## 第四包：生产 checkpoint 的固定资料显示值采样
+
+依赖映射 `b99a1ac→b0faf73`、`26a3a69→499f77d`。Studio 的既有 runner checkpoint hook 读取 manager 第四参数 CheckpointHostScope；固定资料的 requirementIds 仅用作选择，未知 ID 拒绝。字段 nodeAttribute/sourceUrl/pageParameter 匹配当前 SourceModel 的全部节点，最多 64 个；不选择首个，不使用示例常量，也不接受脚本 observed/值声明。逐节点调用 A.samplePresentation(signal)，把新的耐久 full identity 与实际 execution/attempt/recording 保存为 host sampleRef，回执 sourceRefs。每次 await 后检查 signal、执行/页面/文档/控制权，取消不能返回成功。无 DOM proof 的固定资料无需源节点采样。
+
+`npm.cmd run typecheck` 通过；`npm.cmd test -- test/unit/checkpoint-sources.test.ts test/unit/project-executions.test.ts test/unit/workflow-manager.test.ts` 实际 **2 文件/5 项通过，3.37 s**；最后一个不存在的文件没有产生测试，按实际计数。日志 sample-module-tests.log、sample-typecheck-2.log。新增三项覆盖多个匹配节点、完整身份、未知需求、源元数据不足、64/65预算及错误URL。真实 G 双实体 + wrong-value + evidence-partial 尚待根 Electron 集成；不能据模块测试宣称已过。
