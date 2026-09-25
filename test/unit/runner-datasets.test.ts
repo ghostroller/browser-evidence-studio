@@ -7,6 +7,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { DatasetBatch, ExecutionBinding } from '@/contracts/execution';
 import { PersistentDatasetService } from '@/runner/datasets';
+import { createStepRunner } from '@/runner/steps';
 
 const binding: ExecutionBinding = { schemaVersion: 1, executionId: 'execution-c', projectId: 'project-c', materialRevisionId: 'revision-v1', materialContentHash: 'material-v1-hash', codeFingerprint: 'code-sha', inputFingerprint: 'input-sha', environmentRef: 'synthetic-node', mode: 'current-page-test' };
 const identity = { executionId: binding.executionId, attemptId: 'attempt-1', datasetId: 'orders' };
@@ -124,6 +125,20 @@ test('gapped step lifecycle and a copied batch from another dataset are rejected
     const copied = path.join(root, 'executions', binding.executionId, 'datasets', identity.attemptId, 'other', path.basename(receipt.artifactId));
     await writeFile(copied, await readFile(path.join(root, receipt.artifactId)));
     await assert.rejects(service.batchMetadata(other, 'page-1', budget), /Receipt location/);
+  } finally { await service.close(); }
+}));
+
+test('ordinary void steps persist successfully and remain distinct from explicit null results', async () => fixture(async root => {
+  const service = await PersistentDatasetService.open(root, binding);
+  try {
+    const steps = createStepRunner({ executionId: binding.executionId, signal: new AbortController().signal, save: event => service.saveStep(event) });
+    const nothing = await steps.run({ stepId: 'navigate', run: async () => {} });
+    const actualNull = await steps.run({ stepId: 'nullable-read', run: async () => null });
+    assert.equal(nothing.status, 'succeeded'); if (nothing.status === 'succeeded') assert.equal(nothing.value, undefined);
+    const read = async (attemptId: string) => JSON.parse(await readFile(path.join(root, 'executions', binding.executionId, 'attempts', attemptId, 'step-0002.json'), 'utf8')) as { resultValueState?: string; result: { value: null } };
+    assert.equal((await read(nothing.identity.attemptId)).resultValueState, 'undefined');
+    assert.equal((await read(actualNull.identity.attemptId)).resultValueState, undefined);
+    assert.equal((await read(actualNull.identity.attemptId)).result.value, null);
   } finally { await service.close(); }
 }));
 

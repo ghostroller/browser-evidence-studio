@@ -1,4 +1,4 @@
-# C 交接：T09/T10（2026-09-26，实施中）
+# C 交接：T09/T10（2026-09-26，模块与实际 worker 验证完成）
 
 工作树 `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-C`，分支 `codex/refactor-c-20260926`，冻结起点 `4c4b293b21b4c027dec381e7382db6f14a8ce11c`。独立 `BES_DATA=...\output\data-C`、node_modules；Node 24.21.0/npm 11.19.0。未修改共享契约、主进程、renderer、package/lock、旧业务脚本和真实材料；不启动 Electron 或真实账号。
 
@@ -39,5 +39,11 @@ portable runtime entry 是 `src/runner/portable.ts`，仅 Node built-ins 和步�
 选择性重跑：StartWorkflowOptions.selection / WorkerInput.selection / entry.selection / result.selection 保存同一份有界 stepIds/entityKeys；业务普通代码用 `steps.selected(stepId,entityKey)` 控制循环。`StepOptions.prior={identity,validate}` 在新 attempt 内重新验证登录、输入、前置数据和代码/资料兼容性，记录 rerun.from/status/validityEvidenceRefs/checkedAt，失败返回 blocked。此检查是脚本声明，F 仍核查证据；selection 字段存在不代表代码必然遵循。示例 `examples/portable-runner/run.mjs` 实际选择实体、执行前检查并逐实体提交，返回摘要；跨 execution 行复用仍拒绝，修复后重新采集或使用同 execution 下显式 reusedFrom，不能冒充连续全通过。
 
 worker 在发送 complete 之前限制入口 output ≤64 KiB；host 再防御检查。返回大结果会明确失败并提示用数据集引用，之前已提交批次保留。`npm.cmd test -- test/unit/runner-portable.test.ts test/unit/runner-incremental.test.ts test/unit/runner-steps.test.ts`：3 文件/14 项通过（4.09 s），typecheck 通过。portable 测试实际单文件打包后在仓库外使用 plain Node，证明选择 order-2 单独重跑、新 attempt、失效登录 blocked 与旧身份/有效性引用；不要求开发目录/tsx/Vite 在运行时存在。
+
+root 实际 C 桌面 attempt 1 **通过**：`D:\Workspace\browser-evidence-studio\output\desktop-1790369223309`，日志 `output/refactor-integration-20260926/C-desktop-attempt-1.log`。生产 worker 使用真实 Puppeteer 验证模块独立失败、依赖 blocked、辅助截图失败保留数据、取消与 timeout 后延迟点击不发生。主树同期全量 35 文件/206 项通过，76.98 s（`ABC-unit.log`）；其他 agent 可能编译，不能用作性能门槛。
+
+收尾修复普通 void 步骤：运行时 value 保持 undefined，JSON 原件用 resultValueState=undefined 和 null 传输占位显式区分真实 null；普通导航/登录无返回值不会在成功后错误地失败于存储。已有 dataset null/missing 规则不变。最后 typecheck 通过；`npm.cmd test -- test/unit/runner-datasets.test.ts test/unit/runner-steps.test.ts test/unit/runner-incremental.test.ts test/unit/runner-portable.test.ts` 4 文件/26 项通过，12.10 s。
+
+交付边界：C 所有修改仅 runner、专属测试、portable 示例及本文件；主树/E/D/F 接入固定 B revision、执行→录制来源、结果 UI、人工场景和发行仍由相应 owner 验证。C 没有把这些后续工作标为完成，没有自行开启桌面/真人账号，没有 push、删除树/分支/原件或改根配置。
 
 有效性 evidenceRefs 是显式记录，不自动等于内容核验，后续 F 判定。完整 JSON schema/主键语义来自用户资料，当前冻结 DatasetBatch 无 step/schema 字段；本服务按批追加，拒绝同 batchId 异内容，不自动按实体覆盖旧行。finish complete 是脚本声明，不能独立证明分页完整。

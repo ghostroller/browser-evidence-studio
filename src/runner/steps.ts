@@ -8,6 +8,8 @@ export interface StepEvent {
   state: 'running' | StepResult<unknown>['status'];
   occurredAt: string;
   result?: StepResult<unknown>;
+  /** JSON cannot carry undefined. A null transport placeholder with this marker is not a real null result. */
+  resultValueState?: 'undefined';
   diagnostics?: { phase: 'evidence' | 'cleanup'; error: OriginalError }[];
   rerun?: { from: StepIdentity; status: 'pending' | 'passed' | 'failed'; validityEvidenceRefs: string[]; checkedAt?: string; reason?: string };
 }
@@ -58,7 +60,9 @@ export function createStepRunner(options: StepRunnerOptions): { run<T>(step: Ste
     try { await options.save(event); } catch (error) { fatal = new StepPersistenceError(error); throw fatal; }
   };
   const record = async <T>(result: StepResult<T>, diagnostics?: StepEvent['diagnostics'], rerun?: StepEvent['rerun']): Promise<StepResult<T>> => {
-    await save({ identity: result.identity, state: result.status, occurredAt: new Date().toISOString(), result, ...(diagnostics?.length ? { diagnostics } : {}), ...(rerun ? { rerun } : {}) });
+    const isVoid = (result.status === 'succeeded' || result.status === 'partial') && result.value === undefined;
+    const persisted: StepResult<unknown> = isVoid && (result.status === 'succeeded' || result.status === 'partial') ? { ...result, value: null } : result;
+    await save({ identity: result.identity, state: result.status, occurredAt: new Date().toISOString(), result: persisted, ...(isVoid ? { resultValueState: 'undefined' } : {}), ...(diagnostics?.length ? { diagnostics } : {}), ...(rerun ? { rerun } : {}) });
     return result;
   };
   async function execute<T>(step: StepOptions<T>, resourceKey: string): Promise<StepResult<T>> {

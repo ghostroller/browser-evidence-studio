@@ -83,10 +83,11 @@ export interface WorkflowRunResult {
   validation: ValidationResult;
 }
 export interface DatasetSummary extends DatasetIdentity { status: DatasetCompletion['status'] | 'unfinished'; committedBatches: number; committedRecords: number }
-export type StepSummary = Pick<StepEvent, 'identity' | 'state' | 'occurredAt' | 'diagnostics' | 'rerun'> & { error?: OriginalError; dependencies?: StepIdentity[]; handoffId?: string };
+export type StepSummary = Pick<StepEvent, 'identity' | 'state' | 'occurredAt' | 'diagnostics' | 'rerun' | 'resultValueState'> & { error?: OriginalError; dependencies?: StepIdentity[]; handoffId?: string };
 function summarizeStep(event: StepEvent): StepSummary {
   return { identity: event.identity, state: event.state, occurredAt: event.occurredAt, ...(event.diagnostics ? { diagnostics: event.diagnostics } : {}),
     ...(event.rerun ? { rerun: event.rerun } : {}),
+    ...(event.resultValueState ? { resultValueState: event.resultValueState } : {}),
     ...(event.result && 'error' in event.result ? { error: event.result.error } : {}),
     ...(event.result?.status === 'blocked' ? { dependencies: event.result.dependencies } : {}),
     ...(event.result?.status === 'awaiting-human' ? { handoffId: event.result.handoffId } : {}) };
