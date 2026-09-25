@@ -11,7 +11,8 @@ export default {
   plugins: [{ name: '@electron-forge/plugin-vite', config: {
     build: [
       { entry:'src/main/app.ts',config:'vite.main.config.ts',target:'main' },
-      { entry:'src/preload/ui.ts',config:'vite.preload.config.ts',target:'preload' }
+      { entry:'src/preload/ui.ts',config:'vite.preload.config.ts',target:'preload' },
+      { entry:'src/runner/portable.ts',config:'vite.portable.config.ts',target:'main' }
     ],
     renderer: [{name:'main_window',config:'vite.renderer.config.ts'}]
   } }]

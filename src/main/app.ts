@@ -22,7 +22,11 @@ app.commandLine.appendSwitch('remote-debugging-address','127.0.0.1');
 app.commandLine.appendSwitch('remote-debugging-port','0');
 // Managed scripts still need compositor visibility callbacks behind other desktop windows.
 app.commandLine.appendSwitch('disable-backgrounding-occluded-windows');
-protocol.registerSchemesAsPrivileged([{scheme:'bes-artifact',privileges:{standard:true,secure:true,supportFetchAPI:true}}]);
+protocol.registerSchemesAsPrivileged([
+  {scheme:'bes-artifact',privileges:{standard:true,secure:true,supportFetchAPI:true}},
+  // Handlers are installed only on an authorized, isolated replay partition.
+  {scheme:'bes-resource',privileges:{standard:true,secure:true,corsEnabled:true,supportFetchAPI:true}}
+]);
 let studio:Studio|undefined;let api:ApiHandle|undefined;let quitting=false;let lifecycle:LifecycleLog|undefined;
 let shutdownTask:Promise<void>|undefined;let shutdownExitCode=0;
 async function endpoint(){for(let i=0;i<100;i++){try{const [port,browserPath]=(await readFile(path.join(dataRoot,'DevToolsActivePort'),'utf8')).trim().split(/\r?\n/);const url=`http://127.0.0.1:${port}/json/version`;const data=await fetch(url).then(r=>r.json()) as any;if(data.webSocketDebuggerUrl)return `ws://127.0.0.1:${port}${browserPath}`;}catch{}await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('Internal CDP endpoint did not become ready');}
@@ -52,7 +56,7 @@ else app.whenReady().then(async()=>{
   window.window.on('close',event=>{event.preventDefault();void shutdown('window-close');});
   if(process.env.BES_TEST){
     const phase=process.env.BES_TEST_PHASE||'main';
-    const allowedPhases=['main','refactor-s0','refactor-replay','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
+    const allowedPhases=['main','refactor-s0','refactor-replay','refactor-recording-record','refactor-recording-offline','refactor-runner','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
     ensure(allowedPhases.includes(phase),'Unknown desktop test phase');
     const resultFile=phase==='main'?'test-result.json':`${phase}-result.json`;
     const identity:Record<string,unknown>={phase,processId:process.pid,startedAt:new Date().toISOString()};
@@ -94,6 +98,14 @@ else app.whenReady().then(async()=>{
         const {verifyStartup}=await import('../../test/desktop/startup');
         const reload=startupReload?.();
         Object.assign(identity,{layout:await verifyStartup(window),reload});
+      }else if(phase==='refactor-runner'){
+        const {startFixture}=await import('../../test/fixtures/site');
+        const {runRefactorRunnerScenarios}=await import('../../test/desktop/refactor-runner');
+        const fixture=await startFixture();
+        try{Object.assign(identity,{runner:await runRefactorRunnerScenarios(studio,fixture.url)});}finally{await fixture.close();}
+      }else if(phase==='refactor-recording-record'||phase==='refactor-recording-offline'){
+        const {runRefactorRecordingScenario}=await import('../../test/desktop/refactor-recording');
+        Object.assign(identity,{recording:await runRefactorRecordingScenario(studio,phase==='refactor-recording-record'?'record':'offline')});
       }else if(phase==='refactor-s0'||phase==='refactor-replay'){
         const {startFixture}=await import('../../test/fixtures/site');
         const {runSessionScenarios}=await import('../../test/desktop/session-scenarios');

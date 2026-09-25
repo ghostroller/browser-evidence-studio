@@ -31,7 +31,7 @@
 
 | 流 / 依赖 | worktree / branch | base | 原生任务 ID | 模型 / effort / 上下文 | 当前动作 / 提交 / 证据 |
 |---|---|---|---|---|---|
-| A / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-A` / `codex/refactor-a-20260926` | `4c4b293` | `/root/refactor_a` | `gpt-6-astra` / `xhigh` / `none` | 已实际启动并回报目录校验通过；独立依赖初始化和 A 实施；无新提交获集成批准 |
+| A / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-A` / `codex/refactor-a-20260926` | `4c4b293` | `/root/refactor_a` | `gpt-6-astra` / `xhigh` / `none` | 首四包已审查集成至主树 `c6a2a56`；生产桌面首跑失败，UUID 修复后第二次实跑中；继续原任务返修/边界采集 |
 | B / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-B` / `codex/refactor-b-20260926` | `4c4b293` | `/root/refactor_b` | `gpt-6-sol` / `high` / `none` | completed，HEAD `e65b774` clean；最终两包已集成 `b762786/7ee2ab0`；有返修时按原 ID 接续 |
 | C / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-C` / `codex/refactor-c-20260926` | `4c4b293` | `/root/refactor_c` | `gpt-6-astra` / `xhigh` / `none` | 前三包已审查集成并主树复验；继续 manager/worker、代码快照及有界批次来源读取 |
 | D / A+B；结果接 F | 未建树 | 待已验证集成提交 | 未启动 | 计划 Sol high，尚未配置 | A/B 接口可用后由根创建；不要求用户操作 |
@@ -63,3 +63,6 @@
 - A 请求 HTML 解析依赖，根唯一将已锁定的 `parse5@8.0.1` 从开发期传递依赖提升为显式 runtime dependency，无包版本漂移；parse5 MIT、ESM，transitive entities 8.1.0 的 Node 要求 >=20.19.0。实际 npm 包元数据版本无 prerelease 后缀、无 deprecated 字段、integrity 与 lock 一致，dist-tags latest=8.0.1/test=4.0.0-test。日志 `parse5-metadata.log/parse5-channel.log/parse5-install.log` 在同一集成日志目录。首次 npm view 默认外部 cache EPERM 已保留终端输出，改本树 `output/npm-cache-root` 后成功；没有改全局配置。使用 parser 的生产代码和安装包验证仍待 A/G。
 - `3b93f08` 提交上述 parser 和 F 启动记录。`d9d77ab` 由根补齐固定用户资料中的输出路径、JSON 来源指针与逐页结束规则，同时适配已经完成 B 的严格输入校验；typecheck 与 3 文件/16 项通过（`source-contract-typecheck.log/source-contract-tests.log`），旧资料不追加字段或改 hash。F 获准接入此契约。
 - C `f2b1351/8f20e129` 审查后集成为 `3054353/961aefc`：原件使用 create-if-absent，步骤文件缺段显式拒绝；有界 batchMetadata 校验真实批次哈希及完整位置。主树 2 文件/19 项通过，9.20 s（`C-metadata-immutable-tests.log`）；typecheck 通过（`C-metadata-typecheck.log`）。`npm.cmd run build` 通过（`BC-build.log`），现有 use-client 指令、chunk 大小和 Tailwind sourcemap 警告仍记录，未静音。生产 C worker/snapshot 与 A 仍未合入，此 build 不是新功能桌面验收。
+- A `4bd3ad7/b65d485` 集成为 `6b126b4/59264f6`，5 文件/41 项通过、13.78 s（`A-production-module-tests.log`），typecheck/build 通过。根接入 `--refactor-recording` 两进程串行专项和 ready 前 `bes-resource` scheme，实际 handler 仅由隔离 replay partition 安装。首跑 PID 32736 在初始 document 注入失败：`crypto.randomUUID is not a function`；`output/desktop-1790368796190` 原件与 `A-desktop-attempt-1.log` 保留，offline 未跑。
+- A 后续 `fc74fdc/87b1669` 集成为 `e0e9daa/c6a2a56`：测试按每个历史位置选择同 URL 不同 CSS 版本；crypto.getRandomValues 为每次文档注入生成独立 ID。第二次真实桌面正串行运行（`A-desktop-attempt-2.log`，工具 exec session 80793），恢复时先检查进程/日志，不重复启动。桌面锁此时由根持有。
+- C `9c2650d` 集成为 `a200e0a`：实际 worker 增量 reporter、执行快照、导入字节 hash 校验，4 文件/26 项通过、11.44 s（`C-production-module-tests.log`）。根新增 `--refactor-runner` 专项入口，等待 A 桌面释放后启动。独立 `portable-runner.mjs` 由现有 `npm run build` 和 Forge build 生成，9.36 kB、仅 Node built-in runtime；本轮 AC typecheck/build 通过（`AC-typecheck.log/AC-build.log`），未以 bundle 生成代替独立安装运行验收。

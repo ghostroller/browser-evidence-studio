@@ -80,6 +80,30 @@ function launchPhase(phase, timeoutMs, { dataRoot = root, extraEnv = {}, termina
 }
 
 async function main() {
+  if (process.argv.includes('--refactor-runner')) {
+    const result = await launchPhase('refactor-runner', 180000);
+    const summary = { passed: result.passed, output: root, phase: result };
+    fs.writeFileSync(path.join(root, 'refactor-runner-summary.json'), JSON.stringify(summary, null, 2));
+    console.log(JSON.stringify({ passed: result.passed, output: root, error: result.error || result.result?.error }, null, 2));
+    process.exitCode = result.passed ? 0 : 1;
+    return;
+  }
+  if (process.argv.includes('--refactor-recording')) {
+    const summary = { passed: false, output: root, phases: [] };
+    try {
+      for (const phase of ['refactor-recording-record', 'refactor-recording-offline']) {
+        const result = await launchPhase(phase, 180000);
+        summary.phases.push(result);
+        assert(result.passed, `${phase} failed: ${result.error || result.result?.error}`);
+      }
+      assert.notEqual(summary.phases[0].pid, summary.phases[1].pid);
+      summary.passed = true;
+    } catch (error) { summary.error = String(error); }
+    fs.writeFileSync(path.join(root, 'refactor-recording-summary.json'), JSON.stringify(summary, null, 2));
+    console.log(JSON.stringify({ passed: summary.passed, output: root, phases: summary.phases.map(({ phase, passed, pid }) => ({ phase, passed, pid })), error: summary.error }, null, 2));
+    process.exitCode = summary.passed ? 0 : 1;
+    return;
+  }
   if (process.argv.includes('--refactor-s0') || process.argv.includes('--refactor-replay')) {
     const result = await launchPhase(process.argv.includes('--refactor-replay') ? 'refactor-replay' : 'refactor-s0', 180000);
     const summary = { passed: result.passed, output: root, phase: result };
