@@ -19,9 +19,11 @@ type JobStatus = 'queued' | 'running' | 'waiting-human' | 'succeeded' | 'failed'
 interface ApiFailure { code: string; message: string; status: number; }
 interface Job { id: string; status: JobStatus; operation: string; createdAt: string; updatedAt: string; result?: unknown; error?: ApiFailure; cancellationRequested?: boolean; cancellationError?: ApiFailure; }
 interface InternalJob { public: Job; body: Record<string, unknown>; cancellation?: AbortController; }
-interface Route { verb: string; pattern: RegExp; parameters: string[]; operation: string; mutate?: boolean; lease?: boolean; extra?: Record<string, unknown>; binary?: boolean; }
+interface Route { verb: string; pattern: RegExp; parameters: string[]; operation: string; mutate?: boolean; readBody?: boolean; lease?: boolean; extra?: Record<string, unknown>; binary?: boolean; }
 const route = (verb: string, pattern: RegExp, parameters: string[], operation: string, options: Partial<Route> = {}): Route => ({ verb, pattern, parameters, operation, ...options });
 const routes: Route[] = [
+  ...['taskAuthorizations','taskChanges','materialDrafts','materialRevisions','materialDraft','materialRevision','materialCollection','materialDiff','recordingStreams','recordingPositions','resolveRecordingTime','historicalState','historicalNode','historicalLocators','execution','executionItems','datasetBatches','datasetRecords','executionReport','executionReports','executionReportItems'].map(operation=>route('POST',new RegExp(`^/v1/projects/([^/]+)/query/${operation}$`),['projectId'],operation,{readBody:true})),
+  ...['createMaterialDraft','editMaterialDraft','publishMaterialDraft','assessExecution'].map(operation=>route('POST',new RegExp(`^/v1/projects/([^/]+)/operations/${operation}$`),['projectId'],operation,{mutate:true})),
   route('GET', /^\/v1\/state$/, [], 'state'),
   route('GET', /^\/v1\/projects$/, [], 'projects'), route('POST', /^\/v1\/projects$/, [], 'createProject', { mutate: true }),
   route('GET', /^\/v1\/projects\/([^/]+)$/, ['projectId'], 'project'),
@@ -81,7 +83,7 @@ function queryBody(url: URL): Record<string, unknown> {
   for (const [key, value] of url.searchParams) {
     if (['__proto__', 'prototype', 'constructor'].includes(key)) throw new ApiError('INVALID_QUERY', 'Reserved query field.');
     if (key in body) throw new ApiError('INVALID_QUERY', 'Repeated query fields are not supported.');
-    if (['maxBytes', 'limit', 'fromSequence', 'toSequence', 'generation', 'leaseEpoch'].includes(key)) {
+    if (['maxBytes', 'limit', 'fromSequence', 'toSequence', 'generation', 'leaseEpoch', 'afterSequence', 'ordinal', 'sourceTimeMs'].includes(key)) {
       if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw new ApiError('INVALID_QUERY', `${key} must be a nonnegative integer.`);
       body[key] = Number(value);
     } else if (['fields', 'types'].includes(key)) body[key] = value.split(',').filter(Boolean);
@@ -164,7 +166,7 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
                 // Studio queue. The checkpoint result retains persisted evidence.
                 job.cancellation?.abort(new Error(job.public.operation==='checkpoint'?'Checkpoint acquisition cancelled':'Validation startup cancelled'));
               }else{
-              void dispatch('cancelJob', { jobId: job.public.id, operation: job.public.operation, operationBody: job.body }).then(() => {
+              void dispatch('cancelJob', { ...job.body, jobId: job.public.id, operation: job.public.operation, operationBody: job.body }).then(() => {
                 if (job.public.status === 'running' || job.public.status === 'waiting-human') job.public.status = 'cancelled';
                 job.public.updatedAt = new Date().toISOString();
               }, (error: unknown) => { job.public.cancellationError = failure(error); job.public.cancellationRequested = false; job.public.updatedAt = new Date().toISOString(); });
@@ -178,7 +180,7 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
       const matched = routes.find((candidate) => candidate.verb === verb && candidate.pattern.test(url.pathname));
       if (!matched) throw new ApiError('NOT_FOUND', 'Unknown API endpoint.', 404);
       const captures = matched.pattern.exec(url.pathname)!;
-      const body = { ...queryBody(url), ...(matched.mutate ? await requestBody(request) : {}), ...matched.extra };
+      const body = { ...queryBody(url), ...(matched.mutate||matched.readBody ? await requestBody(request) : {}), ...matched.extra };
       matched.parameters.forEach((name, index) => {
         let value: string;
         try { value = decodeURIComponent(captures[index + 1]); } catch { throw new ApiError('INVALID_ID', 'Malformed path identity.'); }
