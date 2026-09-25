@@ -50,3 +50,5 @@ review修正：最后oversize事件记录未知源范围且拒绝静默封存；
 root主入口须在ready之前为`bes-resource`注册standard/secure/corsEnabled/supportFetchAPI协议权限（仅专用隔离replay session安装handler，不给业务profile安装）。测试检查CSS、@import、图片、字体、Mirror节点、反复seek、脚本不运行、无原站请求、destroy释放iframe；失败保留报告，不降低断言。该场景尚不证明30分钟内存或跨源frame资源映射，子frame源逻辑ID与CDP资源ID尚未建立完整映射时应显示资源unavailable。
 
 桌面资源时点审查补丁：source fixture在initial/updated两点使用**同一**`/assets/main.css` URL返回不同颜色；offline每次seek以当时position逐URL resolve，拒绝用final资源替代initial。协议URL携带seek代际，处理开始固定position，异步完成前复核代际；CSS嵌套依赖沿用该代际。`OfflineResourceService.response`新增可选`urlForResource(id)`以支持调用方的安全路由/代际。此补丁仍只有typecheck，等待root真实桌面结果。
+
+root真实桌面attempt1：typecheck/41模块测试/build通过，但生产初始isolated world的`crypto.randomUUID`不可用，record启动失败、offline未开始。日志`output/refactor-integration-20260926/A-desktop-attempt-1.log`，合成原件`output/desktop-1790368796190`（root树）。修正为每次注入调用`crypto.getRandomValues`生成v4 UUID，保持每document/epoch独立，不从host传一个固定ID重复使用；模块fixture同时移除randomUUID以覆盖该缺失环境，仍需root真实重跑。
