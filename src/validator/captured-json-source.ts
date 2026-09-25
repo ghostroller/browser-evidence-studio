@@ -22,6 +22,7 @@ export class CapturedJsonSourceReader implements SourceReader {
     if (metadata.id !== sourceRef || metadata.kind !== 'response-body' || !/json/i.test(metadata.mediaType)) return { ...base, content: { status: 'unsupported', reason: 'Source is not a captured JSON response body' } };
     const source = metadata.source;
     if (!source || typeof source !== 'object' || typeof source.url !== 'string' || typeof source.requestKey !== 'string') return { ...base, content: { status: 'missing', reason: 'Captured request URL or request identity is absent' } };
+    if (metadata.metadata?.privacyRedacted === true || metadata.metadata?.representation === 'privacy-redacted-response') return { ...base, requestUrl: source.url, content: { status: 'redacted', reason: 'Capture privacy processing replaced response values; the stored mask is not an observed original value' } };
     if (metadata.captureStatus !== 'complete' && metadata.captureStatus !== 'empty') return { ...base, requestUrl: source.url, content: { status: 'missing', reason: `Original capture status: ${metadata.captureStatus}; ${metadata.reason ?? ''}` } };
     if (metadata.capturedBytes > budget.maxBytes) throw new ValidatorError('SOURCE_LIMIT', 'Source body exceeds the explicit JSON parse budget', 413);
     let cursor: string | undefined, body = '', bytes = 0, offset = 0;

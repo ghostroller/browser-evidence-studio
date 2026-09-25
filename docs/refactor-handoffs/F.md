@@ -53,3 +53,12 @@ E 还应从 C 实际结果的 `snapshot.sourceFingerprint`、输入指纹、snap
 ## 集成与接续
 
 root 接入本包后按上述窄端口连接实际 C WorkflowRunResult（workflowAttemptId/datasetSummaries/snapshot）与真实录制 reader，再跑真实 A/C synthetic workflow。尚未运行 Electron/物理输入/soak，不占用桌面槽位。E/D 结果 UI、任务授权、资料批准/人工 review store、报告持久化与发现端口仍由主控接入；本包不新增共享/HTTP 公共接口。F 持续参与 root 审查返修，直到真实模块组合验收接收。
+
+## root 首轮审查返修（cae5e6e 之后）
+
+首包提交 `cae5e6e77417049fa481c4850ed3410fc60877d8`；本次从该 clean HEAD 原树接续，没有重建工作树。
+
+- A 生产响应的 `artifact.metadata.privacyRedacted=true` 或 `representation=privacy-redacted-response` 任一标记存在时，CapturedJsonSourceReader 将整正文表示为 `redacted`。保存的 `[redacted]` 是采集器替换结果，不能因输出相同而声称观察到原始值；当前采取整正文保守不足，不猜测未遮罩字段。
+- `outputPath=''` 是合法 RFC6901 根指针，只有 undefined 才是未配置；字段来源与类型检查统一。类型不匹配仍失败，不跳过根输出检查。
+- 增加真实 EvidenceStore 两类隐私 marker 测试、根指针来源通过/类型错误失败测试；原生产 reader fixture 改为中文与 emoji 混排的约40 KiB正文，明确核对跨16 KiB续读完整值，继续保留篡改 hash 检测。
+- `npm.cmd run typecheck` 通过；`npm.cmd test -- test/unit/validator-materials.test.ts` 17/17，通过耗时5.69秒。日志：`output/refactor-f-20260926/typecheck-review-fix.log`、`validator-review-fix.log`。未启动 Electron；生产端口接入边界不变。
