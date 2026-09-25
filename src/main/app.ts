@@ -56,7 +56,7 @@ else app.whenReady().then(async()=>{
   window.window.on('close',event=>{event.preventDefault();void shutdown('window-close');});
   if(process.env.BES_TEST){
     const phase=process.env.BES_TEST_PHASE||'main';
-    const allowedPhases=['main','refactor-s0','refactor-replay','refactor-recording-record','refactor-recording-offline','refactor-runner','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
+    const allowedPhases=['main','refactor-s0','refactor-replay','refactor-recording-record','refactor-recording-offline','refactor-runner','refactor-system','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
     ensure(allowedPhases.includes(phase),'Unknown desktop test phase');
     const resultFile=phase==='main'?'test-result.json':`${phase}-result.json`;
     const identity:Record<string,unknown>={phase,processId:process.pid,startedAt:new Date().toISOString()};
@@ -98,6 +98,9 @@ else app.whenReady().then(async()=>{
         const {verifyStartup}=await import('../../test/desktop/startup');
         const reload=startupReload?.();
         Object.assign(identity,{layout:await verifyStartup(window),reload});
+      }else if(phase==='refactor-system'){
+        const {runRefactorSystemScenario}=await import('../../test/desktop/refactor-system');
+        Object.assign(identity,{system:await runRefactorSystemScenario(studio)});
       }else if(phase==='refactor-runner'){
         const {startFixture}=await import('../../test/fixtures/site');
         const {runRefactorRunnerScenarios}=await import('../../test/desktop/refactor-runner');

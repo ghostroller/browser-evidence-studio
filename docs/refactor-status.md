@@ -109,3 +109,8 @@
 - A `5850f88/17ab383 → 27c8db0/e48b2df`：根 typecheck/build 通过，`A-sample-tests.log` 实际 **2 文件/17 项，5.10 s**（命令多列一个不存在的 response-privacy 文件，Vitest 实际只跑两个文件，按实际计数）。第六次 `node test/desktop/launch.js --refactor-recording` **record/offline 均通过**，PID 32660/28956、7.91 s，`output/desktop-1790372576006` / `A-desktop-attempt-6.log`。原站关闭、新进程离线恢复两个历史 CSS 版本、图片及字体，源定位器对照和显示文字 shown/隐藏文字区别实际通过。仅本专项范围，不代表跨 frame、最终 UI 或长测完成。
 - 根 F 复用核验与 host identity snapshot 接续见 F handoff；typecheck + **3 文件/33 项，12.67 s** 通过。当前证据重新按固定字段/分页证明，旧 provenance 不重标、不改原件。
 - E `c205d6f` 已交付但仍待返修审查：重复 running 的合法恢复、全部 scope 的歧义判断、资源读取错误保留、ReplayHost 迟到代际和释放、精确字节计量。根不接入已知会把错误隐藏的包，原 E 任务处理，其他工作继续。D 首包同样在原任务修复迟到请求/播放时间；三流均未自行开桌面。
+### G 模块链专项准备与既有回归
+
+- 主树 `26a3a69` 的 `npm.cmd test` 完整 **38 文件/246 项通过，91.90 s**；`AF-full-unit.log`。`AF-typecheck.log/AF-build.log` 通过。未同时运行 Electron；其他流仅模块实现，此耗时不作性能门槛。
+- 旧完整桌面矩阵第 2 次 `ABC-desktop-regression-attempt-2.log`：PID 7392，`output/desktop-1790372952498`，前置 UI/M0/M1/环境通过，runner 启动在 `Studio.navigate` 的观察连接 `document.readyState` 读取抛 `Execution context was destroyed`；profile/recovery 后续阶段未启动。根已把具体栈交 E 修复真正的导航/观察就绪边界，不忽略原异常。进程已退出，桌面锁空闲。
+- 根新增现有启动器 `--refactor-system` 专项：停录后从真实 A 历史位置建 B 卡片与字段，无注释的元素绑定；固定版本经 E 任务授权/HTTP 启动 C 实际 worker，宿主采样回执进入耐久批次，再由 F 核对 good / wrong-value / evidence-partial，最后授权撤销拒读。fixture 已 typecheck，E 返修/采样接口尚未合入，因此**尚未运行**，不是通过记录。UI 专项另由 D 准备，root 接入口后统一实跑。

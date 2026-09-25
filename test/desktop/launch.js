@@ -80,6 +80,14 @@ function launchPhase(phase, timeoutMs, { dataRoot = root, extraEnv = {}, termina
 }
 
 async function main() {
+  if (process.argv.includes('--refactor-system')) {
+    const result = await launchPhase('refactor-system', 240000);
+    const summary = { passed: result.passed, output: root, phase: result };
+    fs.writeFileSync(path.join(root, 'refactor-system-summary.json'), JSON.stringify(summary, null, 2));
+    console.log(JSON.stringify({ passed: result.passed, output: root, error: result.error || result.result?.error }, null, 2));
+    process.exitCode = result.passed ? 0 : 1;
+    return;
+  }
   if (process.argv.includes('--refactor-runner')) {
     const result = await launchPhase('refactor-runner', 180000);
     const summary = { passed: result.passed, output: root, phase: result };
