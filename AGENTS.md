@@ -4,7 +4,7 @@
 
 这是独立 Electron 客户端 Browser Evidence Studio。旧 agent-browser-evidence 仅供经验和协议参考，不修改旧仓库、业务插件或宿主。不复制真实录制、Cookie、账号信息或登录 profile 到 Git。
 
-2026-09-22 已将实现 worktree 合并到 `D:\workspace\browser-evidence-studio` 的 `main`，该目录仍是最终集成与交付点。2026-09-26 用户授权本次重构新建隔离 worktree：仅使用本次新建的目录，不复用旧 Codex worktree；实际路径、分支、契约提交、数据隔离及所有权见 docs/refactor-handoffs/S0.md。普通维护仍在主目录进行。本次各工作包从冻结契约提交建立分支，独写自己的交接文件；共享契约、根配置及 refactor-status 由集成 owner 收敛。保留未提交改动与录制原件，不自动删除工作树或分支。当前进度和接续事项见 docs/progress.md。
+2026-09-22 已将实现 worktree 合并到 `D:\workspace\browser-evidence-studio` 的 `main`，该目录仍是最终集成与交付点。2026-09-26 用户授权本次重构新建隔离 worktree：仅使用本次新建的目录，不复用旧 Codex worktree；实际路径、分支、契约提交、数据隔离及所有权见 docs/refactor-handoffs/S0.md。普通维护仍在主目录进行。用户随后授权当前主任务负责完整重构的 Agent 启动、接续、审查、验证与集成：复用本次 A/B/C 树和合法后续提交，后续工作包从已验证的集成提交建树，不能重置到 S0；更新协议见 docs/refactor/02-codex-execution-guide.md。各包独写自己的交接文件，共享契约、根配置及 refactor-status 由集成 owner 收敛。保留未提交改动与录制原件，不自动删除工作树或分支。当前进度和接续事项见 docs/progress.md。
 
 当前仓库已有客户端实现与合成验证，实际通过范围见 docs/verification.md。后续实现按 docs/implementation-plan.md 推进；仅要求评估或文档时不要自行实施功能。
 
