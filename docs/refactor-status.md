@@ -32,11 +32,11 @@
 | 流 / 依赖 | worktree / branch | base | 原生任务 ID | 模型 / effort / 上下文 | 当前动作 / 提交 / 证据 |
 |---|---|---|---|---|---|
 | A / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-A` / `codex/refactor-a-20260926` | `4c4b293` | `/root/refactor_a` | `gpt-6-astra` / `xhigh` / `none` | 已实际启动并回报目录校验通过；独立依赖初始化和 A 实施；无新提交获集成批准 |
-| B / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-B` / `codex/refactor-b-20260926` | `4c4b293` | `/root/refactor_b` | `gpt-6-sol` / `high` / `none` | 已实际启动；核对目录、独立安装及 B 实施；待首个提交/测试证据 |
-| C / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-C` / `codex/refactor-c-20260926` | `4c4b293` | `/root/refactor_c` | `gpt-6-astra` / `xhigh` / `none` | 已实际启动；核对目录、独立安装及 C 实施；待首个提交/测试证据 |
+| B / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-B` / `codex/refactor-b-20260926` | `4c4b293` | `/root/refactor_b` | `gpt-6-sol` / `high` / `none` | 首两包已审查集成并主树复验；补 listDrafts/listRevisions 和 B handoff 后释放槽位 |
+| C / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-C` / `codex/refactor-c-20260926` | `4c4b293` | `/root/refactor_c` | `gpt-6-astra` / `xhigh` / `none` | 前三包已审查集成并主树复验；继续 manager/worker、代码快照及有界批次来源读取 |
 | D / A+B；结果接 F | 未建树 | 待已验证集成提交 | 未启动 | 计划 Sol high，尚未配置 | A/B 接口可用后由根创建；不要求用户操作 |
 | E / B+C；历史接 A、交接接 F | 未建树 | 待已验证集成提交 | 未启动 | 计划 Astra xhigh，尚未配置 | B/C 接口可用后在三流额度内启动 |
-| F / B+C；来源接 A | 未建树 | 待已验证集成提交 | 未启动 | 计划 Astra high，尚未配置 | B/C 接口可用后在三流额度内启动 |
+| F / B+C；来源接 A | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-F` / `codex/refactor-f-20260926` | `dedb272e6554a134236617e3a4033f0a3ab549ad` | 未启动 | 计划 Astra high，尚未配置 | 已从 B/C 通过 187 项单测的集成提交新建；待 B 完成后启动；BES_DATA 为本树 `output\data-F` |
 | G / 实际 A–F | 主集成目录 | 逐提交记录 | `/root`（审查上下文按需另记） | 沿用根实际配置 | 持续集成；最终系统验收尚未开始 |
 
 各流 BES_DATA 为自己的 worktree 下 `output\data-A` / `data-B` / `data-C`，不得共享 node_modules、profile、connection 或开发 latest。桌面/物理输入/长测独占锁当前 **空闲**，仅根可分配；三条实施流均已收到不得自行启动的指令。当前没有新重构功能被标为 verified。
@@ -51,5 +51,7 @@
 - 本轮生产集成入口尚未改动；Electron/桌面/物理输入/长测锁仍空闲。下一动作：接收第一份明确实现 SHA + handoff，根读差异并运行相应模块测试，按依赖接入后再调度 D/E/F。
 - 首批代码已收到并审查，尚未进入主树：B `687e8de2ec61df4d1c51b7631fa094a30458632a`（typecheck + 6 项定向测试通过），正在按根审查修复准确字节计量及旧投影截断信息；C `5b41291536e8cf9e9e88a6cb95957b73b98ffbf3`（typecheck + 14 项模块测试通过，包括真实 Node 子进程强杀），其取消/清理返修 `7feb229d172cc227bd3b6f744f1bc18e89425fc0`（8 项 steps 测试通过）。根已核对具体差异，C 新剩余阻塞是正常只读隐式读取全量批次正文，C 正改为有界元数据读和显式 rebuild。此处通过是子流模块证据，不能代替主树集成或真实 Electron。
 - B 收尾完成后释放实施槽位；根计划在已验证的 B 集成提交上启动 F 的固定资料/来源领域实现，沿用已冻结的 C 接口和已审查步骤结果语义，明确 C 持久服务及 A 来源适配仍待最终真实接入。不会为了启动 F 合入已知有验收缺陷的 C 实现。A/C 继续其原任务，无重复派发。
+- 已串行集成 B：`687e8de → 91e05d0`、`c3f8cb9 → 3897e9c`，C：`5b4129 → ceaa0a9`、`7feb229 → c82232c`、读取返修 `97fc384 → dedb272`。根审查确认取消包含非合作 evidence、清理失败隔离资源，常规数据读取不再扫全部正文，rebuild 显式执行。主树 `dedb272e6554a134236617e3a4033f0a3ab549ad` 的 `npm.cmd run typecheck` 通过；`npm.cmd test` **31 文件/187 项通过，78.89 s**，完整日志 `output/refactor-integration-20260926/BC-typecheck.log` 与 `BC-unit.log`。此前 B 定向 11 项通过另存 `B-module-tests.log`。这些是模块集成测试，production main/worker 及 A 来源仍待接入，未标端到端 verified。
+- F 实际已从上述通过的精确提交新建（未复用/重置任何树），启动仍等待 B 释放槽位。桌面锁空闲，未同跑 Electron；单元测试期间 A/B/C 仍可编译/进行模块工作，此耗时不是性能验收。
 
 当前未测项：跨源 frame、Shadow/Canvas、精确同毫秒回放、结构缺口恢复、离线资产、30 分钟新 session 连续分段内存、安装包及真人站点。既有资料原件没有迁移；生产 recorder 的 checkbox value 遮罩缺口由 A 按 S0 原型证据处理。
