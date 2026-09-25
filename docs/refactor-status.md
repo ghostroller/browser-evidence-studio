@@ -2,26 +2,26 @@
 
 更新：2026-09-26。总规范是 refactor/01-modification-plan.md；本表区分已验证原型与生产集成，不以提交数量计完成。
 
-**当前已恢复（2026-09-26）**：用户在暂停总结后明确“好的，继续”。暂停历史与未提交现场见文末；恢复时旧子 Agent 已不在原生列表，核对原树后启动 A/D/E 接续上下文，最新 ID 见恢复记录。B/C/F 模块已集成，完整重构仍在实施和验证中。
+**当前按用户要求暂停（2026-09-26 06:14）**：暂停点是首轮真实 A/B/C/E/F 系统链通过、D/E 模块接入完成。主树实现/测试提交 `85a7eca`，最新暂停文档提交在其后。没有启动下一轮桌面或长测；完整重构尚未完成。恢复以 [暂停接续记录](refactor-handoffs/PAUSE-20260926.md) 的当前任务、目录、提交队列和未提交现场为准，不能按下面历史派发记录重复启动或重置工作树。
 
 | T | 依赖 | owner | 状态 | 实际范围 / 接续 |
 |---|---|---|---|---|
 | T00 | 无 | S0 | verified | 基线/共享契约/协作规则已提交；真实 rrweb 源信息、选择、原始结构及定位器风险原型通过；生产能力由 A 接入 |
 | T01 | T00 | S0 | verified | session 保留/续录、导航/显式关闭、两种执行模式真实专项通过；无关 busy 下停止与跨启动状态目标校验测试通过 |
-| T02 | T00/T01 | A | implementing | 原生 A 已启动；采集通道预算、分段、耐久 barrier、源序列与分类 gap |
-| T03 | T00/T02 | A | implementing | A 包内按依赖推进；资源字节/manifest/blob/离线边界待实现验证 |
-| T04 | T02/T03 | A | implementing | A 包内按依赖推进；有界随机回放/eventSeq/释放待实现验证 |
-| T05 | T00/T02/T04 | A | implementing | A 包内按依赖推进；生产源属性/隐私/frame mapping 待验证，S0 spike 不是生产功能 |
-| T06 | T00 | B | module-integrated | 最终 B 已审查集成，主树材料/契约 13 项通过；真实 A sourceVerifier、E/UI 接入未验证 |
-| T07 | T04/T05/T06 | D | implementing | D 已实际启动；历史 checkpoint 创建、编辑、复制和注释 |
-| T08 | T05/T06/T07 | D | implementing | D 接 E 历史选择桥与材料门面；字段、去元素 tab、蒙版待集成 |
-| T09 | T00/T01 | C | module-integrated | 真实桌面 partial/cancel/timeout 专项通过；E 的资料绑定与最终 UI 未验收 |
-| T10 | T00/T09 | C | module-integrated | 持久增量批次、复用声明、显式选择、快照和输出预算已集成；最终独立业务产物待验收 |
-| T11 | T06/T09/T10 | F+D | module-integrated / implementing | F 真 JSON/逐页来源模块已集成，显示值与复用有效性仍证据不足；D 结果视图实施中 |
-| T12 | T01/T06/T09；历史读接 A | E | implementing | E 已实际启动，任务授权、后台读取、撤销和真实执行门面 |
-| T13 | T06/T11/T12 | E | implementing | E 实施固定版本交接、差异和订阅 |
-| T14 | 持续 | S0/G | implementing | 本轮 161 项、S0 专项、最终 19 进程矩阵通过；此前间歇 UI 风险记录保留；新架构长测仍待 A/G |
-| T15 | 全部接入 | G | not-started | 安装包、独立交付、新 Agent/真人与完整长测 |
+| T02 | T00/T01 | A | implementing | 生产预算/分段/耐久 barrier 已集成，模块故障测试通过；新格式长录制仍待验证 |
+| T03 | T00/T02 | A | implementing | 原站关闭、新进程恢复历史 CSS/图片/字体及同源 frame 专项通过；blob/data/redirect/SW/CSSOM 仍待闭环 |
+| T04 | T02/T03 | A | implementing | 有界窗口与反向 seek 专项通过；最终 ReplayHost 界面、长档和 viewport/DPI 尚未验收 |
+| T05 | T00/T02/T04 | A | implementing | 生产源属性、定位器、同源 frame/open shadow/SVG 与显示采样专项通过；能力边界仍待完整覆盖 |
+| T06 | T00 | B | implementing | 固定资料、冲突、版本 hash 模块已集成；G 实际历史来源→卡片/无注释字段→执行绑定通过，最终编辑 UI 待验收 |
+| T07 | T04/T05/T06 | D | implementing | 资料编辑/复制/移动 UI 已集成，模块通过；真实 UI fixture 已准备待审查接入 |
+| T08 | T05/T06/T07 | D | implementing | 新隔离历史选择 UI 已集成，旧元素 tab 已移除；原生输入/蒙版/焦点完整闭环尚未实跑 |
+| T09 | T00/T01 | C | implementing | partial/cancel/timeout 真桌面专项与 G 固定版本真实 worker 通过；最终业务及 UI 待验收 |
+| T10 | T00/T09 | C | implementing | 耐久批次、复用、选择、快照/预算模块通过；E 崩溃发现返修待根审查集成；最终独立业务交付仍待验收 |
+| T11 | T06/T09/T10 | F+D | implementing | JSON/逐页/复用来源模块通过；G 双实体显示值正确通过、错误值失败、附加证据 partial 保留数据通过；结果 UI 待实跑 |
+| T12 | T01/T06/T09；历史读接 A | E | implementing | 真实任务授权及重复执行、撤销拒读通过；授权 UI 待集成，jobs/state/剩余接口边界仍待收紧 |
+| T13 | T06/T11/T12 | E | implementing | 固定执行/报告门面已接入；完整交接导出、技能、差异与订阅尚未完成 |
+| T14 | 持续 | S0/G | implementing | 最近全套为 D/E 接入前 38 文件/246 项；接入后模块与首轮系统链通过，新全套/完整桌面/长测待跑 |
+| T15 | 全部接入 | G | implementing | 已开始真实系统集成；新安装包、独立交付、新 Agent/真人及完整长测尚未验收 |
 
 接入顺序：S0 冻结 → A/B/C 分别提交可验证模块 → owner 按依赖合并 → D/E/F → G。2026-09-26 用户已将启动和接续授权给本主任务，替代此前由用户在各目录启动的安排；历史 S0 handoff 保持原样。主控持续审查、组织返修、串行验证与集成；每包独写自己的 handoff，不修改本表。
 
@@ -114,3 +114,17 @@
 - 主树 `26a3a69` 的 `npm.cmd test` 完整 **38 文件/246 项通过，91.90 s**；`AF-full-unit.log`。`AF-typecheck.log/AF-build.log` 通过。未同时运行 Electron；其他流仅模块实现，此耗时不作性能门槛。
 - 旧完整桌面矩阵第 2 次 `ABC-desktop-regression-attempt-2.log`：PID 7392，`output/desktop-1790372952498`，前置 UI/M0/M1/环境通过，runner 启动在 `Studio.navigate` 的观察连接 `document.readyState` 读取抛 `Execution context was destroyed`；profile/recovery 后续阶段未启动。根已把具体栈交 E 修复真正的导航/观察就绪边界，不忽略原异常。进程已退出，桌面锁空闲。
 - 根新增现有启动器 `--refactor-system` 专项：停录后从真实 A 历史位置建 B 卡片与字段，无注释的元素绑定；固定版本经 E 任务授权/HTTP 启动 C 实际 worker，宿主采样回执进入耐久批次，再由 F 核对 good / wrong-value / evidence-partial，最后授权撤销拒读。fixture 已 typecheck，E 返修/采样接口尚未合入，因此**尚未运行**，不是通过记录。UI 专项另由 D 准备，root 接入口后统一实跑。
+
+### D/E 接入与 A frame 实跑（2026-09-26 06:10）
+
+- 当前主树 `b77a017`。E `e686e5f/c205d6f/900f1f0/d08c71f → e48dcdd/5a9f216/a84e287/1954adf` 已按具体差异审查并串行接入：任务范围授权、固定 B/C/F 门面、隔离 ReplayHost、重复 running 原件、完整步骤归属及真实多节点 checkpoint 采样。D `d245a88/63acd46/5a0ff06 → d99fbe1/d00b247/78d3d66` 为资料/回放/结果 UI 和两轮时序返修。主树 `DE-typecheck-1.log` 通过；`DE-module-tests-1.log` **12 文件/40 项，25.70 s**。仍待真实新 UI 验收，不将模块通过记为全包 verified。
+- A `23b3ff0 → 38a7740` 第七次录制失败：`output/desktop-1790373434512` / `A-desktop-attempt-7.log`，旧文档延迟资源任务被错误当作当前失败。`6480169 → f3adf7f` 将任务绑定 CDP loader 与触发快照的源位置，旧任务明确记录 skipped 诊断、保留原件。第八次在受限执行中 GPU 进程启动失败（exit -1073741515），`output/desktop-1790374046808` / `A-desktop-attempt-8.log`，未到功能断言。通过正常权限审批重跑第九次，**record/offline 均通过**，PID 13004/27804，6.34 s，`output/desktop-1790374061582` / `A-desktop-attempt-9.log`。实际包括同源 frame 的 CSS/图片与源定位器，原站关闭和新进程离线；跨源/其余资产/长档仍继续实施。
+- 根 `de82e5c` 将复用来源不足归入 sourceVerdict，schemaVerdict 继续按真实格式判定；`F-verdict-separation-tests.log` **1 文件/18 项，6.31 s**。没有改变总体非通过结果或历史 provenance。
+- E `ce13c20 → b77a017` 实际文档导航就绪边界接入，`G-system-build-1.log` 通过。根正运行 `--refactor-system` 第一次（`G-system-attempt-1.log`，工具 session 59080）；恢复时先核对日志/进程再启动，不能并跑 Electron。
+- 旧 API fixture 尚未传任务授权，`DE-legacy-api-tests-1.log` **7 失败/4 通过，5.16 s**；根负责改成真实 TaskAuthorizations fixture，保留取消、目标、人工控制的原断言意图，不恢复裸 lease 访问。D 授权 UI/真实桌面 fixture、E 崩溃后 dataset 发现及导出、A 资产边界继续在原树原任务推进。D 曾一次模型容量错误，已按 `/root/refactor_d_resume` 接续，未换模型或新建重复任务。
+
+### 按用户要求暂停复盘（2026-09-26 06:15）
+
+- G 第一次真实系统专项 **通过**，`output/desktop-1790374154201/refactor-system-report.json`，PID 43312：固定版、多次授权执行、双实体显示采样、错误值拒绝、附加 evidence partial 保留业务数据与撤销拒读。工具 session 59080 已结束；关闭阶段 UI sender 被拒日志保留。新 UI、安装包、长测未跑，不能称最终验收完成。
+- 根 `85a7eca` 完成手头旧 API fixture 适配；typecheck 与 **3 文件/14 项通过，1.82 s**，`DE-legacy-api-typecheck-2.log/DE-legacy-api-tests-2.log`。没有移除目标/取消/人类控制负例，使用真实 task grants。
+- 三条原生实施任务均确认 completed（用户暂停收尾），当前无 Electron 进程。A 保留未提交 CSSOM fixture；D `7b772bf` 与 E `83aa396` 等下一包排队审查，未继续集成。全树 SHA、测试、模型、待合包、未提交现场和依赖接续见 [暂停接续记录](refactor-handoffs/PAUSE-20260926.md)。用户恢复前不自行继续实施。
