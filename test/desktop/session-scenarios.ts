@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import type { Dialog } from 'puppeteer-core';
 import type { Studio } from '@/main/services/studio';
 import { jsonLines } from '@/evidence/files';
 import { clickSyntheticHuman } from './native-input';
@@ -81,10 +82,17 @@ export async function runSessionScenarios(studio:Studio,origin:string){
     report.checks.push('idle navigation identity, back/forward/reload and history isolation; sealed file hashes unchanged');
     await clickSyntheticHuman(studio,'#console-error');
     await page.page.evaluate(()=>{window.onbeforeunload=()=>false;});
-    await assert.rejects(()=>studio.closePage(page.pageId),/page prevented closing/);
-    assert.equal(studio.current(),page);assert.equal(page.view.webContents.isDestroyed(),false);assert.equal(studio.state().session?.locked,false);
-    await assert.rejects(()=>studio.closeSession(),/page prevented closing/);
-    assert.equal(studio.current(),page);assert.equal(page.view.webContents.isDestroyed(),false);assert.equal(studio.state().session?.locked,false);
+    const beforeUnload={dialogs:[] as string[],electronPreventedEvents:0};report.beforeUnload=beforeUnload;
+    const observedDialog=(dialog:Dialog)=>beforeUnload.dialogs.push(dialog.type());
+    const observedPrevented=()=>{beforeUnload.electronPreventedEvents++;};
+    page.page.on('dialog',observedDialog);page.view.webContents.on('will-prevent-unload',observedPrevented);
+    try{
+      await assert.rejects(()=>studio.closePage(page.pageId),/page prevented closing/);
+      assert.equal(studio.current(),page);assert.equal(page.view.webContents.isDestroyed(),false);assert.equal(studio.state().session?.locked,false);
+      await assert.rejects(()=>studio.closeSession(),/page prevented closing/);
+      assert.equal(studio.current(),page);assert.equal(page.view.webContents.isDestroyed(),false);assert.equal(studio.state().session?.locked,false);
+      assert.ok(beforeUnload.dialogs.includes('beforeunload')||beforeUnload.electronPreventedEvents>0,'A rejected close must be explained by an observed browser beforeunload event');
+    }finally{page.page.off('dialog',observedDialog);page.view.webContents.removeListener('will-prevent-unload',observedPrevented);}
     await page.page.evaluate(()=>{window.onbeforeunload=null;});
     report.checks.push('page/session beforeunload rejection is bounded and retains usable live page');
     await studio.closePage(page.pageId);assert.equal(page.view.webContents.isDestroyed(),true);assert.equal(studio.state().session?.pages.length,0);
