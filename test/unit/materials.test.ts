@@ -161,6 +161,8 @@ describe('project materials', () => {
     await expect(withoutVerifier.updateDraft(PROJECT, draft.draftId, 0, fixture(), 'human')).rejects.toMatchObject({ code: 'SOURCE_VERIFIER_REQUIRED' });
     const gapVerifier = new FileMaterialService(root, { position: async () => 'gap', target: async () => true });
     await expect(gapVerifier.updateDraft(PROJECT, draft.draftId, 0, fixture(), 'human')).rejects.toMatchObject({ code: 'INVALID_SOURCE' });
+    const fieldOnly = fixture(); fieldOnly.annotations = []; fieldOnly.checkpoints[0].annotationIds = []; delete fieldOnly.fields[0].annotationId;
+    await expect(gapVerifier.updateDraft(PROJECT, draft.draftId, 0, fieldOnly, 'human')).rejects.toMatchObject({ code: 'INVALID_SOURCE' });
     const wrongProject = fixture(); wrongProject.recordingRefs = ['foreign'];
     await expect(service.updateDraft(PROJECT, draft.draftId, 0, wrongProject, 'human')).rejects.toMatchObject({ code: 'INVALID_MATERIAL' });
     const foreignOnly: MaterialContent = { requirements: [], fields: [], checkpoints: [], annotations: [], recordingRefs: ['foreign'] };
