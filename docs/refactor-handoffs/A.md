@@ -56,3 +56,9 @@ root真实桌面attempt1：typecheck/41模块测试/build通过，但生产初�
 root真实attempt2：`output/desktop-1790368992121` 的run `2044933f-4cae-413d-9100-ab71ff4822f8`已封存但degraded；只读复核看到7次resource预算拒绝、1次network预算拒绝，font/ttf仅browser-cached-resource-unavailable，确认不能通过扩大内存上限掩盖。修改为最多256条/1MiB的轻量descriptor队列，实际response/CDP缓存正文一次仅读取一个并独立保留32MiB+4096工作集预约，直到解码/落盘全部完成才释放；新文档资源等真实source baseline提交，不能绑定旧about:blank。stop先禁止新增任务，再读完已接受descriptor并持久化，最后detach CDP。
 
 测试finally先写原始异常报告，关闭其自身synthetic session，再关闭源站所有连接，避免断言被server.close等待隐藏。模块新增并发大正文descriptor顺序/限额测试及跨rrweb/HTML/JSON隐私、__proto__普通属性、CSS/srcset parser验证，typecheck与8项A测试通过。metadata变更丢失后受影响属性变为missing，不展示旧值冒充当时原值；动作摘要遵守rr-mask/rr-block及表单遮罩。
+
+## 暂停后接续与第三次桌面结果
+
+原 A 原生任务消失后，根于同一工作树接续 `/root/refactor_a_resume`；HEAD `0d295c7`、全部8个dirty及未跟踪url-privacy文件原样保留。Node v24.21.0/npm11.19.0核实；共享显示值契约 `2e2258e` 顺序接为 `9c1a1d6`，未覆盖dirty。
+
+根第三次真实record通过（PID42660、font已捕获），offline新PID32900失败，原件和报告保留于根 `output/desktop-1790370699081`。静态复核定位首个executeJavaScript的CSP值内含单引号，却嵌入单引号JavaScript字符串，产生语法错误。改用DOM创建meta并以JSON.stringify传完整原政策；未放松CSP/sandbox。加入有界renderer console（100条、每条4000字符）及执行stage。`npm.cmd run typecheck`通过，日志 `output/refactor-a-resume/offline-diagnostic-typecheck.log`；真实offline重跑仍由根调度。本诊断提交不含尚未完成的隐私包。
