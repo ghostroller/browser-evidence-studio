@@ -44,9 +44,10 @@ export function sourceLocators(model: SourceModel, ref: HistoricalElementRef): L
     const matches = scope.filter(item => value(item, name) === original);
     const warnings = name === 'class' ? ['Class names may depend on transient rendering state.'] : [];
     add('css', `[${name}=${cssString(original)}]`, matches, warnings);
-    add('xpath', `.//*[@${name}=${xpathString(original)}]`, matches, warnings);
+    if(!node.metadata!.shadowHostIds.length)add('xpath', `.//*[@${name}=${xpathString(original)}]`, matches, warnings);
   }
-  add('css', structuralCss(model, node), [node], ['Depends on recorded element order.']);
+  const cssPath=structuralCss(model,node);
+  add('css', cssPath, queryStructuralCss(model,node,cssPath), ['Depends on recorded element order.']);
   const chain: SourceTreeNode[] = []; let cursor: SourceTreeNode | undefined = node;
   while (cursor?.metadata && cursor.metadata.rootId === node.metadata!.rootId && JSON.stringify(cursor.metadata.shadowHostIds) === JSON.stringify(node.metadata!.shadowHostIds)) {
     chain.unshift(cursor); cursor = cursor.parentId === undefined ? undefined : model.nodes.get(cursor.parentId);
@@ -55,8 +56,39 @@ export function sourceLocators(model: SourceModel, ref: HistoricalElementRef): L
     const siblings = item.parentId === undefined ? [item] : model.nodes.get(item.parentId)!.children.map(id => model.nodes.get(id)!).filter(sibling => sibling.type === 2 && sibling.metadata?.tagName === item.metadata!.tagName && sibling.metadata?.namespaceURI === item.metadata!.namespaceURI && sibling.isShadow === item.isShadow);
     return `${tagXPath(item)}[${siblings.findIndex(sibling => sibling.id === item.id) + 1}]`;
   }).join('/');
-  add('xpath', xpath, [node], ['Depends on recorded sibling order; evaluate relative to its document or shadow root.']);
+  if(!node.metadata!.shadowHostIds.length)add('xpath', xpath, queryStructuralXPath(model,node,chain), ['Depends on recorded sibling order; evaluate relative to its document.']);
   return candidates;
+}
+function scopeChildren(model:SourceModel,node:SourceTreeNode):SourceTreeNode[]{
+  const metadata=node.metadata!,root=model.nodes.get(metadata.shadowHostIds.at(-1)??metadata.rootId);
+  return root?.children.map(id=>model.nodes.get(id)!).filter(item=>item.type===2&&item.isShadow===!!metadata.shadowHostIds.length)??[];
+}
+function queryStructuralCss(model:SourceModel,node:SourceTreeNode,expression:string):SourceTreeNode[]{
+  let current=scopeChildren(model,node);
+  const parts=expression.split(' > ');
+  for(let index=0;index<parts.length;index++){
+    const match=/^\*:nth-child\(([1-9][0-9]*)\)$/.exec(parts[index]);if(!match)return[];
+    current=current.filter(candidate=>{
+      const siblings=candidate.parentId===undefined?[candidate]:model.nodes.get(candidate.parentId)!.children.map(id=>model.nodes.get(id)!).filter(item=>item.type===2&&item.isShadow===candidate.isShadow);
+      return siblings.indexOf(candidate)+1===Number(match[1]);
+    });
+    if(index<parts.length-1)current=current.flatMap(parent=>parent.children.map(id=>model.nodes.get(id)!).filter(item=>item.type===2&&!item.isShadow));
+  }
+  return current;
+}
+function queryStructuralXPath(model:SourceModel,node:SourceTreeNode,chain:SourceTreeNode[]):SourceTreeNode[]{
+  let current=scopeChildren(model,node);
+  for(let index=0;index<chain.length;index++){
+    const expected=chain[index],metadata=expected.metadata!;
+    const siblings=expected.parentId===undefined?[expected]:model.nodes.get(expected.parentId)!.children.map(id=>model.nodes.get(id)!).filter(item=>item.type===2&&item.metadata?.tagName===metadata.tagName&&item.metadata?.namespaceURI===metadata.namespaceURI&&item.isShadow===expected.isShadow);
+    const position=siblings.indexOf(expected)+1;
+    current=current.filter(candidate=>candidate.metadata?.tagName===metadata.tagName&&candidate.metadata.namespaceURI===metadata.namespaceURI).filter(candidate=>{
+      const matches=candidate.parentId===undefined?[candidate]:model.nodes.get(candidate.parentId)!.children.map(id=>model.nodes.get(id)!).filter(item=>item.type===2&&item.metadata?.tagName===metadata.tagName&&item.metadata?.namespaceURI===metadata.namespaceURI&&item.isShadow===candidate.isShadow);
+      return matches.indexOf(candidate)+1===position;
+    });
+    if(index<chain.length-1)current=current.flatMap(parent=>parent.children.map(id=>model.nodes.get(id)!).filter(item=>item.type===2&&!item.isShadow));
+  }
+  return current;
 }
 function structuralCss(model: SourceModel, node: SourceTreeNode): string {
   const parts: string[] = []; let current: SourceTreeNode | undefined = node;

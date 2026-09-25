@@ -1,4 +1,5 @@
 import type { ArtifactInput } from '@/evidence/contracts';
+import { redactHtml } from './privacy';
 
 export type CheckpointCaptureOutcome = 'completed' | 'timed-out' | 'cancelled';
 export type CheckpointMaterial = Pick<ArtifactInput, 'kind' | 'mediaType' | 'data' | 'captureStatus' | 'reason'>;
@@ -80,7 +81,8 @@ export async function captureCheckpointMaterials(options: CheckpointCaptureOptio
       void Promise.resolve().then<string | Uint8Array | undefined>(() => canAccept() ? capture() : undefined).then(
         data => {
           if (!canAccept() || data === undefined) return;
-          accept(index, { ...descriptors[index], data, captureStatus: data.length ? 'complete' : 'empty' });
+          const privacy=index===1&&typeof data==='string'?redactHtml(data):undefined;
+          accept(index, { ...descriptors[index], data:privacy?.text??data, captureStatus: data.length ? 'complete' : 'empty',...(privacy?.redacted?{reason:'Form values and privacy-marked DOM content redacted at capture'}:{}) });
         },
         reason => {
           if (!canAccept()) return;
