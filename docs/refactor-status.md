@@ -128,3 +128,5 @@
 - G 第一次真实系统专项 **通过**，`output/desktop-1790374154201/refactor-system-report.json`，PID 43312：固定版、多次授权执行、双实体显示采样、错误值拒绝、附加 evidence partial 保留业务数据与撤销拒读。工具 session 59080 已结束；关闭阶段 UI sender 被拒日志保留。新 UI、安装包、长测未跑，不能称最终验收完成。
 - 根 `85a7eca` 完成手头旧 API fixture 适配；typecheck 与 **3 文件/14 项通过，1.82 s**，`DE-legacy-api-typecheck-2.log/DE-legacy-api-tests-2.log`。没有移除目标/取消/人类控制负例，使用真实 task grants。
 - 三条原生实施任务均确认 completed（用户暂停收尾），当前无 Electron 进程。A 保留未提交 CSSOM fixture；D `7b772bf` 与 E `83aa396` 等下一包排队审查，未继续集成。全树 SHA、测试、模型、待合包、未提交现场和依赖接续见 [暂停接续记录](refactor-handoffs/PAUSE-20260926.md)。用户恢复前不自行继续实施。
+
+- 暂停后用户另行授权提交并推送所有分支。全部 10 个本地分支、9 个工作树核对完成；A 唯一未提交 fixture 已保存为 `550f30a`，仍标记桌面未验证。此次仅提交/推送已有现场，不继续重构或把待审查 D/E 包合入 main；最新 A 接续点与推送范围已追加到暂停记录。
