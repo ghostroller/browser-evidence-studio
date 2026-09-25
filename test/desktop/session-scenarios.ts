@@ -79,6 +79,14 @@ export async function runSessionScenarios(studio:Studio,origin:string){
     await studio.navigateHistory('reload');
     assert.deepEqual(await fileHashes(first.store.runDir),originalHashes,'Restart, idle navigation and history reads cannot mutate sealed originals');
     report.checks.push('idle navigation identity, back/forward/reload and history isolation; sealed file hashes unchanged');
+    await clickSyntheticHuman(studio,'#console-error');
+    await page.page.evaluate(()=>{window.onbeforeunload=()=>false;});
+    await assert.rejects(()=>studio.closePage(page.pageId),/page prevented closing/);
+    assert.equal(studio.current(),page);assert.equal(page.view.webContents.isDestroyed(),false);assert.equal(studio.state().session?.locked,false);
+    await assert.rejects(()=>studio.closeSession(),/page prevented closing/);
+    assert.equal(studio.current(),page);assert.equal(page.view.webContents.isDestroyed(),false);assert.equal(studio.state().session?.locked,false);
+    await page.page.evaluate(()=>{window.onbeforeunload=null;});
+    report.checks.push('page/session beforeunload rejection is bounded and retains usable live page');
     await studio.closePage(page.pageId);assert.equal(page.view.webContents.isDestroyed(),true);assert.equal(studio.state().session?.pages.length,0);
     await studio.closeSession();assert.equal(studio.state().session,null);
     await studio.startRun({projectId:project.id,profileId:profile.id,url:origin+'/orders'});

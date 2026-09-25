@@ -11,7 +11,7 @@ import { EvidenceStore } from '@/evidence/store';
 import { EvidenceReader } from '@/evidence/reader';
 import { atomicJson, jsonLines, safeFile } from '@/evidence/files';
 import { CaptureCoordinator, type PageIdentity } from '@/capture/coordinator';
-import { ensure, now } from '@/shared/errors';
+import { ensure, now, StudioError } from '@/shared/errors';
 import { startWorkflow, type WorkflowHandle } from '@/runner/manager';
 import type { HumanRequest } from '@/contracts/workflow';
 import { fingerprintInput, fingerprintWorkflow, loadWorkflow } from '@/runner/fingerprint';
@@ -242,13 +242,30 @@ export class Studio {
   async closePage(pageId:string){
     const r=this.live(),p=r.pages.get(pageId);ensure(p,'Unknown page',404);
     ensure(r.controller==='human'&&!r.locked&&!r.ending&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Stop the runner before closing its page',409);
-    this.window.remove(p.view);await Promise.all([...(r.pageClosures??[])]);this.onChanged();return this.browserState();
+    r.locked=true;r.leaseEpoch++;this.window.lock(true);
+    try{await this.closePageContents(p);await Promise.all([...(r.pageClosures??[])]);return this.browserState();}
+    finally{if(this.browser?.runtime===r&&!r.stopping&&!r.ending){r.locked=false;this.window.lock(r.controller!=='human');}this.onChanged();}
+  }
+  private async closePageContents(p:ManagedPage){
+    const contents=this.pageContents(p);if(!contents){this.window.remove(p.view);return;}
+    // Keep registry/native ownership until Electron confirms destruction. A
+    // beforeunload rejection must leave a visible, usable page in the session.
+    await new Promise<void>((resolve,reject)=>{
+      let settled=false;
+      const finish=(error?:unknown)=>{if(settled)return;settled=true;clearTimeout(timer);contents.removeListener('destroyed',destroyed);contents.removeListener('will-prevent-unload',prevented);if(error)reject(error);else resolve();};
+      const destroyed=()=>finish();
+      const prevented=()=>finish(new StudioError(409,'page_close_prevented','The page prevented closing; its live session is retained'));
+      const timer=setTimeout(()=>finish(new StudioError(409,'page_close_timeout','The page did not confirm closing within 5 seconds; its live session is retained')),5000);
+      contents.once('destroyed',destroyed);contents.once('will-prevent-unload',prevented);
+      try{contents.close({waitForBeforeUnload:true});}catch(error){finish(error);}
+    });
   }
   async closeSession(){
     const browser=this.browser;ensure(browser,'No live browser session',409);ensure(!this.active,'Seal the recording before closing its browser session',409);
     ensure(!this.validationLaunch&&!this.workflow&&!this.workflowStarting&&!this.workflowSettlement,'Stop the runner before closing its browser session',409);
-    const r=browser.runtime;r.ending=true;r.locked=true;r.leaseEpoch++;this.window.lock(true);await this.revokeOperation(r);
-    for(const p of [...r.pages.values()])this.window.remove(p.view);this.browser=undefined;this.window.lock(false);this.onChanged();return {closed:true,sessionId:browser.id};
+    const r=browser.runtime;r.ending=true;r.locked=true;r.leaseEpoch++;this.window.lock(true);
+    try{await this.revokeOperation(r);for(const p of [...r.pages.values()])await this.closePageContents(p);this.browser=undefined;return {closed:true,sessionId:browser.id};}
+    finally{r.ending=false;r.locked=false;this.window.lock(false);this.onChanged();}
   }
   private assertOperationOwner(r:ActiveRun,p:ManagedPage,leaseEpoch:number,generation?:number){
     ensure(this.active===r&&!this.closing&&!r.ending&&r.controller==='agent'&&!r.locked&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Agent no longer owns this browser',409);
