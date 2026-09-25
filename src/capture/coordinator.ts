@@ -12,6 +12,7 @@ import type { RecordingEnvelope } from './recording-types';
 import type { ReplayPosition } from '@/contracts/recording';
 import { CaptureBudget, type CaptureChannel } from './budget';
 import { ResourceCapture, isArchivableResource, privateResourceUrl, RESOURCE_MAX_BYTES } from '@/resources/archive';
+import { responsePrivacy } from './privacy';
 
 export interface PageIdentity { pageId:string; targetId:string; webContentsId:number; navigationGeneration:number; openerPageId?:string; }
 const BODY_LIMIT = 8 * 1024 * 1024;
@@ -40,6 +41,8 @@ export class CaptureCoordinator {
   private lastPosition?: ReplayPosition;
   private readonly droppedChannels = new Map<CaptureChannel, number>();
   private readonly losses = new Map<CaptureChannel,{from:ReplayPosition;to:ReplayPosition;count:number}>();
+  private unknownStructuralLoss = false;
+  private archivedDocument?:string;
   private readonly fullSnapshots = new Map<number,number>();
   private pauseAt?:string;
   private frameId?:string;
@@ -84,16 +87,17 @@ export class CaptureCoordinator {
     cdp.on('Runtime.consoleAPICalled',(event:any)=>{if(!this.paused)this.task(()=>this.event('console',{type:event.type,args:event.args.map((x:any)=>({type:x.type,value:x.value,description:x.description?.slice(0,4000)}))}));});
     cdp.on('Runtime.bindingCalled',(event:any)=>{
       if(event.name!==this.binding||this.paused||this.stopped) return;
-      const payloadBytes=Buffer.byteLength(event.payload);if(payloadBytes>16*1024*1024){this.drops++;this.fail('Recorder event exceeds 16 MiB');return;}
+      const payloadBytes=Buffer.byteLength(event.payload);if(payloadBytes>16*1024*1024){this.drops++;this.droppedChannels.set('structure',(this.droppedChannels.get('structure')||0)+1);this.unknownStructuralLoss=true;this.recoveryNeeded=true;this.fail('Recorder event exceeds 16 MiB; exact source boundary unavailable');this.recoverSnapshot();return;}
       let data;try{data=JSON.parse(event.payload);}catch{this.fail('Malformed recorder payload');return;}
       const source=data.event?.type===3?data.event.data?.source:undefined;
       const channel:CaptureChannel=data.kind!=='rrweb'?'metadata':[1,3,6].includes(source)?'sampling':'structure';
       const accepted=this.task(async()=>{ const frameId=this.contexts.get(event.executionContextId);
         if(data.kind==='rrweb'){
           const losses=[...this.losses].map(([category,range])=>({id:randomUUID(),from:range.from,to:range.to,category:category==='network'?'resource':category,reason:'capture-channel-budget',count:range.count}));this.losses.clear();
+          if(this.unknownStructuralLoss){losses.push({id:randomUUID(),from:this.lastPosition??data.position,to:data.position,category:'structure',reason:'oversized-recorder-event-unknown-boundary',count:1});this.unknownStructuralLoss=false;}
           const record:RecordingEnvelope={...data,receivedAt:new Date().toISOString(),gaps:[...losses,...(data.errors??[]).map((reason:string)=>({id:randomUUID(),from:data.position,category:'metadata',reason}))]};
           await this.recording.append(record);this.lastPosition=record.position;
-          if(data.event?.type===2){this.fullSnapshots.set(event.executionContextId,(this.fullSnapshots.get(event.executionContextId)||0)+1);await this.event('rrweb-full-snapshot',{frameId,isTop:data.isTop===true,contextId:event.executionContextId,timestamp:data.event.timestamp,position:record.position});}}
+          if(data.event?.type===2){this.fullSnapshots.set(event.executionContextId,(this.fullSnapshots.get(event.executionContextId)||0)+1);await this.event('rrweb-full-snapshot',{frameId,isTop:data.isTop===true,contextId:event.executionContextId,timestamp:data.event.timestamp,position:record.position});if(this.archivedDocument!==record.position.documentId){this.archivedDocument=record.position.documentId;this.task(()=>this.captureLoadedResources(),RESOURCE_MAX_BYTES*4+4096,'resource');}}}
         else { await this.event(data.kind,{...data,frameId,actor:'unknown',source:'isolated-world-observer'}); if(data.kind==='element-selected') this.onSelection({...data,frameId,pageId:this.identity.pageId,generation:this.identity.navigationGeneration}); }
       },payloadBytes*3,channel);
       if(!accepted&&data.position){const previous=this.losses.get(channel);this.losses.set(channel,{from:previous?.from??data.position,to:data.position,count:(previous?.count??0)+1});}
@@ -140,7 +144,7 @@ export class CaptureCoordinator {
         if(bytes.length>BODY_LIMIT)throw new Error('response-decoded-byte-budget');
         if(resource&&resourceInput)await this.resources.capture({...resourceInput,data:bytes});
         if(resource&&!/text|svg/i.test(r.mime))artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime,captureStatus:'excluded',reason:'Binary bytes captured in offline resource archive',source:{requestKey:r.key,url:r.url}});
-        else artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime,data:bytes,limitBytes:BODY_LIMIT,source:{requestKey:r.key,url:r.url,frameId:r.frameId}});
+        else {const safe=responsePrivacy(bytes,r.mime);artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime,data:safe.data,limitBytes:BODY_LIMIT,...(safe.excludedReason?{captureStatus:'excluded' as const,reason:safe.excludedReason}:{}),metadata:{privacyRedacted:safe.redacted,representation:safe.redacted?'privacy-redacted-response':'observed-response'},source:{requestKey:r.key,url:r.url,frameId:r.frameId}});}
       }
       catch(error){if(resource&&resourceInput)await this.resources.capture({...resourceInput,status:'failed',reason:'observed-response-body-unavailable'});artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime,captureStatus:'read-failed',reason:String(error),source:{requestKey:r.key,url:r.url}});}
       await this.event('network-body',{requestKey:r.key,url:r.url,encodedDataLength:e.encodedDataLength},[artifact.id]);
@@ -222,7 +226,7 @@ export class CaptureCoordinator {
     if(!this.stopped && this.cdp && !this.page.isClosed()&&!this.documentGone){
       if(this.scriptId){await this.cdp.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:this.scriptId});this.scriptId=undefined;}
       for(const contextId of [...this.contexts.keys()]){
-        try{const result=await this.cdp.send('Runtime.evaluate',{expression:'window.__besStop?.();window.__besSourceHealth?.() || null',contextId,returnByValue:true});if(result.exceptionDetails)throw new Error(result.exceptionDetails.text||'Recorder teardown failed');const health=result.result.value;if(health&&(health.failedEmits||!health.metadataComplete))throw new Error('Final recorder emission failed: '+JSON.stringify(health));}
+        try{const result=await this.cdp.send('Runtime.evaluate',{expression:'(()=>{const before=window.__besSourceHealth?.();window.__besStop?.();return {before,after:window.__besSourceHealth?.()}})()',contextId,returnByValue:true});if(result.exceptionDetails)throw new Error(result.exceptionDetails.text||'Recorder teardown failed');const health=result.result.value;if(health&&(health.before?.failedEmits||health.after?.failedEmits||health.after?.pendingMetadata||health.after?.metadataComplete===false))throw new Error('Final recorder emission failed: '+JSON.stringify(health));}
         catch(error){
           // A document that has already disappeared cannot retain a recorder.
           if(!this.page.isClosed()&&!/Cannot find context|Execution context was destroyed|Cannot find execution context/i.test(String(error)))throw error;
@@ -232,7 +236,7 @@ export class CaptureCoordinator {
     const wasPaused=this.paused;this.stopped=true;this.inspectionEnabled=false;
     this.unfinishedOnStop??=this.requests.reset();
     if(this.cdp&&!this.cdp.detached)await this.cdp.detach().catch(error=>{if(!this.page.isClosed()&&!this.documentGone)throw error;});
-    await this.flush();if(wasPaused&&!this.pausedStopRecorded){await this.event('gap',{reason:'recording-paused',startedAt:this.pauseAt,endedAt:new Date().toISOString(),endedBy:'capture-stop'});this.pausedStopRecorded=true;}
+    await this.flush();if(this.unknownStructuralLoss){await this.event('gap',{category:'structure',reason:'oversized-final-recorder-event-unknown-boundary',from:this.lastPosition,to:'unknown',finalEmissionLost:true});await this.store.flush();throw new Error('Final source event exceeded its budget; capture remains incomplete');}if(wasPaused&&!this.pausedStopRecorded){await this.event('gap',{reason:'recording-paused',startedAt:this.pauseAt,endedAt:new Date().toISOString(),endedBy:'capture-stop'});this.pausedStopRecorded=true;}
     while(this.unfinishedOnStop.length){await this.unfinished([this.unfinishedOnStop[0]!],'capture-stopped-in-flight');this.unfinishedOnStop.shift();}
     await this.store.flush();this.stopComplete=true;
   }

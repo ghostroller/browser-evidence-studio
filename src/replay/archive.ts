@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { ReplayPosition, RecordingGap } from '@/contracts/recording';
-import { parseReplayPosition } from '@/contracts/recording';
+import { parseReplayPosition, sameReplayPosition } from '@/contracts/recording';
 import type { RecordingEnvelope, RawReceipt } from '@/capture/recording-types';
 import { sameStream } from '@/capture/recording-types';
 import { EvidenceError } from '@/evidence/contracts';
@@ -104,24 +104,24 @@ export class RecordingArchive {
   async streams(limit=100,after?:string):Promise<{items:RecordingStream[];nextCursor?:string}>{
     if(!Number.isSafeInteger(limit)||limit<1||limit>1000)invalid('Stream limit must be 1..1000');
     if(after&&!/^[a-f0-9]{64}$/.test(after))invalid('Invalid stream cursor');
+    if(after){const manifest=JSON.parse(await fs.readFile(await safeFile(this.runDir,'manifest.json'),'utf8')) as {status:string};if(manifest.status!=='sealed')throw new EvidenceError('ACTIVE_STREAM_CURSOR','Paginated stream enumeration requires a sealed recording; refresh the active first page.',409);}
     const directory=await fs.opendir(path.join(this.runDir,'replay-index'));
-    const items:RecordingStream[]=[];let seen=!after,last:string|undefined;
-    try{for await(const entry of directory){
-      if(!/^[a-f0-9]{64}$/.test(entry.name))continue;
-      if(!seen){if(entry.name===after)seen=true;continue;}
-      if(items.length===limit)return{items,nextCursor:last};
-      const file=await safeFile(this.runDir,`replay-index/${entry.name}/stream.json`);
-      if((await fs.stat(file)).size>4096)invalid('Stream descriptor exceeds budget');
-      items.push(JSON.parse(await fs.readFile(file,'utf8')) as RecordingStream);last=entry.name;
-    }}finally{/* for-await closes the directory, including early return. */}
-    if(!seen)invalid('Stream cursor no longer exists');return{items};
+    const keys:string[]=[];
+    for await(const entry of directory){
+      if(!/^[a-f0-9]{64}$/.test(entry.name)||after&&entry.name<=after)continue;
+      keys.push(entry.name);keys.sort();if(keys.length>limit+1)keys.pop();
+    }
+    const items:RecordingStream[]=[];
+    for(const key of keys.slice(0,limit)){const file=await safeFile(this.runDir,`replay-index/${key}/stream.json`);if((await fs.stat(file)).size>4096)invalid('Stream descriptor exceeds budget');const descriptor=checkedStream(JSON.parse(await fs.readFile(file,'utf8')));if(streamKey(descriptor.first)!==key)invalid('Stream descriptor identity mismatch');items.push(descriptor);}
+    return{items,...(keys.length>limit?{nextCursor:keys[limit-1]}:{})};
   }
   async positions(stream:ReplayPosition,limit=100,ordinal=0):Promise<{items:Array<{position:ReplayPosition;type:number;source:number}>;nextOrdinal?:number}>{
     const descriptor=await this.stream(stream);
     if(!Number.isSafeInteger(limit)||limit<1||limit>1000||!Number.isSafeInteger(ordinal)||ordinal<0||ordinal>descriptor.events)invalid('Invalid position query range');
     const count=Math.min(limit,descriptor.events-ordinal),data=await readSlice(this.runDir,`replay-index/${streamKey(stream)}/positions.bin`,ordinal*24,count*24);
     if(data.length!==count*24)invalid('Position index is truncated; rebuild required');
-    const items=Array.from({length:count},(_,index)=>({position:{...descriptor.first,sourceTimeMs:data.readDoubleLE(index*24),eventSeq:data.readDoubleLE(index*24+8)},type:data.readInt32LE(index*24+16),source:data.readInt32LE(index*24+20)}));
+    const items=Array.from({length:count},(_,index)=>({position:parseReplayPosition({...descriptor.first,sourceTimeMs:data.readDoubleLE(index*24),eventSeq:data.readDoubleLE(index*24+8)}),type:data.readInt32LE(index*24+16),source:data.readInt32LE(index*24+20)}));
+    for(let index=0;index<items.length;index++){const item=items[index];if(item.type<0||item.type>6||item.source< -1||item.source>16||item.position.eventSeq<descriptor.first.eventSeq||item.position.eventSeq>descriptor.last.eventSeq||index>0&&items[index-1].position.eventSeq>=item.position.eventSeq)invalid('Malformed position index row');}
     return{items,...(ordinal+count<descriptor.events?{nextOrdinal:ordinal+count}:{})};
   }
   async resolveTime(stream:ReplayPosition,sourceTimeMs:number):Promise<ReplayPosition>{
@@ -130,12 +130,12 @@ export class RecordingArchive {
     let low=0,high=descriptor.events-1,selected:ReplayPosition|undefined;
     while(low<=high){const mid=Math.floor((low+high)/2),item=(await this.positions(stream,1,mid)).items[0];if(item.position.sourceTimeMs<=sourceTimeMs){selected=item.position;low=mid+1;}else high=mid-1;}
     if(!selected)invalid('Requested time precedes this stream');
-    await this.entry(selected);return selected;
+    await this.window(selected);return selected;
   }
   private async stream(position:ReplayPosition):Promise<RecordingStream>{
     parseReplayPosition(position);const file=await safeFile(this.runDir,`replay-index/${streamKey(position)}/stream.json`);
     if((await fs.stat(file)).size>4096)invalid('Stream descriptor exceeds budget');
-    const descriptor=JSON.parse(await fs.readFile(file,'utf8')) as RecordingStream;
+    const descriptor=checkedStream(JSON.parse(await fs.readFile(file,'utf8')));
     if(!sameStream(descriptor.first,position)||!Number.isSafeInteger(descriptor.events)||descriptor.events<1)invalid('Malformed stream descriptor');return descriptor;
   }
   async window(position: ReplayPosition, signal?: AbortSignal): Promise<ReplayWindow> {
@@ -156,7 +156,7 @@ export class RecordingArchive {
       if (bytes.length !== slot.receipt.bytes || hashBytes(bytes) !== slot.receipt.sha256) invalid('Original recording bytes are missing, truncated, or changed');
       const raw = JSON.parse(bytes.toString('utf8')) as { payload: RecordingEnvelope; id: string; sequence: number };
       const record = raw.payload; checkRecord(record);
-      if (raw.id !== slot.receipt.id || raw.sequence !== slot.receipt.sequence || !sameStream(record.position, position) || record.position.eventSeq !== seq) invalid('Recording slot does not identify the requested original event');
+      if (raw.id !== slot.receipt.id || raw.sequence !== slot.receipt.sequence || !sameStream(record.position, position) || !sameReplayPosition(record.position,slot.position) || record.position.eventSeq !== seq) invalid('Recording slot does not identify the requested original event');
       records.push(record);
       if(seq===target.baseline)break;
       if(slot.previousSeq===undefined||!Number.isSafeInteger(slot.previousSeq)||slot.previousSeq>=seq||slot.previousSeq<target.baseline)invalid('Replay index has a missing event predecessor');
@@ -208,4 +208,10 @@ export class RecordingArchive {
     }
     return { records, corruptCount, corrupt };
   }
+}
+function checkedStream(input:unknown):RecordingStream{
+  if(!input||typeof input!=='object')invalid('Malformed stream descriptor');const value=input as RecordingStream;
+  parseReplayPosition(value.first);parseReplayPosition(value.last);
+  if(!sameStream(value.first,value.last)||!Number.isSafeInteger(value.events)||value.events<1||value.events>100_000_000||value.first.eventSeq>value.last.eventSeq||typeof value.monotonicTime!=='boolean')invalid('Malformed stream descriptor');
+  return value;
 }

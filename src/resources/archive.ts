@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { ReplayPosition, ResourceReference, SourceValue } from '@/contracts/recording';
+import { parseReplayPosition, sameReplayPosition } from '@/contracts/recording';
 import { EvidenceError } from '@/evidence/contracts';
 import { atomicFile, atomicJson, exists, hashBytes, safeFile } from '@/evidence/files';
 import type { EvidenceStore } from '@/evidence/store';
@@ -91,7 +92,8 @@ export class ResourceArchive {
     const file = await safeFile(this.runDir, `resources/${checkedId(id)}.json`);
     if ((await fs.stat(file)).size > 32 * 1024) throw new EvidenceError('RESOURCE_METADATA_BUDGET', 'Resource metadata exceeds budget');
     const reference = JSON.parse(await fs.readFile(file, 'utf8')) as ArchivedResource;
-    if (reference.id !== id || reference.blobHash && !/^[a-f0-9]{64}$/.test(reference.blobHash)) throw new EvidenceError('INVALID_RESOURCE', 'Malformed resource reference');
+    parseReplayPosition(reference.position);
+    if (reference.id !== id || typeof reference.frameId!=='string'||!reference.frameId||reference.frameId.length>512||!Number.isSafeInteger(reference.bytes)||reference.bytes<0||reference.bytes>RESOURCE_MAX_BYTES||typeof reference.mediaType!=='string'||reference.mediaType.length>200||!/^[\w.+-]+\/[\w.+-]+(?:;[^\r\n]*)?$/.test(reference.mediaType)||!['captured','late-fetched','missing','redacted','unsupported','failed'].includes(reference.status)||!reference.originalUrl||!['present','redacted','absent','missing','unsupported'].includes(reference.originalUrl.status)||reference.originalUrl.status==='present'&&(typeof reference.originalUrl.value!=='string'||reference.originalUrl.value.length>16384)||reference.blobHash && !/^[a-f0-9]{64}$/.test(reference.blobHash)||(reference.status==='captured'||reference.status==='late-fetched')&&!reference.blobHash) throw new EvidenceError('INVALID_RESOURCE', 'Malformed resource reference');
     return reference;
   }
   async read(id: string): Promise<{ reference: ArchivedResource; bytes: Buffer }> {
@@ -106,7 +108,7 @@ export class ResourceArchive {
   async resolve(url:string,position:ReplayPosition,frameId='top'):Promise<ArchivedResource|undefined>{
     const relative=`resource-url-index/${hashBytes(url)}.jsonl`;
     if(!await exists(path.join(this.runDir,relative)))return undefined;
-    let selected:{id:string;position:ReplayPosition}|undefined,count=0;
+    let selected:{id:string;position:ReplayPosition;frameId:string}|undefined,count=0;
     for await(const line of jsonLines(await safeFile(this.runDir,relative))){
       if(++count>10000)throw new EvidenceError('RESOURCE_INDEX_BUDGET','Resource URL history exceeds bounded scan budget',413);
       if(line.invalid)throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Resource URL index is incomplete; rebuild from resource-reference events',409);
@@ -115,7 +117,7 @@ export class ResourceArchive {
     }
     if(!selected)return undefined;
     const reference=await this.reference(selected.id);
-    if(reference.originalUrl.status!=='present'||reference.originalUrl.value!==url||reference.position.eventSeq!==selected.position.eventSeq)throw new EvidenceError('RESOURCE_INDEX_MISMATCH','Resource URL index does not match its immutable manifest',409);
+    if(reference.originalUrl.status!=='present'||reference.originalUrl.value!==url||!sameReplayPosition(reference.position,selected.position)||reference.frameId!==selected.frameId||reference.frameId!==frameId)throw new EvidenceError('RESOURCE_INDEX_MISMATCH','Resource URL index does not match its immutable manifest',409);
     return reference;
   }
   /** Manifest listing is bounded by count; callers use the next ID as cursor. */

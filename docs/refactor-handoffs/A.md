@@ -36,3 +36,15 @@
 尚未由本树启动Electron或桌面。生产CDP→seal→新进程断网回放、真实同源frame/open Shadow DOM、SVG/XPath、布局/字体/交互屏蔽、连续拖动/内存、强杀/磁盘满、30分钟固定负载仍须G串行执行。跨源plugin映射、closed Shadow DOM、Canvas/媒体不宣称支持。保留旧writer逐记录fsync，尚未按真实热点迁移group commit/worker；不得把有界模块测试当生产性能验收。
 
 专属桌面场景和后续补丁仍在继续实施；完整AT05–24未宣称完成。
+
+## 第二里程碑：审查加固与桌面交接
+
+首批提交 `4bd3ad7`。第二批补充 parse5@8.0.1 的HTML响应/DOM checkpoint采集脱敏（root已在 `3b93f08` 提升显式runtime依赖，本树不改package/lock）。JSON响应凭据字段在采集时遮罩并标privacy-redacted representation；旧原件不回写。增加 OfflineResourceService/rewriteReplayEvent，专用协议返回已归档CSS/图片/字体；CSS依赖从当时manifest解析，没有联网补取。
+
+review修正：最后oversize事件记录未知源范围且拒绝静默封存；stop前后读取observer健康，final full snapshot消费待发送metadata；index.gaps不可覆盖原件可靠性、window核对完整源位置；资源manifest与URL索引核对完整stream/frame/位置；每run资源预算由同一EvidenceStore作用域共享。stream分页按有界有序候选返回，续页限定sealed档案；descriptor和定长position行进行运行时验证。结构定位器从源树执行受限结构查询计算matches，已移除直接`[node]`自证唯一；Shadow只输出可跨开放root的CSS步骤，原生XPath不冒充可对ShadowRoot求值。
+
+`npm.cmd test -- test/unit/refactor-recording.test.ts test/unit/evidence.test.ts test/unit/capture.test.ts test/unit/request-body.test.ts test/unit/checkpoint.test.ts`：5文件41项通过。新增桌面文件仅typecheck通过，尚未运行。
+
+桌面交接入口：`runRefactorRecordingScenario(studio, 'record' | 'offline')`，文件`test/desktop/refactor-recording.ts`。root需调度两个不同Electron PID、同一合成BES_DATA，先record后offline。record自建本机临时源站、生产Studio/CaptureCoordinator录制、保存位置与源HTML测试快照、封存后关闭HTTP server；Windows系统Arial仅作为忽略输出中的合成字体fixture。offline读取`BES_DATA/refactor-recording-fixture.json`，断言不同PID、独立非持久session，拒绝全部http/https/ws/wss/file，按manifest重写rrweb事件与CSS依赖，真实Replayer重建并在独立保存的原站DOM验证CSS/XPath。报告为`refactor-recording-{record,offline}-report.json`。
+
+root主入口须在ready之前为`bes-resource`注册standard/secure/corsEnabled/supportFetchAPI协议权限（仅专用隔离replay session安装handler，不给业务profile安装）。测试检查CSS、@import、图片、字体、Mirror节点、反复seek、脚本不运行、无原站请求、destroy释放iframe；失败保留报告，不降低断言。该场景尚不证明30分钟内存或跨源frame资源映射，子frame源逻辑ID与CDP资源ID尚未建立完整映射时应显示资源unavailable。

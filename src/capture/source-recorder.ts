@@ -124,5 +124,9 @@ export function installSourceRecorder(config: RecorderConfiguration): void {
   if (!stop) throw new Error('rrweb recorder did not start');
   w.__besRecorderReady = true;
   w.__besSourceHealth = () => ({ failedEmits, lastSourceSeq: seq - 1, pendingMetadata: pending.size, metadataComplete });
-  w.__besStopSource = () => { stop(); pending.clear(); pendingBytes = 0; w.__besRecorderReady = false; };
+  w.__besStopSource = () => {
+    // A final source baseline consumes pending attribute/property metadata at
+    // rrweb's own boundary; the host reads health before and after this call.
+    w.rrweb.record.takeFullSnapshot(); stop(); w.__besRecorderReady = false;
+  };
 }
