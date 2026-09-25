@@ -10,12 +10,12 @@
 | T03 | T00/T02 | A | implementing | A 包内按依赖推进；资源字节/manifest/blob/离线边界待实现验证 |
 | T04 | T02/T03 | A | implementing | A 包内按依赖推进；有界随机回放/eventSeq/释放待实现验证 |
 | T05 | T00/T02/T04 | A | implementing | A 包内按依赖推进；生产源属性/隐私/frame mapping 待验证，S0 spike 不是生产功能 |
-| T06 | T00 | B | implementing | 原生 B 已启动；草稿、revision、差异、旧档只读投影待审查集成 |
+| T06 | T00 | B | module-integrated | 最终 B 已审查集成，主树材料/契约 13 项通过；真实 A sourceVerifier、E/UI 接入未验证 |
 | T07 | T04/T05/T06 | D | not-started | 历史 checkpoint 创建、编辑、复制和注释 |
 | T08 | T05/T06/T07 | D | not-started | 字段 UI、历史选择、去元素 tab、蒙版 |
 | T09 | T00/T01 | C | implementing | 原生 C 已启动；step/attempt 依赖、独立失败、真实取消与重试待验证 |
 | T10 | T00/T09 | C | implementing | C 包内推进；批次持久化、幂等、部分输出与分页声明待验证 |
-| T11 | T06/T09/T10 | F+D | not-started | 固定用户资料验收、独立来源证明和结果视图 |
+| T11 | T06/T09/T10 | F+D | implementing | F 后端已实际启动，固定资料验收与来源读取；D 结果视图未启动 |
 | T12 | T01/T06/T09；历史读接 A | E | not-started | 任务授权、后台目标读取、撤销；保留人工确认边界 |
 | T13 | T06/T11/T12 | E | not-started | 固定版本交接、差异和订阅 |
 | T14 | 持续 | S0/G | implementing | 本轮 161 项、S0 专项、最终 19 进程矩阵通过；此前间歇 UI 风险记录保留；新架构长测仍待 A/G |
@@ -32,11 +32,11 @@
 | 流 / 依赖 | worktree / branch | base | 原生任务 ID | 模型 / effort / 上下文 | 当前动作 / 提交 / 证据 |
 |---|---|---|---|---|---|
 | A / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-A` / `codex/refactor-a-20260926` | `4c4b293` | `/root/refactor_a` | `gpt-6-astra` / `xhigh` / `none` | 已实际启动并回报目录校验通过；独立依赖初始化和 A 实施；无新提交获集成批准 |
-| B / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-B` / `codex/refactor-b-20260926` | `4c4b293` | `/root/refactor_b` | `gpt-6-sol` / `high` / `none` | 首两包已审查集成并主树复验；补 listDrafts/listRevisions 和 B handoff 后释放槽位 |
+| B / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-B` / `codex/refactor-b-20260926` | `4c4b293` | `/root/refactor_b` | `gpt-6-sol` / `high` / `none` | completed，HEAD `e65b774` clean；最终两包已集成 `b762786/7ee2ab0`；有返修时按原 ID 接续 |
 | C / S0 | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-C` / `codex/refactor-c-20260926` | `4c4b293` | `/root/refactor_c` | `gpt-6-astra` / `xhigh` / `none` | 前三包已审查集成并主树复验；继续 manager/worker、代码快照及有界批次来源读取 |
 | D / A+B；结果接 F | 未建树 | 待已验证集成提交 | 未启动 | 计划 Sol high，尚未配置 | A/B 接口可用后由根创建；不要求用户操作 |
 | E / B+C；历史接 A、交接接 F | 未建树 | 待已验证集成提交 | 未启动 | 计划 Astra xhigh，尚未配置 | B/C 接口可用后在三流额度内启动 |
-| F / B+C；来源接 A | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-F` / `codex/refactor-f-20260926` | `dedb272e6554a134236617e3a4033f0a3ab549ad` | 未启动 | 计划 Astra high，尚未配置 | 已从 B/C 通过 187 项单测的集成提交新建；待 B 完成后启动；BES_DATA 为本树 `output\data-F` |
+| F / B+C；来源接 A | `D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-F` / `codex/refactor-f-20260926` | `dedb272e6554a134236617e3a4033f0a3ab549ad` | `/root/refactor_f` | `gpt-6-astra` / `high` / `none` | B completed 后原生启动，目录/HEAD/独立 npm ci 核实；B 最终两包获准接入为本树 `4f20933/8a3a482`；BES_DATA 为本树 `output\data-F` |
 | G / 实际 A–F | 主集成目录 | 逐提交记录 | `/root`（审查上下文按需另记） | 沿用根实际配置 | 持续集成；最终系统验收尚未开始 |
 
 各流 BES_DATA 为自己的 worktree 下 `output\data-A` / `data-B` / `data-C`，不得共享 node_modules、profile、connection 或开发 latest。桌面/物理输入/长测独占锁当前 **空闲**，仅根可分配；三条实施流均已收到不得自行启动的指令。当前没有新重构功能被标为 verified。
@@ -55,3 +55,9 @@
 - F 实际已从上述通过的精确提交新建（未复用/重置任何树），启动仍等待 B 释放槽位。桌面锁空闲，未同跑 Electron；单元测试期间 A/B/C 仍可编译/进行模块工作，此耗时不是性能验收。
 
 当前未测项：跨源 frame、Shadow/Canvas、精确同毫秒回放、结构缺口恢复、离线资产、30 分钟新 session 连续分段内存、安装包及真人站点。既有资料原件没有迁移；生产 recorder 的 checkbox value 遮罩缺口由 A 按 S0 原型证据处理。
+
+### 后续流启动与审查记录
+
+- B 最终提交 `e48d982/e65b774` 串行集成为 `b762786/7ee2ab0`，`npm.cmd test -- test/unit/materials.test.ts test/unit/refactor-contracts.test.ts` 主树 **2 文件/13 项通过，3.48 s**；日志 `output/refactor-integration-20260926/B-final-module-tests.log`。B completed 后启动 `/root/refactor_f`，实际配置见表，当前主要流为 A/C/F。
+- A `4bd3ad7` 已交付供审查，未合入主树；子流 typecheck、4 文件/34 项通过。根要求修正有界 timeline 发现顺序、索引运行时校验、过大最终事件的缺口持久、资源作用域匹配及真实浏览器定位器验证。C `f2b1351` 提供批次来源读取/步骤持久接口，根要求先修复日志缺段后潜在覆盖原件问题。未以子流通过声明代替集成门槛。
+- A 请求 HTML 解析依赖，根唯一将已锁定的 `parse5@8.0.1` 从开发期传递依赖提升为显式 runtime dependency，无包版本漂移；parse5 MIT、ESM，transitive entities 8.1.0 的 Node 要求 >=20.19.0。实际 npm 包元数据版本无 prerelease 后缀、无 deprecated 字段、integrity 与 lock 一致，dist-tags latest=8.0.1/test=4.0.0-test。日志 `parse5-metadata.log/parse5-channel.log/parse5-install.log` 在同一集成日志目录。首次 npm view 默认外部 cache EPERM 已保留终端输出，改本树 `output/npm-cache-root` 后成功；没有改全局配置。使用 parser 的生产代码和安装包验证仍待 A/G。
