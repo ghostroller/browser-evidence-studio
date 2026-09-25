@@ -52,7 +52,7 @@ else app.whenReady().then(async()=>{
   window.window.on('close',event=>{event.preventDefault();void shutdown('window-close');});
   if(process.env.BES_TEST){
     const phase=process.env.BES_TEST_PHASE||'main';
-    const allowedPhases=['main','refactor-s0','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
+    const allowedPhases=['main','refactor-s0','refactor-replay','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
     ensure(allowedPhases.includes(phase),'Unknown desktop test phase');
     const resultFile=phase==='main'?'test-result.json':`${phase}-result.json`;
     const identity:Record<string,unknown>={phase,processId:process.pid,startedAt:new Date().toISOString()};
@@ -94,14 +94,14 @@ else app.whenReady().then(async()=>{
         const {verifyStartup}=await import('../../test/desktop/startup');
         const reload=startupReload?.();
         Object.assign(identity,{layout:await verifyStartup(window),reload});
-      }else if(phase==='refactor-s0'){
+      }else if(phase==='refactor-s0'||phase==='refactor-replay'){
         const {startFixture}=await import('../../test/fixtures/site');
         const {runSessionScenarios}=await import('../../test/desktop/session-scenarios');
         const {runExecutionModeScenarios}=await import('../../test/desktop/execution-mode-scenarios');
         const fixture=await startFixture();
-        try{await runSessionScenarios(studio,fixture.url);await runExecutionModeScenarios(studio,fixture.url);}finally{await fixture.close();}
+        try{if(phase==='refactor-s0'){await runSessionScenarios(studio,fixture.url);await runExecutionModeScenarios(studio,fixture.url);}}finally{await fixture.close();}
         const {runRefactorReplayPrototype}=await import('../../test/desktop/refactor-replay');
-        Object.assign(identity,{session:'passed',replay:await runRefactorReplayPrototype(studio)});
+        Object.assign(identity,{session:phase==='refactor-s0'?'passed':'not-run',replay:await runRefactorReplayPrototype(studio)});
       }else if(phase==='profile-restart'){
         const saved=JSON.parse(await readFile(path.join(dataRoot,'profile-restart-state.json'),'utf8'));
         ensure(saved.schemaVersion===1&&saved.restartStatus==='not-run','A fresh first-process profile restart checkpoint is required');

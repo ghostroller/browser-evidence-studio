@@ -19,6 +19,9 @@ function mockStudio() {
     block(promise: Promise<unknown>) { queue = promise; },
     state: () => ({ active: run }),
     window: { show: () => undefined },
+    // Page lifecycle moved into Studio; this dispatcher fixture supplies its
+    // contract while actual lease/target changes are exercised in Electron.
+    selectPage: async (pageId: string) => { run.selectedPageId = pageId; run.leaseEpoch++; return { active: run }; },
     snapshot: async (body: unknown) => { calls.push({ method: 'snapshot', body }); return body; },
     checkpoint: async (body: unknown) => { calls.push({ method: 'checkpoint', body }); return body; },
     action: async (body: unknown) => { calls.push({ method: 'action', body }); return body; },

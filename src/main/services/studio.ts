@@ -486,6 +486,9 @@ export class Studio {
         await r.store.appendEvent({type:launch.grant?'validation-start-failed':'validation-start-rejected',source:'studio',data:{grantId:launch.grant?.grantId,validationId:launch.validationId,validationRunId:launch.validationRunId,cancelled:launch.abort.signal.aborted,error:String(error).slice(0,512)}}).then(()=>r.store.flush()).catch(()=>console.warn('Validation startup failure evidence could not be published',JSON.stringify({runId:r.id,validationId:launch.validationId})));
         if(launch.claimed&&(r.locked||r.controller!=='human')&&!r.stopping&&!r.ending&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;r.execution=launch.abort.signal.aborted?'cancelled':'failed';this.window.lock(false);}
       }
+      if(!r&&launch.claimed&&this.browser&&!this.closing){
+        const live=this.browser.runtime;live.controller=live.pages.size?'human':'none';live.locked=false;live.leaseEpoch++;this.window.lock(false);
+      }
       console.warn('Validation startup did not complete',JSON.stringify({validationId:launch.validationId,authorizationRunId:original?.id,validationRunId:launch.validationRunId,grantId:launch.grant?.grantId,cancelled:launch.abort.signal.aborted}));
       throw launch.abort.signal.aborted?launch.abort.signal.reason:error;
     }finally{options.signal?.removeEventListener('abort',abort);if(this.validationLaunch===launch)this.validationLaunch=undefined;launch.finish();this.onChanged();}
