@@ -88,3 +88,11 @@ inspect点击也复用明确节点采样，选择事件含`sample`（失败则`s
 根第6次真实record/offline双进程通过：主树`output/desktop-1790372576006`，PID32660→28956，7.9s；真实shown/隐藏文本区别已实际执行。它仍不代表30分钟长测、frame资源映射或所有边界通过；前5次失败原件/报告保留。
 
 采样审查返修：入口追加可选`signal?:AbortSignal`，进入及每个await后检查；Archive读取也传signal。CDP没有安全的单请求Runtime取消，不调用全局terminateExecution；迟到的真实采样原件可继续保存，但中止请求绝不返回成功。异常保存安全className/description，inspect失败也含有界安全原因。附加presentation计入源8MiB metadata cap，超限保留gap并拒绝成功；source自定义sample走host metadata通道，不借structure预算。typecheck+15项测试通过（`presentation-review-typecheck-attempt2.log`、`presentation-review-tests.log`，4.49s），新增近cap属性与sample叠加失败负例。desktop增加预取消断言，尚未重跑。
+
+## 同源frame资源与定位器接续
+
+SourceFrameScopes只从已耐久SourceMetadata投影最多256个frame host/root身份。CDP资源读取通过`DOM.getFrameOwner`→明确observer context的`DOM.resolveNode`→读取该iframe的源Mirror host/document ID，与原件逻辑`document-N`核对；不能匹配则`unmapped/unsupported`，不能冒充top。原始CDP frameId保留于resource.source，单帧loaderId在读取前后核对，导航变化不绑定新document。延迟响应在loadingFinished固定主导航代际，已换文档时保留resource gap，不将旧响应归入新document。采样ref也在第一个await前深拷贝，避免caller后改目标。
+
+新A内部`rewriteReplayRecords(records, (url, frameId?)=>replacement)`随原始metadata推进节点scope，HTML属性/inline CSS按当时logical frame查资源，未知scope不落top；E可替换逐record rewriteReplayEvent使用。单个rewriteReplayEvent保留兼容入口，并支持第三个nodeId→frameId解析器。外部CSS依赖仍由OfflineResourceService沿该resource.frameId解析。分段定位器前缀按frame/shadow交错顺序生成，缺失host metadata明确报错。
+
+模块测试使用真实rrweb+同源JSDOM iframe，核对host/root/epoch身份和逐frame URL重写；`npm.cmd test -- test/unit/refactor-recording.test.ts test/unit/capture.test.ts`2文件23项通过5.04s；typecheck通过（`frame-scope-typecheck-final.log`、`frame-scope-tests.log`）。desktop fixture新增子frame CSS/图片的真实CDP→logical manifest断言、断网子frame样式/图片断言，以及活源站上逐候选执行frame/open-shadow/SVG CSS/XPath。新增真实断言仍待根运行，不凭JSDOM/类型检查宣称Chromium frame映射已通过。

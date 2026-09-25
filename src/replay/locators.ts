@@ -23,16 +23,12 @@ export function sourceLocators(model: SourceModel, ref: HistoricalElementRef): L
   const scope = model.scope(node), candidates: LocatorCandidate[] = [];
   function targetSteps(strategy: 'css' | 'xpath', expression: string): LocatorCandidate['steps'] {
     const steps: LocatorCandidate['steps'] = [];
-    const parents: SourceTreeNode[] = [];
-    let current = node;
-    while (current.metadata?.frameHostId !== undefined) {
-      const host = model.nodes.get(current.metadata.frameHostId); if (!host?.metadata) break;
-      parents.unshift(host); current = host;
+    function scopeSteps(target:SourceTreeNode,depth=0):void{
+      if(depth>32)throw new Error('Source frame path exceeds depth budget');
+      if(target.metadata?.frameHostId!==undefined){const host=model.nodes.get(target.metadata.frameHostId);if(!host?.metadata)throw new Error('Source frame host metadata is missing');scopeSteps(host,depth+1);steps.push({kind:'frame',strategy:'css',expression:structuralCss(model,host)});}
+      for(const hostId of target.metadata!.shadowHostIds){const host=model.nodes.get(hostId);if(!host?.metadata)throw new Error('Source shadow host metadata is missing');steps.push({kind:'shadow',strategy:'css',expression:structuralCss(model,host)});}
     }
-    for (const host of parents) steps.push({ kind: 'frame', strategy: 'css', expression: structuralCss(model, host) });
-    for (const hostId of node.metadata!.shadowHostIds) {
-      const host = model.nodes.get(hostId); if (host?.metadata) steps.push({ kind: 'shadow', strategy: 'css', expression: structuralCss(model, host) });
-    }
+    scopeSteps(node);
     steps.push({ kind: 'target', strategy, expression }); return steps;
   }
   function add(strategy: 'css' | 'xpath', expression: string, matches: SourceTreeNode[], warnings: string[] = []): void {

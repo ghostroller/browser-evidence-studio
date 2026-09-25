@@ -17,6 +17,7 @@ import { ResourceCapture, isArchivableResource, privateResourceUrl, RESOURCE_MAX
 import { captureError, captureMetadata, credentialUrl } from './url-privacy';
 import { prepareResponseBody, RESPONSE_CDP_BUFFER_BYTES, RESPONSE_WORKING_BYTES } from './response-body';
 import type { ArtifactInput } from '@/evidence/contracts';
+import { SourceFrameScopes } from './frame-scopes';
 
 export interface PageIdentity { pageId:string; targetId:string; webContentsId:number; navigationGeneration:number; openerPageId?:string; }
 const BODY_LIMIT = 8 * 1024 * 1024;
@@ -49,6 +50,8 @@ export class CaptureCoordinator {
   private archivedDocument?:string;
   private readonly bodyReads=new DeferredBodyReads();
   private pendingMainBaseline=false;
+  private readonly sourceFrameScopes=new SourceFrameScopes();
+  private readonly frameLoaders=new Map<string,string>();
   private readonly fullSnapshots = new Map<number,number>();
   private pauseAt?:string;
   private frameId?:string;
@@ -72,10 +75,10 @@ export class CaptureCoordinator {
     if(!accepted){this.drops++;this.droppedChannels.set(channel,(this.droppedChannels.get(channel)||0)+1);this.fail('Pending response descriptors reached their bounded budget');}
     return accepted;
   }
-  private async currentSourcePosition(){
+  private async currentSourcePosition(expectedGeneration=this.identity.navigationGeneration){
     const deadline=Date.now()+5000;
-    while(this.pendingMainBaseline){if(Date.now()>=deadline)throw new Error('Current document source baseline was not committed before resource capture');await delay(10);}
-    await this.recording.flush();return this.lastPosition;
+    while(this.pendingMainBaseline){if(expectedGeneration!==this.identity.navigationGeneration)throw new Error('Document changed before deferred resource capture');if(Date.now()>=deadline)throw new Error('Current document source baseline was not committed before resource capture');await delay(10);}
+    await this.recording.flush();if(expectedGeneration!==this.identity.navigationGeneration)throw new Error('Document changed before deferred resource capture');return this.lastPosition;
   }
   private task(work: ()=>Promise<unknown>,estimatedBytes=4096,channel:CaptureChannel='network') {
     if(this.stopped) return false;
@@ -104,7 +107,8 @@ export class CaptureCoordinator {
     cdp.on('Runtime.executionContextCreated',({context}:any)=>{ if(context.name===this.world) this.contexts.set(context.id,context.auxData?.frameId); });
     cdp.on('Runtime.executionContextDestroyed',({executionContextId}:any)=>{this.contexts.delete(executionContextId);this.fullSnapshots.delete(executionContextId);});
     cdp.on('Runtime.executionContextsCleared',()=>{this.contexts.clear();this.fullSnapshots.clear();});
-    cdp.on('Page.frameNavigated',({frame}:any)=>{ if(!frame.parentId){ this.frameId=frame.id;this.pendingMainBaseline=true; if(this.trackNavigationGeneration)this.identity.navigationGeneration++; this.inspectionEnabled=false; } if(!this.paused) this.task(()=>this.event('navigation',{frameId:frame.id,url:frame.url,loaderId:frame.loaderId,parentId:frame.parentId})); });
+    cdp.on('Page.frameNavigated',({frame}:any)=>{ if(!frame.parentId){ this.frameLoaders.clear();this.frameId=frame.id;this.pendingMainBaseline=true; if(this.trackNavigationGeneration)this.identity.navigationGeneration++; this.inspectionEnabled=false; }if(this.frameLoaders.has(frame.id)||this.frameLoaders.size<256)this.frameLoaders.set(frame.id,frame.loaderId); if(!this.paused) this.task(()=>this.event('navigation',{frameId:frame.id,url:frame.url,loaderId:frame.loaderId,parentId:frame.parentId})); });
+    cdp.on('Page.frameDetached',({frameId}:any)=>{this.frameLoaders.delete(frameId);});
     cdp.on('Runtime.exceptionThrown',(event:any)=>{if(!this.paused) this.task(()=>this.event('page-error',event));});
     cdp.on('Runtime.consoleAPICalled',(event:any)=>{if(!this.paused)this.task(()=>this.event('console',{type:event.type,args:event.args.map((x:any)=>({type:x.type,value:x.value,description:x.description?.slice(0,4000)}))}));});
     cdp.on('Runtime.bindingCalled',(event:any)=>{
@@ -118,7 +122,7 @@ export class CaptureCoordinator {
           const losses=[...this.losses].map(([category,range])=>({id:randomUUID(),from:range.from,to:range.to,category:category==='network'?'resource':category,reason:'capture-channel-budget',count:range.count}));this.losses.clear();
           if(this.unknownStructuralLoss){losses.push({id:randomUUID(),from:this.lastPosition??data.position,to:data.position,category:'structure',reason:'oversized-recorder-event-unknown-boundary',count:1});this.unknownStructuralLoss=false;}
           const record:RecordingEnvelope={...data,receivedAt:new Date().toISOString(),gaps:[...losses,...(data.errors??[]).map((reason:string)=>({id:randomUUID(),from:data.position,category:'metadata',reason}))]};
-          await this.recording.append(record);this.lastPosition=record.position;if(data.event?.type===2)this.pendingMainBaseline=false;
+          await this.recording.append(record);this.sourceFrameScopes.append(record);this.lastPosition=record.position;if(data.event?.type===2)this.pendingMainBaseline=false;
           if(data.event?.type===2){this.fullSnapshots.set(event.executionContextId,(this.fullSnapshots.get(event.executionContextId)||0)+1);await this.event('rrweb-full-snapshot',{frameId,isTop:data.isTop===true,contextId:event.executionContextId,timestamp:data.event.timestamp,position:record.position});if(this.archivedDocument!==record.position.documentId){this.archivedDocument=record.position.documentId;this.bodyTask(()=>this.captureLoadedResources(),256,'resource');}}}
         else { await this.event(data.kind,{...data,frameId,actor:'unknown',source:'isolated-world-observer'}); if(data.kind==='element-selected') {await this.recording.flush();this.onSelection(captureMetadata({...data,frameId,pageId:this.identity.pageId,generation:this.identity.navigationGeneration}));} }
       },payloadBytes*3,channel);
@@ -126,7 +130,7 @@ export class CaptureCoordinator {
     });
     cdp.on('Network.requestWillBeSent',(e:any)=>{
       if(this.paused||this.stopped)return;
-      const {current,previous,evicted}=this.requests.begin({requestId:e.requestId,url:e.request.url,frameId:e.frameId,redirect:!!e.redirectResponse});
+      const {current,previous,evicted}=this.requests.begin({requestId:e.requestId,url:e.request.url,frameId:e.frameId,loaderId:e.loaderId,redirect:!!e.redirectResponse});
       const navigationGeneration=this.identity.navigationGeneration;
       const data={requestKey:current.key,requestId:e.requestId,frameId:e.frameId,loaderId:e.loaderId,timestamp:e.timestamp,request:requestMetadata(e.request),redirectHop:current.hop};
       this.task(async()=>{
@@ -148,12 +152,14 @@ export class CaptureCoordinator {
       if(!r)await this.event('gap',{reason:'response-without-observed-request',requestId:e.requestId,url:e.response.url});
       if(r?.streaming){const artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:'unknown',reason:'SSE payload completeness unsupported; connection may remain open',source:{requestKey:r.key,url:r.url}});await this.event('network-stream',{requestKey:r.key,url:r.url,completeness:'unsupported'},[artifact.id]);}
     });});
-    cdp.on('Network.loadingFinished',(e:any)=>{if(this.paused||this.stopped)return;const responseRead=this.requests.acquireResponseRead(e.requestId),r=this.requests.finish(e.requestId);const accepted=this.bodyTask(async()=>{try{
+    cdp.on('Network.loadingFinished',(e:any)=>{if(this.paused||this.stopped)return;const responseRead=this.requests.acquireResponseRead(e.requestId),r=this.requests.finish(e.requestId),finishedGeneration=this.identity.navigationGeneration;const accepted=this.bodyTask(async()=>{try{
       if(!r){await this.event('gap',{reason:'completion-without-observed-request',requestId:e.requestId});return;}
       if(r.streaming){await this.event('network-stream-ended',{requestKey:r.key,encodedDataLength:e.encodedDataLength,completeness:'unsupported'});return;}
       let artifact;
-      const resource=isArchivableResource(r.mime),position=await this.currentSourcePosition();
-      const resourceInput=position?{position,frameId:!r.frameId||r.frameId===this.frameId?'top':r.frameId,requestId:r.key,url:r.url,mediaType:r.mime,source:{encodedDataLength:e.encodedDataLength}}:undefined;
+      const resource=isArchivableResource(r.mime);let position:ReplayPosition|undefined;
+      if(resource)try{position=await this.currentSourcePosition(finishedGeneration);}catch(error){await this.event('gap',{category:'resource',reason:'resource-source-document-changed',requestKey:r.key,cause:captureError(error)});}
+      const resourceFrameId=resource&&position?await this.resourceFrame(r.frameId,position,r.loaderId):undefined;
+      const resourceInput=position?{position,frameId:resourceFrameId??'unmapped',requestId:r.key,url:r.url,mediaType:r.mime,...(!resourceFrameId?{status:'unsupported' as const,reason:'frame-source-scope-unavailable'}:{}),source:{encodedDataLength:e.encodedDataLength,cdpFrameId:r.frameId}}:undefined;
       if(!resource&&!/json|text|html|xml|javascript|svg|x-www-form-urlencoded/i.test(r.mime)) artifact=await this.artifact({kind:'response-body',mediaType:r.mime||'application/octet-stream',captureStatus:'excluded',reason:'Binary response metadata only',source:{requestKey:r.key,url:r.url}});
       else if(privateResourceUrl(r.url)){
         if(resource&&resourceInput)await this.resources.capture({...resourceInput,status:'redacted',reason:'credential-bearing-resource-url'});
@@ -174,7 +180,7 @@ export class CaptureCoordinator {
         // Persistence errors must reach the capture task's durable gap/failure
         // path, rather than becoming a successful body-read fallback artifact.
         if(resource&&resourceInput)await this.resources.capture({...resourceInput,...(safe.redacted?{status:'redacted' as const,reason:safe.excludedReason??'response-privacy-policy'}:safe.observedBytes?{status:'missing' as const,reason:'resource-byte-budget'}:{data:safe.data})});
-        if(resource&&!/text|svg/i.test(r.mime))artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:'excluded',reason:'Binary bytes captured in offline resource archive',source:{requestKey:r.key,url:r.url}});
+        if(resource&&!/text|svg/i.test(r.mime))artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:resourceInput&&resourceFrameId||safe.redacted?'excluded':'missing',reason:safe.redacted?'response-privacy-policy':resourceInput&&resourceFrameId?'Binary bytes captured in offline resource archive':'offline-resource-source-scope-unavailable',source:{requestKey:r.key,url:r.url}});
         else {artifact=await this.artifact({kind:'response-body',mediaType:r.mime,data:safe.data,limitBytes:BODY_LIMIT,...(safe.excludedReason?{captureStatus:'excluded' as const,reason:safe.excludedReason}:{}),metadata:{privacyRedacted:safe.redacted,representation:safe.redacted?'privacy-redacted-response':'observed-response',...(safe.privacyError?{privacyError:safe.privacyError}:{}),...(safe.observedBytes?{originalByteBasis:'entire-observed-CDP-response-UTF8'}:{})},source:{requestKey:r.key,url:r.url,frameId:r.frameId}},safe.observedBytes);}
       }
       await this.event('network-body',{requestKey:r.key,url:r.url,encodedDataLength:e.encodedDataLength},[artifact.id]);
@@ -191,7 +197,8 @@ export class CaptureCoordinator {
     const config={binding:this.binding,recordingId:this.store.manifest.id,pageId:this.identity.pageId,checkoutEveryNms:30000,checkoutEveryNth:500};
     const script = `(function(){if(window!==window.top)return;\n${instrumentRecorder(recorder)}\n;const urlPrivacy=(${credentialUrl.toString()});(${installSourceRecorder.toString()})(${JSON.stringify(config)},urlPrivacy);(${observe.toString()})(${JSON.stringify(this.binding)},urlPrivacy);})();`;
     this.scriptId=(await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:script,worldName:this.world})).identifier;
-    const {frameTree}=await cdp.send('Page.getFrameTree'); this.frameId=frameTree.frame.id;
+    const {frameTree}=await this.cdp.send('Page.getFrameTree'); this.frameId=frameTree.frame.id;
+    const registerFrame=(tree:typeof frameTree)=>{if(this.frameLoaders.size>=256)return;this.frameLoaders.set(tree.frame.id,tree.frame.loaderId);for(const child of tree.childFrames??[])registerFrame(child);};registerFrame(frameTree);
     const {executionContextId}=await cdp.send('Page.createIsolatedWorld',{frameId:this.frameId,worldName:this.world});
     this.contexts.set(executionContextId,this.frameId!);
     const injection=await cdp.send('Runtime.evaluate',{expression:script,contextId:executionContextId});
@@ -204,10 +211,11 @@ export class CaptureCoordinator {
     const {frameTree}=await this.cdp.send('Page.getResourceTree');
     let count=0;
     const visit=async(tree:typeof frameTree):Promise<void>=>{
+      const frameId=await this.resourceFrame(tree.frame.id,position,tree.frame.loaderId);
       for(const resource of tree.resources){
         if(!isArchivableResource(resource.mimeType))continue;
         if(++count>1000){await this.event('gap',{category:'resource',reason:'initial-resource-count-budget',from:position});return;}
-        const input={position,frameId:tree.frame.id===this.frameId?'top':tree.frame.id,url:resource.url,mediaType:resource.mimeType,source:{fromCache:true}};
+        const input={position,frameId:frameId??'unmapped',url:resource.url,mediaType:resource.mimeType,...(!frameId?{status:'unsupported' as const,reason:'frame-source-scope-unavailable'}:{}),source:{fromCache:true,cdpFrameId:tree.frame.id}};
         if(privateResourceUrl(resource.url)){await this.resources.capture({...input,status:'redacted'});continue;}
         try{
           const body=await this.cdp.send('Page.getResourceContent',{frameId:tree.frame.id,url:resource.url});
@@ -218,6 +226,23 @@ export class CaptureCoordinator {
       for(const child of tree.childFrames??[])await visit(child);
     };
     await visit(frameTree);
+  }
+  private async resourceFrame(cdpFrameId:string|undefined,position:ReplayPosition,loaderId?:string):Promise<string|undefined>{
+    if(!cdpFrameId||!this.lastPosition||!sameStream(this.lastPosition,position)||this.pendingMainBaseline)return undefined;
+    if(loaderId&&this.frameLoaders.get(cdpFrameId)!==loaderId)return undefined;
+    if(cdpFrameId===this.frameId)return'top';
+    const generation=this.identity.navigationGeneration;
+    let objectId:string|undefined;
+    try{
+      const contexts=await this.readyObservers();if(contexts.ready.length!==1)return undefined;
+      const owner=await this.cdp.send('DOM.getFrameOwner',{frameId:cdpFrameId});
+      const remote=await this.cdp.send('DOM.resolveNode',{backendNodeId:owner.backendNodeId,executionContextId:contexts.ready[0].contextId});objectId=remote.object.objectId;if(!objectId)return undefined;
+      const result=await this.cdp.send('Runtime.callFunctionOn',{objectId,functionDeclaration:'function(){try { const mirror=window.rrweb.record.mirror;return {hostId:mirror.getId(this),rootId:mirror.getId(this.contentDocument)}; } catch { return null; }}',returnByValue:true});
+      const ids=result.result.value as {hostId:number;rootId:number}|null;
+      if(generation!==this.identity.navigationGeneration||loaderId&&this.frameLoaders.get(cdpFrameId)!==loaderId||this.pendingMainBaseline||!this.lastPosition||!sameStream(this.lastPosition,position)||result.exceptionDetails||!ids||!Number.isSafeInteger(ids.hostId)||!Number.isSafeInteger(ids.rootId))return undefined;
+      return this.sourceFrameScopes.resolve(ids.hostId,ids.rootId,position);
+    }catch(error){await this.event('gap',{category:'resource',reason:'frame-source-scope-unavailable',from:position,cdpFrameId,cause:captureError(error)});return undefined;}
+    finally{if(objectId)await this.cdp.send('Runtime.releaseObject',{objectId}).catch(()=>{});}
   }
   async inspect(enabled:boolean) {
     const generation=this.identity.navigationGeneration;
@@ -231,6 +256,7 @@ export class CaptureCoordinator {
   async samplePresentation(ref:HistoricalElementRef,signal?:AbortSignal):Promise<PresentationSample>{
     signal?.throwIfAborted();
     parseReplayPosition(ref.position);
+    ref=structuredClone(ref);
     if(ref.kind!=='dom-node'||!Number.isSafeInteger(ref.nodeId)||ref.nodeId<0||typeof ref.frameId!=='string'||typeof ref.mirrorScopeId!=='string')throw new Error('Invalid presentation target');
     if(this.stopped||this.paused||!this.lastPosition||!sameStream(ref.position,this.lastPosition))throw new Error('Presentation target is not in the active recording document');
     const service=new ArchiveReplayService(this.store.runDir);

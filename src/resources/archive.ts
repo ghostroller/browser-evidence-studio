@@ -19,7 +19,7 @@ export function privateResourceUrl(value: string): boolean {
 export interface ArchivedResource extends ResourceReference {
   capturedAt: string;
   bytes: number;
-  source: { fromCache?: boolean; fromServiceWorker?: boolean; encodedDataLength?: number; redirectUrl?: string; byteRepresentation: 'decoded-response' };
+  source: { fromCache?: boolean; fromServiceWorker?: boolean; encodedDataLength?: number; redirectUrl?: string; cdpFrameId?: string; byteRepresentation: 'decoded-response' };
 }
 export interface CaptureResourceInput {
   position: ReplayPosition; frameId: string; requestId?: string; url: string; mediaType: string;
