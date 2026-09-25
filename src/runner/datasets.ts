@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, opendir, readFile } from 'node:fs/promises';
+import { lstat, mkdir, opendir, readFile, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import type { BatchReceipt, DatasetBatch, DatasetCompletion, DatasetIdentity, DatasetService, ExecutionBinding } from '../contracts/execution';
 import type { BoundedPage, ReadBudget } from '../contracts/recording';
@@ -52,7 +52,7 @@ async function directory(root: string, parts: string[], create: boolean): Promis
   return current;
 }
 interface StoredBatch { schemaVersion: 1; sequence: number; batch: DatasetBatch; receipt: BatchReceipt }
-interface DatasetIndex { directory: string; identity: DatasetIdentity; receipts: BatchReceipt[]; completion?: DatasetCompletion }
+interface DatasetIndex { directory: string; identity: DatasetIdentity; committedBatches: number; committedRecords: number; completion?: DatasetCompletion }
 export interface RecordQuery extends ReadBudget { fields?: string[]; entity?: { field: string; equals: JsonValue } }
 export interface DatasetRecord { batchId: string; recordIndex: number; value: JsonValue; missingFields?: string[] }
 
@@ -63,7 +63,6 @@ export class PersistentDatasetService implements DatasetService {
   private closed = false;
   private queued = 0;
   private queuedBytes = 0;
-  private receiptCount = 0;
   private constructor(readonly root: string, readonly binding: ExecutionBinding, private readonly lock?: WriterLockHandle) {}
 
   static async open(root: string, binding: ExecutionBinding): Promise<PersistentDatasetService> {
@@ -115,24 +114,19 @@ export class PersistentDatasetService implements DatasetService {
     } else {
       if (!create) throw new DatasetError('NOT_BEGUN', 'Dataset has not begun', 404);
       await atomicJson(manifest, { schemaVersion: 1, ...identity });
+      await atomicJson(path.join(dir, 'state.json'), { schemaVersion: 1, ...identity, committedBatches: 0, committedRecords: 0 });
     }
-    const ordered: { sequence: number; receipt: BatchReceipt }[] = [];
-    for await (const file of await opendir(dir)) {
-      if (!/^batch-[a-f0-9]{64}\.json$/.test(file.name)) continue;
-      if (ordered.length >= MAX_BATCHES || this.receiptCount + ordered.length >= MAX_BATCHES) throw new DatasetError('INDEX_LIMIT', 'Execution exceeds 100,000 batch metadata limit', 413);
-      const stored = await this.readStored(dir, file.name);
-      if (canonicalJson(pickIdentity(stored.batch)) !== canonicalJson(identity)) throw new DatasetError('CORRUPT_BATCH', 'Batch has the wrong dataset identity');
-      ordered.push({ sequence: stored.sequence, receipt: stored.receipt });
-    }
-    ordered.sort((a, b) => a.sequence - b.sequence);
-    if (ordered.some((item, index) => item.sequence !== index + 1)) throw new DatasetError('CORRUPT_SEQUENCE', 'Durable batch sequence is missing or duplicated');
-    const receipts = ordered.map(item => item.receipt);
-    const result: DatasetIndex = { directory: dir, identity: structuredClone(identity), receipts };
+    if (this.lock && await exists(path.join(dir, 'pending.json'))) throw new DatasetError('INDEX_RECOVERY_REQUIRED', 'Interrupted batch commit requires explicit rebuild before writing');
+    let state: { schemaVersion: number; committedBatches: number; committedRecords: number } & DatasetIdentity;
+    try { state = await readMetadata(dir, 'state.json') as typeof state; }
+    catch (error) { throw new DatasetError('INDEX_RECOVERY_REQUIRED', `Dataset metadata cannot be read; explicit rebuild required: ${String(error)}`); }
+    if (state.schemaVersion !== 1 || canonicalJson(pickIdentity(state)) !== canonicalJson(identity) || !Number.isSafeInteger(state.committedBatches) || state.committedBatches < 0 || state.committedBatches > MAX_BATCHES || !Number.isSafeInteger(state.committedRecords) || state.committedRecords < 0) throw new DatasetError('INDEX_RECOVERY_REQUIRED', 'Invalid dataset metadata; explicit rebuild required');
+    const result: DatasetIndex = { directory: dir, identity: structuredClone(identity), committedBatches: state.committedBatches, committedRecords: state.committedRecords };
     if (await exists(path.join(dir, 'completion.json'))) {
-      result.completion = JSON.parse(await readFile(await safeFile(dir, 'completion.json'), 'utf8')) as DatasetCompletion;
+      result.completion = await readMetadata(dir, 'completion.json') as DatasetCompletion;
       this.validateCompletion(result, result.completion);
     }
-    if (this.lock) { this.indexes.set(key, result); this.receiptCount += receipts.length; }
+    if (this.lock) this.indexes.set(key, result);
     return result;
   }
   private async readStored(dir: string, name: string): Promise<StoredBatch> {
@@ -157,20 +151,29 @@ export class PersistentDatasetService implements DatasetService {
       signal?.throwIfAborted();
       const index = await this.index(pickIdentity(frozen));
       const contentHash = hash(canonicalJson(frozen));
-      const previous = index.receipts.find(receipt => receipt.batchId === frozen.batchId);
+      const previous = await exists(path.join(index.directory, batchFile(frozen.batchId))) ? (await this.readStored(index.directory, batchFile(frozen.batchId))).receipt : undefined;
       if (previous) {
         if (previous.contentHash !== contentHash) throw new DatasetError('BATCH_CONFLICT', 'The batch ID was already committed with different records, provenance or reuse');
         return { ...previous, replayed: true };
       }
       if (index.completion) throw new DatasetError('FINISHED', 'Cannot append to a finished dataset; create a new attempt');
-      if (this.receiptCount >= MAX_BATCHES) throw new DatasetError('INDEX_LIMIT', 'Execution has reached its 100,000 batch metadata limit', 413);
+      if (index.committedBatches >= MAX_BATCHES) throw new DatasetError('INDEX_LIMIT', 'Dataset has reached its 100,000 batch limit', 413);
       if (frozen.reusedFrom) await this.validateReuse(frozen);
       signal?.throwIfAborted();
       const receipt: BatchReceipt = { ...pickIdentity(frozen), batchId: frozen.batchId, contentHash, recordCount: frozen.records.length,
         artifactId: `executions/${frozen.executionId}/datasets/${frozen.attemptId}/${frozen.datasetId}/${batchFile(frozen.batchId)}`, durableAt: new Date().toISOString(), replayed: false };
-      await atomicFile(path.join(index.directory, batchFile(frozen.batchId)), Buffer.from(canonicalJson({ schemaVersion: 1, sequence: index.receipts.length + 1, batch: frozen, receipt } satisfies StoredBatch)));
-      index.receipts.push(receipt);
-      this.receiptCount++;
+      const sequence = index.committedBatches + 1;
+      await atomicJson(path.join(index.directory, 'pending.json'), { batchId: frozen.batchId, sequence });
+      try {
+        await atomicFile(path.join(index.directory, batchFile(frozen.batchId)), Buffer.from(canonicalJson({ schemaVersion: 1, sequence, batch: frozen, receipt } satisfies StoredBatch)));
+        await atomicJson(path.join(index.directory, receiptFile(sequence)), receipt);
+        await atomicJson(path.join(index.directory, 'state.json'), { schemaVersion: 1, ...index.identity, committedBatches: sequence, committedRecords: index.committedRecords + receipt.recordCount });
+        await unlink(await safeFile(index.directory, 'pending.json'));
+        index.committedBatches = sequence; index.committedRecords += receipt.recordCount;
+      } catch (error) {
+        this.indexes.delete(canonicalJson(index.identity));
+        throw error;
+      }
       // Cancellation cannot undo durable data. The caller can replay the same batch ID to recover its receipt.
       signal?.throwIfAborted();
       return structuredClone(receipt);
@@ -185,7 +188,7 @@ export class PersistentDatasetService implements DatasetService {
     if (canonicalJson(stored.batch.records) !== canonicalJson(batch.records) || canonicalJson(stored.batch.provenance) !== canonicalJson(batch.provenance)) throw new DatasetError('REUSE_CONTENT', 'Reused records and original provenance must match their source batch');
   }
   private validateCompletion(index: DatasetIndex, completion: DatasetCompletion): void {
-    if (canonicalJson(pickIdentity(completion)) !== canonicalJson(index.identity) || !['complete', 'partial', 'failed', 'cancelled'].includes(completion.status) || completion.committedBatches !== index.receipts.length || completion.committedRecords !== index.receipts.reduce((n, receipt) => n + receipt.recordCount, 0)) throw new DatasetError('COMPLETION_MISMATCH', 'Completion must account for every durable batch and record');
+    if (canonicalJson(pickIdentity(completion)) !== canonicalJson(index.identity) || !['complete', 'partial', 'failed', 'cancelled'].includes(completion.status) || completion.committedBatches !== index.committedBatches || completion.committedRecords !== index.committedRecords) throw new DatasetError('COMPLETION_MISMATCH', 'Completion must account for every durable batch and record');
     canonicalJson(completion);
     if (completion.status === 'complete' && completion.pagination && !completion.pagination.complete) throw new DatasetError('COMPLETION_MISMATCH', 'Incomplete pagination cannot declare a complete dataset');
   }
@@ -206,14 +209,24 @@ export class PersistentDatasetService implements DatasetService {
   batches(identity: DatasetIdentity, budget: ReadBudget): Promise<BoundedPage<BatchReceipt>> {
     return this.operation(async () => {
       const index = await this.index(identity);
-      return bounded(index.receipts, budget, hash(canonicalJson(identity)));
+      const query = hash(canonicalJson(identity));
+      const range = cursorRange(budget, query, index.committedBatches);
+      const receipts: BatchReceipt[] = [];
+      let bytes = 0;
+      for (let offset = range.start; offset < range.end && receipts.length < budget.limit; offset++) {
+        const receipt = await readMetadata(index.directory, receiptFile(offset + 1)) as BatchReceipt;
+        validateReceipt(receipt, identity);
+        receipts.push(receipt); bytes += Buffer.byteLength(JSON.stringify(receipt));
+        if (bytes > budget.maxBytes) break;
+      }
+      return bounded(receipts, budget, query, range);
     });
   }
   summary(identity: DatasetIdentity): Promise<{ identity: DatasetIdentity; status: DatasetCompletion['status'] | 'unfinished'; committedBatches: number; committedRecords: number; completion?: DatasetCompletion }> {
     return this.operation(async () => {
       const index = await this.index(identity);
-      return { identity: structuredClone(index.identity), status: index.completion?.status ?? 'unfinished', committedBatches: index.receipts.length,
-        committedRecords: index.receipts.reduce((n, receipt) => n + receipt.recordCount, 0), ...(index.completion ? { completion: structuredClone(index.completion) } : {}) };
+      return { identity: structuredClone(index.identity), status: index.completion?.status ?? 'unfinished', committedBatches: index.committedBatches,
+        committedRecords: index.committedRecords, ...(index.completion ? { completion: structuredClone(index.completion) } : {}) };
     });
   }
   /** Explicit bounded body query; receipt listing never includes business records. */
@@ -235,10 +248,53 @@ export class PersistentDatasetService implements DatasetService {
       return bounded(selected, query, hash(canonicalJson({ identity, batchId, fields: query.fields ?? null, entity: query.entity ?? null })));
     });
   }
+  /** Explicit recovery only: validate immutable originals and rebuild the small metadata files.
+   * It never runs as a side effect of summary, receipt pagination, or a body-by-ID read. */
+  rebuild(identity: DatasetIdentity): Promise<{ batches: number; records: number; scannedBytes: number }> {
+    return this.operation(async () => {
+      this.writable(); this.check(identity);
+      const dir = await directory(this.root, ['executions', identity.executionId, 'datasets', identity.attemptId, identity.datasetId], false);
+      const manifest = await readMetadata(dir, 'dataset.json');
+      if (canonicalJson(manifest) !== canonicalJson({ schemaVersion: 1, ...identity })) throw new DatasetError('IDENTITY_CONFLICT', 'Dataset recovery identity differs');
+      const ordered: { sequence: number; receipt: BatchReceipt }[] = [];
+      let scannedBytes = 0;
+      for await (const file of await opendir(dir)) {
+        if (!/^batch-[a-f0-9]{64}\.json$/.test(file.name)) continue;
+        if (ordered.length >= MAX_BATCHES) throw new DatasetError('RECOVERY_LIMIT', 'Recovery exceeds 100,000 batches', 413);
+        scannedBytes += (await lstat(await safeFile(dir, file.name))).size;
+        const stored = await this.readStored(dir, file.name);
+        if (canonicalJson(pickIdentity(stored.batch)) !== canonicalJson(identity)) throw new DatasetError('CORRUPT_BATCH', 'Recovery batch belongs to another dataset');
+        ordered.push({ sequence: stored.sequence, receipt: stored.receipt });
+      }
+      ordered.sort((a, b) => a.sequence - b.sequence);
+      if (ordered.some((item, index) => item.sequence !== index + 1)) throw new DatasetError('CORRUPT_SEQUENCE', 'Durable batch sequence is missing or duplicated');
+      const state = { schemaVersion: 1, ...identity, committedBatches: ordered.length, committedRecords: ordered.reduce((n, item) => n + item.receipt.recordCount, 0) };
+      if (await exists(path.join(dir, 'completion.json'))) this.validateCompletion({ directory: dir, identity, ...state }, await readMetadata(dir, 'completion.json') as DatasetCompletion);
+      // Do not modify any metadata until all originals have passed validation.
+      for (const item of ordered) await atomicJson(path.join(dir, receiptFile(item.sequence)), item.receipt);
+      await atomicJson(path.join(dir, 'state.json'), state);
+      if (await exists(path.join(dir, 'pending.json'))) {
+        const pending = await readMetadata(dir, 'pending.json');
+        await atomicJson(path.join(dir, `recovered-pending-${hash(canonicalJson(pending))}.json`), pending);
+        await unlink(await safeFile(dir, 'pending.json'));
+      }
+      this.indexes.delete(canonicalJson(identity));
+      return { batches: state.committedBatches, records: state.committedRecords, scannedBytes };
+    });
+  }
 }
 
 function pickIdentity(value: DatasetIdentity): DatasetIdentity { return { executionId: value.executionId, attemptId: value.attemptId, datasetId: value.datasetId }; }
 const batchFile = (id: string) => `batch-${hash(executionId(id))}.json`;
+const receiptFile = (sequence: number) => `receipt-${String(sequence).padStart(8, '0')}.json`;
+async function readMetadata(dir: string, name: string): Promise<unknown> {
+  const file = await safeFile(dir, name);
+  if ((await lstat(file)).size > 16 * 1024) throw new DatasetError('CORRUPT_METADATA', 'Dataset metadata exceeds 16 KiB; rebuild required', 413);
+  return JSON.parse(await readFile(file, 'utf8')) as unknown;
+}
+function validateReceipt(receipt: BatchReceipt, identity: DatasetIdentity): void {
+  if (!receipt || canonicalJson(pickIdentity(receipt)) !== canonicalJson(identity) || !Number.isSafeInteger(receipt.recordCount) || receipt.recordCount < 0 || !/^[a-f0-9]{64}$/.test(receipt.contentHash) || receipt.artifactId !== `executions/${identity.executionId}/datasets/${identity.attemptId}/${identity.datasetId}/${batchFile(receipt.batchId)}` || receipt.replayed !== false || !Number.isFinite(Date.parse(receipt.durableAt)) || new Date(receipt.durableAt).toISOString() !== receipt.durableAt) throw new DatasetError('CORRUPT_RECEIPT', 'Receipt metadata is invalid; rebuild required');
+}
 function validateBinding(binding: ExecutionBinding): void {
   if (!binding || binding.schemaVersion !== 1 || !['current-page-test', 'from-start-validation'].includes(binding.mode)) throw new DatasetError('INVALID_BINDING', 'Invalid execution binding', 400);
   executionId(binding.executionId); executionId(binding.projectId); executionId(binding.materialRevisionId);
@@ -255,16 +311,20 @@ function validateBatch(batch: DatasetBatch): void {
   }
   if (Buffer.byteLength(canonicalJson(batch)) > MAX_BATCH_BYTES) throw new DatasetError('BATCH_TOO_LARGE', 'Split batch into at most 1 MiB of records and provenance', 413);
 }
-function bounded<T>(source: T[], budget: ReadBudget, query: string): BoundedPage<T> {
+function cursorRange(budget: ReadBudget, query: string, available: number): { start: number; end: number } {
   if (!Number.isSafeInteger(budget.limit) || budget.limit < 1 || budget.limit > 1000 || !Number.isSafeInteger(budget.maxBytes) || budget.maxBytes < 128 || budget.maxBytes > 1024 * 1024) throw new DatasetError('INVALID_BUDGET', 'Read budget needs limit 1–1000 and maxBytes 128–1048576', 400);
-  let start = 0, end = source.length;
+  let start = 0, end = available;
   if (budget.cursor) {
     try {
       const parsed = JSON.parse(Buffer.from(budget.cursor, 'base64url').toString('utf8')) as { version: number; query: string; offset: number; end: number };
-      if (parsed.version !== 1 || parsed.query !== query || !Number.isSafeInteger(parsed.offset) || !Number.isSafeInteger(parsed.end) || parsed.offset < 0 || parsed.end > source.length || parsed.offset > parsed.end) throw new Error();
+      if (parsed.version !== 1 || parsed.query !== query || !Number.isSafeInteger(parsed.offset) || !Number.isSafeInteger(parsed.end) || parsed.offset < 0 || parsed.end > available || parsed.offset > parsed.end) throw new Error();
       start = parsed.offset; end = parsed.end;
     } catch { throw new DatasetError('INVALID_CURSOR', 'Cursor does not match this dataset query', 400); }
   }
+  return { start, end };
+}
+function bounded<T>(source: T[], budget: ReadBudget, query: string, loadedRange?: { start: number; end: number }): BoundedPage<T> {
+  const { start, end } = loadedRange ?? cursorRange(budget, query, source.length);
   const items: T[] = [];
   const make = (): BoundedPage<T> => {
     const offset = start + items.length, outputTruncated = offset < end;
@@ -273,7 +333,7 @@ function bounded<T>(source: T[], budget: ReadBudget, query: string): BoundedPage
     for (let pass = 0; pass < 4; pass++) result.returnedBytes = Buffer.byteLength(JSON.stringify(result));
     return result;
   };
-  for (let offset = start; offset < end && items.length < budget.limit; offset++) {
+  for (let offset = loadedRange ? 0 : start; offset < source.length && items.length < budget.limit && start + items.length < end; offset++) {
     items.push(structuredClone(source[offset]));
     if (make().returnedBytes > budget.maxBytes) { items.pop(); break; }
   }

@@ -151,3 +151,48 @@ test('queue admission rejects unbounded pending batches; a reader can inspect a 
     } finally { await reader.close(); }
   } finally { await service.close(); }
 }));
+
+test('normal summary and ID body reads never load other batch bodies; corrupt metadata requires explicit rebuild', async () => fixture(async root => {
+  const writer = await PersistentDatasetService.open(root, binding);
+  await writer.begin(identity);
+  await writer.append(batch('small'));
+  const other = await writer.append({ ...batch('unselected-large'), records: [{ payload: 'x'.repeat(500_000) }] });
+  await writer.close();
+  const original = await readFile(path.join(root, other.artifactId));
+  await writeFile(path.join(root, other.artifactId), 'deliberately damaged unselected body');
+  const reader = await PersistentDatasetService.openReader(root, binding.executionId);
+  try {
+    assert.equal((await reader.summary(identity)).committedBatches, 2);
+    assert.equal((await reader.batches(identity, { ...budget, limit: 1 })).items[0].batchId, 'small');
+    assert.equal((await reader.records(identity, 'small', budget)).items.length, 2);
+    await assert.rejects(reader.records(identity, 'unselected-large', budget), /JSON/);
+  } finally { await reader.close(); }
+  const recovered = await PersistentDatasetService.open(root, binding);
+  try {
+    await assert.rejects(recovered.rebuild(identity), /JSON/);
+    await writeFile(path.join(root, other.artifactId), original);
+    const dataDir = path.dirname(path.join(root, other.artifactId));
+    await writeFile(path.join(dataDir, 'state.json'), 'broken metadata');
+    await assert.rejects(recovered.summary(identity), /explicit rebuild required/);
+    const result = await recovered.rebuild(identity);
+    assert.equal(result.batches, 2); assert.ok(result.scannedBytes > 500_000);
+    assert.equal((await recovered.summary(identity)).committedBatches, 2);
+  } finally { await recovered.close(); }
+}));
+
+test('interrupted commit marker never becomes an empty dataset and rebuild preserves acknowledged originals', async () => fixture(async root => {
+  let writer = await PersistentDatasetService.open(root, binding);
+  await writer.begin(identity); const receipt = await writer.append(batch()); await writer.close();
+  const dataDir = path.dirname(path.join(root, receipt.artifactId));
+  const before = await readFile(path.join(root, receipt.artifactId));
+  await writeFile(path.join(dataDir, 'pending.json'), JSON.stringify({ batchId: 'next-unwritten', sequence: 2 }));
+  writer = await PersistentDatasetService.open(root, binding);
+  try {
+    await assert.rejects(writer.append(batch('new')), /explicit rebuild/);
+    await writer.rebuild(identity);
+    assert.deepEqual(await readFile(path.join(root, receipt.artifactId)), before);
+    assert.equal((await writer.append(batch())).replayed, true);
+    await writer.append(batch('new'));
+    assert.equal((await writer.summary(identity)).committedBatches, 2);
+  } finally { await writer.close(); }
+}));
