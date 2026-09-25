@@ -29,8 +29,8 @@ test('closes a native replay host that opens after the workspace unmounts', asyn
   await waitFor(() => expect(call).toHaveBeenCalledWith('closeReplay', expect.objectContaining({ replayId: 'replay-one' })));
 });
 
-test('playback follows source-time gaps and retains ordered same-time events', async () => {
-  const positions = [at(1), { ...at(2), sourceTimeMs: 1201 }, { ...at(3), sourceTimeMs: 1201 }];
+test('playback follows even long source-time gaps and retains ordered same-time events', async () => {
+  const positions = [at(1), { ...at(2), sourceTimeMs: 5001 }, { ...at(3), sourceTimeMs: 5001 }];
   let current = host(positions[0], 1);
   const call = vi.fn(async (method: string, body: any) => {
     if (method === 'recordingStreams') return { items: [{ first: positions[0], last: positions[2], events: 3, monotonicTime: true }] };
@@ -48,9 +48,9 @@ test('playback follows source-time gaps and retains ordered same-time events', a
   vi.useFakeTimers();
   try {
     await act(async () => screen.getByRole('button', { name: '播放' }).click());
-    await act(async () => vi.advanceTimersByTimeAsync(100));
+    await act(async () => vi.advanceTimersByTimeAsync(3000));
     expect(call.mock.calls.filter(([method]) => method === 'seekReplay')).toHaveLength(0);
-    await act(async () => vi.advanceTimersByTimeAsync(101));
+    await act(async () => vi.advanceTimersByTimeAsync(1000));
     expect(screen.getByText(/event #2/)).toBeTruthy();
     await act(async () => vi.advanceTimersByTimeAsync(16));
     expect(screen.getByText(/event #3/)).toBeTruthy();

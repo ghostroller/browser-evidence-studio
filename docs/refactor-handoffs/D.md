@@ -25,3 +25,9 @@
 - 结果中心所有深层读取按项目、执行、dataset attempt、batch、report 加请求代际约束。切换执行立即清除子状态；迟到批次、记录和报告不能覆盖新选择。分页按钮也通过同一身份检查，不直接写入旧闭包数据。
 - 原生回放在打开响应晚于卸载时主动关闭返回的 replayId；选取回执和轮询错误按 host generation/请求代际筛掉。播放按相邻事件源时间差与速度调度，保留同毫秒 eventSeq 顺序，长空档上限 3 秒；无整段预载。
 - 再次运行 `npm.cmd run typecheck` 通过；`npm.cmd test -- test/renderer/refactor-results.test.tsx test/renderer/refactor-replay.test.tsx test/renderer/refactor-materials.test.tsx test/renderer/app-archive.test.tsx`：4 文件 13 项通过，包括异步乱序、晚到 native host 清理与源时间播放。仍未运行 Electron；root 串行桌面测试。
+
+## 资料与播放第二次审查返修
+
+- 草稿列表、选中草稿、五种资料集合和分页各按项目/草稿/修订/请求代际提交。切项目或草稿会清空全部本地卡片、需求、字段编辑输入；旧写入或发布回执不可污染新草稿。保存卡片在异步读取录制引用后仍检查原草稿，避免把旧输入写到新项目。
+- 回放速度严格以相邻事件的 `sourceTimeMs` 差计算。长空档只因浏览器 timer 限制按 60 秒分片，未隐式压缩；同毫秒事件仍逐个按 eventSeq seek。关闭 ReplayHost 仅对主进程明确的“view no longer active”视为已关闭，其余错误送工作台可见。
+- `npm.cmd run typecheck` 和三组 D renderer 测试（9 项）通过；新增 deferred 旧集合、旧编辑在切草稿/切项目后完成的负例，以及 4 秒源时间间隔不会在 3 秒时跳转。Electron 仍由 root 独占运行。

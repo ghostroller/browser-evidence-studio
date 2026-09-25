@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { MaterialWorkbench } from '@/renderer/components/material-workbench';
 import type { MaterialContent } from '@/contracts/materials';
@@ -14,6 +14,7 @@ const content = (): MaterialContent => ({ recordingRefs: ['recording-one'], anno
   checkpoints: [{ id: 'card', kind: 'requirement', anchor: position, capturedAt: new Date(1000).toISOString(), createdAt: new Date(2000).toISOString(), title: 'Order example', notes: '', requirementIds: ['orders'], annotationIds: [] }],
 });
 afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
+function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(complete => { resolve = complete; }); return { promise, resolve }; }
 
 test('shows an optimistic edit conflict and never silently overwrites the newer draft', async () => {
   const call = vi.fn(async (method: string, body: any) => {
@@ -77,4 +78,45 @@ test('edits a field through description, target, and target plus annotation path
   fireEvent.click(screen.getByRole('button', { name: '保存字段' }));
   await waitFor(() => expect(revision).toBe(3));
   expect(stored.fields[0].annotationId).toBe('note-one');
+});
+
+test('late collections and edits cannot cross a draft or project switch', async () => {
+  const oldCollection = deferred<any>();
+  const oldEdit = deferred<any>();
+  const call = vi.fn(async (method: string, body: any) => {
+    if (method === 'materialDrafts') return { items: body.projectId === 'project-two'
+      ? [{ draftId: 'project-two-draft', draftRevision: 0, status: 'available' }]
+      : [{ draftId: 'old-draft', draftRevision: 0, status: 'available' }, { draftId: 'new-draft', draftRevision: 0, status: 'available' }] };
+    if (method === 'materialRevisions') return { items: [] };
+    if (method === 'materialDraft') return { draftId: body.draftId, draftRevision: 0 };
+    if (method === 'materialCollection') {
+      if (body.draftId === 'old-draft' && body.collection === 'checkpoints') return oldCollection.promise;
+      const material = content();
+      if (body.draftId === 'new-draft') material.checkpoints[0].title = 'New draft card';
+      if (body.draftId === 'project-two-draft') material.checkpoints[0].title = 'Project two card';
+      return { items: material[body.collection as keyof MaterialContent] };
+    }
+    if (method === 'editMaterialDraft') return oldEdit.promise;
+    throw new Error(method);
+  });
+  window.studio = { call, bounds: vi.fn() };
+  const props = { recordingId: 'recording-one', position, onOpenReplay: vi.fn(), onSelectTarget: vi.fn() };
+  const view = render(<MaterialWorkbench projectId="project-one" {...props} />);
+  fireEvent.click(await screen.findByRole('button', { name: /old-draft/ }));
+  fireEvent.click(screen.getByRole('button', { name: /new-draft/ }));
+  await waitFor(() => expect(screen.getByRole('button', { name: /New draft card/ })).toBeTruthy());
+  await act(async () => oldCollection.resolve({ items: [{ ...content().checkpoints[0], title: 'Leaked old draft card' }] }));
+  expect(screen.queryByText(/Leaked old draft card/)).toBeNull();
+  fireEvent.change(screen.getByLabelText('需求'), { target: { value: 'orders' } });
+  fireEvent.change(screen.getByLabelText('需求说明'), { target: { value: 'Unsaved local change' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存需求' }));
+  await waitFor(() => expect(call).toHaveBeenCalledWith('editMaterialDraft', expect.objectContaining({ projectId: 'project-one', draftId: 'new-draft' })));
+  view.rerender(<MaterialWorkbench projectId="project-two" {...props} />);
+  fireEvent.click(await screen.findByRole('button', { name: /project-two-dra/ }));
+  await waitFor(() => expect(screen.getByRole('button', { name: /Project two card/ })).toBeTruthy());
+  expect((screen.getByLabelText('需求说明') as HTMLTextAreaElement).value).toBe('');
+  await act(async () => oldEdit.resolve({ status: 'saved', draft: { draftId: 'new-draft', draftRevision: 1 } }));
+  expect(screen.queryByText('Unsaved local change')).toBeNull();
+  expect(screen.queryByText(/已保存到草稿/)).toBeNull();
+  expect(screen.getByRole('button', { name: /Project two card/ })).toBeTruthy();
 });
