@@ -1,4 +1,4 @@
-import type { DataRule } from './workflow';
+import type { DataRule, JsonRecordSourceProof } from './workflow';
 import type { BoundedPage, HistoricalTarget, ReadBudget, ReplayPosition } from './recording';
 
 export const MATERIAL_SCHEMA_VERSION = 1 as const;
@@ -8,6 +8,9 @@ export interface MaterialField {
   dataset: string;
   name: string;
   description: string;
+  /** name is a display label; this optional RFC 6901 pointer selects output data. */
+  outputPath?: string;
+  sourceProof?: JsonRecordSourceProof;
   valueType?: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null';
   sourcePolicy: 'any-evidenced' | 'page-displayed';
   target?: HistoricalTarget;
