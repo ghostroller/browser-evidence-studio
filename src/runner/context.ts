@@ -1,6 +1,6 @@
 import type { WorkflowReporter } from '@/contracts/workflow';
 import type { BatchReceipt, DatasetBatch, DatasetCompletion, DatasetIdentity, ExecutionBinding, OriginalError, StepIdentity } from '../contracts/execution';
-import type { StepEvent } from './steps';
+import type { StepEvent, StepSelection } from './steps';
 import { restoreError } from './errors';
 import type { ExecutionSnapshot } from './snapshot';
 
@@ -29,7 +29,13 @@ export type HostMessage =
   | { type: 'reply'; id: number; value?: unknown; error?: string; originalError?: OriginalError }
   | { type: 'cancel'; reason: string };
 
-export interface WorkerInput { entryPath: string; exportName: string; input: unknown; targetId: string; execution?: { binding: ExecutionBinding; attemptId: string }; snapshot?: ExecutionSnapshot }
+export interface WorkerInput { entryPath: string; exportName: string; input: unknown; targetId: string; execution?: { binding: ExecutionBinding; attemptId: string }; snapshot?: ExecutionSnapshot; selection?: StepSelection }
+
+/** Apply in the worker BEFORE structured cloning an entry result to the host. */
+export function assertWorkflowOutputBudget(value: unknown): void {
+  const serialized = JSON.stringify(value);
+  if (serialized !== undefined && Buffer.byteLength(serialized) > 64 * 1024) throw new Error('Workflow output exceeds 64 KiB; return summaries and durable dataset references instead of records');
+}
 
 export function createReporter(
   call: (method: ReporterMethod, args: unknown[]) => Promise<unknown>, signal: AbortSignal, execution?: WorkerInput['execution'],

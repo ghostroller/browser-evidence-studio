@@ -9,7 +9,9 @@ export interface StepEvent {
   occurredAt: string;
   result?: StepResult<unknown>;
   diagnostics?: { phase: 'evidence' | 'cleanup'; error: OriginalError }[];
+  rerun?: { from: StepIdentity; status: 'pending' | 'passed' | 'failed'; validityEvidenceRefs: string[]; checkedAt?: string; reason?: string };
 }
+export interface StepSelection { stepIds?: string[]; entityKeys?: string[] }
 export interface StepContext {
   identity: StepIdentity;
   signal: AbortSignal;
@@ -29,6 +31,9 @@ export interface StepOptions<T> {
   commit?(value: T, context: StepContext): Promise<void>;
   evidence?(value: T, context: StepContext): Promise<void>;
   cleanup?(context: StepContext): Promise<void>;
+  /** Explicit manual rerun: verify current login/input/prerequisite/code/material compatibility
+   * in ordinary business code. The callback's result is a recorded declaration, not acceptance. */
+  prior?: { identity: StepIdentity; validate(context: StepContext): Promise<{ valid: boolean; evidenceRefs: string[]; reason?: string }> };
 }
 export interface StepRunnerOptions {
   executionId: string;
@@ -37,12 +42,14 @@ export interface StepRunnerOptions {
   /** Must revoke the resource and await verified quiescence (e.g. terminate its worker).
    * Without this hook cancellation waits for the function to settle, never claims a race stopped it. */
   interrupt?(identity: StepIdentity, reason: Error, resourceKey: string): Promise<void>;
+  selection?: StepSelection;
 }
 export class StepTimeoutError extends Error { constructor() { super('Step timeout elapsed; external effects may require inspection'); this.name = 'StepTimeoutError'; } }
 export class StepPersistenceError extends Error { constructor(cause: unknown) { super('Step result or business output could not be saved', { cause }); this.name = 'StepPersistenceError'; } }
 
 /** Portable ordinary-JS helper. It schedules no workflow, navigates no page and invents no dependencies. */
-export function createStepRunner(options: StepRunnerOptions): { run<T>(step: StepOptions<T>): Promise<StepResult<T>>; pending(): number } {
+export function createStepRunner(options: StepRunnerOptions): { run<T>(step: StepOptions<T>): Promise<StepResult<T>>; pending(): number; selected(stepId: string, entityKey?: string): boolean } {
+  const selection = parseStepSelection(options.selection);
   const resources = new Map<string, Promise<unknown>>();
   const unsafeResources = new Map<string, Error>();
   let fatal: unknown;
@@ -50,8 +57,8 @@ export function createStepRunner(options: StepRunnerOptions): { run<T>(step: Ste
   const save = async (event: StepEvent): Promise<void> => {
     try { await options.save(event); } catch (error) { fatal = new StepPersistenceError(error); throw fatal; }
   };
-  const record = async <T>(result: StepResult<T>, diagnostics?: StepEvent['diagnostics']): Promise<StepResult<T>> => {
-    await save({ identity: result.identity, state: result.status, occurredAt: new Date().toISOString(), result, ...(diagnostics?.length ? { diagnostics } : {}) });
+  const record = async <T>(result: StepResult<T>, diagnostics?: StepEvent['diagnostics'], rerun?: StepEvent['rerun']): Promise<StepResult<T>> => {
+    await save({ identity: result.identity, state: result.status, occurredAt: new Date().toISOString(), result, ...(diagnostics?.length ? { diagnostics } : {}), ...(rerun ? { rerun } : {}) });
     return result;
   };
   async function execute<T>(step: StepOptions<T>, resourceKey: string): Promise<StepResult<T>> {
@@ -82,11 +89,21 @@ export function createStepRunner(options: StepRunnerOptions): { run<T>(step: Ste
       let committed = false;
       let quiet: Promise<void> | undefined;
       const diagnostics: NonNullable<StepEvent['diagnostics']> = [];
+      let rerun: StepEvent['rerun'] = step.prior ? { from: step.prior.identity, status: 'pending', validityEvidenceRefs: [] } : undefined;
       let removeAbort = () => {};
       try {
         controller.signal.throwIfAborted();
-        await save({ identity: current, state: 'running', occurredAt: new Date().toISOString() });
+        await save({ identity: current, state: 'running', occurredAt: new Date().toISOString(), ...(rerun ? { rerun } : {}) });
         const work = (async () => {
+          if (step.prior) {
+            if (step.prior.identity.stepId !== step.stepId || step.prior.identity.entityKey !== step.entityKey) throw new Error('Prior attempt must identify the same step and entity');
+            const checked = await step.prior.validate(context);
+            controller.signal.throwIfAborted();
+            if (typeof checked.valid !== 'boolean' || !Array.isArray(checked.evidenceRefs) || checked.evidenceRefs.some(ref => typeof ref !== 'string' || !ref.trim()) || (checked.valid && !checked.evidenceRefs.length)) throw new Error('Rerun compatibility requires an explicit boolean and validity evidence references');
+            rerun = { from: step.prior.identity, status: checked.valid ? 'passed' : 'failed', validityEvidenceRefs: checked.evidenceRefs, checkedAt: new Date().toISOString(), ...(checked.reason ? { reason: checked.reason } : {}) };
+            if (!checked.valid) return { status: 'blocked', identity: current, dependencies: [step.prior.identity], reason: checked.reason ?? 'Rerun prerequisites or version compatibility were not verified' } satisfies StepResult<T>;
+            await save({ identity: current, state: 'running', occurredAt: new Date().toISOString(), rerun });
+          }
           const value = await step.run(context);
           controller.signal.throwIfAborted();
           if (step.commit) {
@@ -135,7 +152,7 @@ export function createStepRunner(options: StepRunnerOptions): { run<T>(step: Ste
       }
       if (fatal) throw fatal;
       if (diagnostics.some(item => item.phase === 'cleanup') && result.status === 'succeeded') result = { ...result, status: 'partial', error: diagnostics.find(item => item.phase === 'cleanup')!.error };
-      await record(result, diagnostics);
+      await record(result, diagnostics, rerun);
       if (result.status !== 'failed' || committed || unsafeResources.has(resourceKey) || !step.retry || attempt + 1 >= maxAttempts || options.signal.aborted || Date.now() - startedAt + step.retry.backoffMs >= step.retry.totalBudgetMs) return result;
       // Unsafe/non-idempotent steps have no retry option; every retry gets a new attempt identity.
       try { await delay(step.retry.backoffMs, undefined, { signal: options.signal }); }
@@ -143,7 +160,9 @@ export function createStepRunner(options: StepRunnerOptions): { run<T>(step: Ste
     }
     throw new Error('Unreachable attempt boundary');
   }
-  return { pending: () => pendingSteps, run: <T>(step: StepOptions<T>): Promise<StepResult<T>> => {
+  return { pending: () => pendingSteps,
+    selected: (stepId, entityKey) => (!selection?.stepIds || selection.stepIds.includes(stepId)) && (!selection?.entityKeys || (entityKey !== undefined && selection.entityKeys.includes(entityKey))),
+    run: <T>(step: StepOptions<T>): Promise<StepResult<T>> => {
     if (!step.stepId || step.stepId.length > 128 || (step.timeoutMs !== undefined && (!Number.isFinite(step.timeoutMs) || step.timeoutMs < 1))) return Promise.reject(new Error('Invalid step identity or timeout'));
     if (step.retry && (!['read-only', 'idempotent'].includes(step.retry.policy) || !Number.isSafeInteger(step.retry.maxAttempts) || step.retry.maxAttempts < 1 || step.retry.maxAttempts > 5 || !Number.isFinite(step.retry.backoffMs) || step.retry.backoffMs < 0 || step.retry.backoffMs > 30_000 || !Number.isFinite(step.retry.totalBudgetMs) || step.retry.totalBudgetMs < 1 || step.retry.totalBudgetMs > 30 * 60_000)) return Promise.reject(new Error('Retry requires explicit idempotence, at most 5 attempts, bounded backoff and total budget'));
     const resourceKey = step.resourceKey ?? 'shared-page';
@@ -156,4 +175,16 @@ export function createStepRunner(options: StepRunnerOptions): { run<T>(step: Ste
     void settled.finally(() => { if (resources.get(resourceKey) === settled) resources.delete(resourceKey); });
     return pending;
   } };
+}
+export function parseStepSelection(value?: StepSelection): StepSelection | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object') throw new Error('Invalid step selection');
+  const result: StepSelection = {};
+  for (const field of ['stepIds', 'entityKeys'] as const) {
+    const values = value[field];
+    if (values === undefined) continue;
+    if (!Array.isArray(values) || values.length === 0 || values.length > 256 || !values.every(item => typeof item === 'string' && item.length > 0 && item.length <= 256) || new Set(values).size !== values.length) throw new Error('Step selection requires 1–256 distinct step IDs or entity keys');
+    result[field] = [...values];
+  }
+  return result;
 }

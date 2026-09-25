@@ -34,6 +34,10 @@
 
 实际 `npm.cmd test -- test/unit/validation.test.ts test/unit/runner-incremental.test.ts test/unit/runner-snapshot.test.ts test/unit/runner-steps.test.ts`：4 文件/30 项通过，6.30 s；typecheck 通过；npm.cmd run build 通过（保留现有 use-client、chunk size、tailwind sourcemap 警告）。新增 snapshot 子进程证明后期动态 import 和项目内依赖使用副本原值，修改源不换代码，修改副本/越目录 import 被拒；incremental 真实 worker 测试证明失败截图保留数据和 cause、取消前耐久数据保留、退出后才写终态、延迟命令不发送、旧 emitData 适配和绑定不匹配拒绝。主树另已复验早期 187 项，root 记录为准。
 
-portable runtime entry 是 `src/runner/portable.ts`，仅 Node built-ins 和步骤/错误包装，由 root 纳入现有构建为单文件 ESM；安装版不需要运行时 Vite。尚需选择性跨执行重跑的普通代码示例/前置再验证说明，不能将 helper 内自动 retry 当成该流程已交付。
+portable runtime entry 是 `src/runner/portable.ts`，仅 Node built-ins 和步骤/错误包装；root 已纳入现有 build/Forge 为 `.vite/build/portable-runner.mjs` 单文件 ESM，安装版不需要运行时 Vite。
+
+选择性重跑：StartWorkflowOptions.selection / WorkerInput.selection / entry.selection / result.selection 保存同一份有界 stepIds/entityKeys；业务普通代码用 `steps.selected(stepId,entityKey)` 控制循环。`StepOptions.prior={identity,validate}` 在新 attempt 内重新验证登录、输入、前置数据和代码/资料兼容性，记录 rerun.from/status/validityEvidenceRefs/checkedAt，失败返回 blocked。此检查是脚本声明，F 仍核查证据；selection 字段存在不代表代码必然遵循。示例 `examples/portable-runner/run.mjs` 实际选择实体、执行前检查并逐实体提交，返回摘要；跨 execution 行复用仍拒绝，修复后重新采集或使用同 execution 下显式 reusedFrom，不能冒充连续全通过。
+
+worker 在发送 complete 之前限制入口 output ≤64 KiB；host 再防御检查。返回大结果会明确失败并提示用数据集引用，之前已提交批次保留。`npm.cmd test -- test/unit/runner-portable.test.ts test/unit/runner-incremental.test.ts test/unit/runner-steps.test.ts`：3 文件/14 项通过（4.09 s），typecheck 通过。portable 测试实际单文件打包后在仓库外使用 plain Node，证明选择 order-2 单独重跑、新 attempt、失效登录 blocked 与旧身份/有效性引用；不要求开发目录/tsx/Vite 在运行时存在。
 
 有效性 evidenceRefs 是显式记录，不自动等于内容核验，后续 F 判定。完整 JSON schema/主键语义来自用户资料，当前冻结 DatasetBatch 无 step/schema 字段；本服务按批追加，拒绝同 batchId 异内容，不自动按实体覆盖旧行。finish complete 是脚本声明，不能独立证明分页完整。
