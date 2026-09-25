@@ -2,6 +2,8 @@
 
 更新：2026-09-26。总规范是 refactor/01-modification-plan.md；本表区分已验证原型与生产集成，不以提交数量计完成。
 
+**用户暂停（2026-09-26）**：用户要求“先停下做一次进度总结”。根已通过原生工具 interrupt A/D/E，三者状态均为 `interrupted`，不再派发或继续实现；B/C/F 先前已交付模块。下表的 implementing 表示未完成范围，暂停期间不运行。根已保存当前提交与未提交现场，恢复必须由用户接续指令触发。
+
 | T | 依赖 | owner | 状态 | 实际范围 / 接续 |
 |---|---|---|---|---|
 | T00 | 无 | S0 | verified | 基线/共享契约/协作规则已提交；真实 rrweb 源信息、选择、原始结构及定位器风险原型通过；生产能力由 A 接入 |
@@ -75,3 +77,13 @@
 - C 收尾 `324e46a/19a6a321 → 604b52e/b143227`：业务选择按 step/entity 生效，总 worker 输出 64 KiB 上限，void 步骤原件明确 `resultValueState=undefined`、不冒充 null。根 `CF-final-typecheck.log` 通过；`CF-final-module-tests.log` **6 文件/46 项通过，20.02 s**。最后两包未重复跑桌面，后续 E 实际绑定再跑系统验证。
 - 根唯一源显示值契约 `2e2258e`，`presentation-typecheck.log` 通过；A/E 获准只接该共享提交。它只是端口，A 明确选定节点源端取样和 F 核验尚待实现。
 - E 从 `dd06e95bd5955902075d3d1f77af1240c8fe4d59` 新建；C/F 完成释放槽位后实际启动 `/root/refactor_e`。D 从 `2e2258ea6833860cf76c25cbc8fbc9a1e887e37c` 新建并实际启动 `/root/refactor_d`，均未复用/重置旧树。原生工具接受的模型/effort/base 见表；下一动作是根重跑 A 桌面、E/D 对齐实际门面并提交可审查包。没有要求用户创建会话或搬运结果。
+
+### 用户暂停检查点
+
+- 暂停前主树 `main` HEAD `2a1fe3119f42ca7ca990354611cacf4d0ac74a6a`，clean；本段单独作为调度文档提交，不继续实施代码。A 队列返修的根进程 session `91615` 已正常退出 0：`A-queue-typecheck.log`、`A-queue-module-tests.log` **1 文件/8 项通过，12.04 s**、`A-queue-build.log` 通过，portable runner 12.10 kB。第三次 A 桌面专项**未启动**。
+- 原生 `/root/refactor_a`、`/root/refactor_d`、`/root/refactor_e` 已 interrupt，工具复查均 `interrupted`。进程只读核查首次 CIM 权限拒绝，正常申请权限后成功；未发现命令行属于本仓的遗留 Electron/Node/安装任务（只显示核查命令自身），未停止无关进程。桌面锁释放。
+- A HEAD `0d295c7b6ad3bf8a56a3ff158d2dcf1ceecaa9da`。未提交修改完整保留：`src/capture/{coordinator,privacy,request-body,request-ledger,source-recorder}.ts`、`src/resources/archive.ts`、`test/desktop/refactor-recording.ts`、`test/unit/refactor-recording.test.ts`，未跟踪 `src/capture/url-privacy.ts`。这是正在写的 credential URL 隐私和请求身份保护包，未审查/未集成，不能当成已验证；显示值共享提交 `2e2258e` 已获准接入但 A HEAD 尚未包含。
+- D HEAD `2e2258ea6833860cf76c25cbc8fbc9a1e887e37c`，clean；已完成 preflight 和开始接口协调，尚无 UI 实现提交。恢复使用原 ID/原树，不重复建任务或 worktree。
+- E HEAD `2bafbb7bc0bcd6a8795b73543587af18e1cc71d0`。未提交 `src/main/services/{dispatch,studio}.ts`，未跟踪 `src/main/services/{project-dispatch,project-materials,task-authorization}.ts`；这些权限/材料/执行门面未完成、未审查、未集成。保留原树接续。
+- B HEAD `e65b774e53ba7c0b28a185cc03719cde90ca1a71`、C HEAD `19a6a321b2367493143d0094b1c761fac9c57e04`、F HEAD `d69a14a5c995f13472df4d6707ce4cebb2c6680c`，均 clean。所有原树、分支、测试录制及失败日志保留，没有 push、删除或改写历史材料。
+- 用户要求恢复后：先读本记录并核对 agents/process/status，按原 ID 接续 A/D/E；先串行运行 A 第三次录制/离线专项，再审查其未提交隐私包，E/D 继续真实门面/UI；随后 F 显示值与复用有效性、最终整机/打包/独立业务/30 分钟长测。未完成项是实施与验证接续，当前没有需要用户解决的权限/登录外部阻塞。
