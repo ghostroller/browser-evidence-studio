@@ -1,5 +1,6 @@
 import { responsePrivacy } from './privacy';
 import { credentialUrl } from './url-privacy';
+import type { captureError } from './url-privacy';
 
 export const RESPONSE_CAPTURE_BYTES = 8 * 1024 * 1024;
 export const RESPONSE_CDP_BUFFER_BYTES = 10 * 1024 * 1024;
@@ -22,7 +23,7 @@ function largeTextMayBePrivate(text: string): boolean {
 }
 
 export function prepareResponseBody(body: { body: string; base64Encoded: boolean }, mediaType: string): {
-  data?: Buffer; redacted: boolean; excludedReason?: string; observedBytes?: number;
+  data?: Buffer; redacted: boolean; excludedReason?: string; observedBytes?: number; privacyError?: ReturnType<typeof captureError>;
 } {
   if (body.body.length > MAX_STRING_CHARACTERS) throw new Error('response-observed-string-working-set-budget');
   const observedBytes = body.base64Encoded
