@@ -1,5 +1,6 @@
 import type { MaterialContent, MaterialField, MaterialRequirement, CheckpointCard, MaterialAnnotation } from '@/contracts/materials';
 import type { DataRule } from '@/contracts/workflow';
+import { parseJsonPointer, parseJsonRecordProof, parsePaginationProof } from '@/contracts/workflow';
 import { parseReplayPosition, sameReplayPosition, type HistoricalTarget, type ReplayPosition } from '@/contracts/recording';
 import { MaterialError } from './errors';
 
@@ -83,8 +84,12 @@ function rule(value: unknown): DataRule {
       if (!Number.isSafeInteger(item.count) || Number(item.count) < 0) fail('Invalid min-rows count');
       break;
     case 'pagination-complete':
-      keys(item, ['type', 'minPages'], 'pagination rule');
+      keys(item, ['type', 'minPages', 'proof'], 'pagination rule');
       if (item.minPages !== undefined && (!Number.isSafeInteger(item.minPages) || Number(item.minPages) < 1)) fail('Invalid minPages');
+      if (item.proof !== undefined) {
+        try { return { type: 'pagination-complete', ...(item.minPages === undefined ? {} : { minPages: item.minPages as number }), proof: parsePaginationProof(item.proof) }; }
+        catch (error) { return fail(String(error)); }
+      }
       break;
     case 'same-entity':
       keys(item, ['type', 'field', 'equalsField'], 'same-entity rule');
@@ -118,13 +123,21 @@ export function validateContent(value: unknown): MaterialContent {
   const fields = list(content.fields, 'fields').map((raw): MaterialField => {
     if (!record(raw)) fail('Field must be an object');
     const item = raw as Record<string, unknown>;
-    keys(item, ['id', 'dataset', 'name', 'description', 'valueType', 'sourcePolicy', 'target', 'annotationId', 'checkpointId', 'bindingStatus'], 'field');
+    keys(item, ['id', 'dataset', 'name', 'description', 'outputPath', 'sourceProof', 'valueType', 'sourcePolicy', 'target', 'annotationId', 'checkpointId', 'bindingStatus'], 'field');
     if (!['any-evidenced', 'page-displayed'].includes(String(item.sourcePolicy))) fail('Invalid source policy');
     if (item.valueType !== undefined && !['string', 'number', 'boolean', 'object', 'array', 'null'].includes(String(item.valueType))) fail('Invalid field type');
     if ((item.checkpointId !== undefined || item.bindingStatus !== undefined) && item.target === undefined) fail('Field binding metadata requires a target');
     if (item.bindingStatus !== undefined && !['bound', 'needs-rebind', 'unavailable'].includes(String(item.bindingStatus))) fail('Invalid field binding status');
+    let proofFields: Pick<MaterialField, 'outputPath' | 'sourceProof'> = {};
+    try {
+      if (item.outputPath !== undefined) proofFields.outputPath = parseJsonPointer(item.outputPath);
+      if (item.sourceProof !== undefined) {
+        if (item.outputPath === undefined) fail('Source proof requires an explicit outputPath');
+        proofFields.sourceProof = parseJsonRecordProof(item.sourceProof);
+      }
+    } catch (error) { fail(String(error)); }
     return { id: id(item.id, 'field.id'), dataset: id(item.dataset, 'field.dataset'), name: string(item.name, 'field.name', 256),
-      description: string(item.description, 'field.description', 8000), sourcePolicy: item.sourcePolicy as MaterialField['sourcePolicy'],
+      description: string(item.description, 'field.description', 8000), sourcePolicy: item.sourcePolicy as MaterialField['sourcePolicy'], ...proofFields,
       ...(item.valueType === undefined ? {} : { valueType: item.valueType as MaterialField['valueType'] }),
       ...(item.target === undefined ? {} : { target: target(item.target, 'field.target') }),
       ...(item.annotationId === undefined ? {} : { annotationId: id(item.annotationId, 'field.annotationId') }),

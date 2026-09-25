@@ -1,13 +1,36 @@
 export type Verdict = 'pass' | 'fail' | 'inconclusive' | 'not-run';
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
+/** User-frozen source constraints. Pointers address captured JSON, never code to execute. */
+export interface JsonRecordSourceProof {
+  kind: 'json-record';
+  sourceUrl: string;
+  /** Only this query parameter may vary; all other URL components must match. */
+  pageParameter?: string;
+  rowsPointer: string;
+  entityPointer: string;
+  outputEntityPath: string;
+  valuePointer: string;
+}
+export interface NumberedPaginationProof {
+  kind: 'numbered-pages';
+  sourceUrl: string;
+  pageParameter: string;
+  pagePointer: string;
+  rowsPointer: string;
+  entityPointer: string;
+  outputEntityPath: string;
+  termination: { kind: 'total-pages'; pointer: string } |
+    { kind: 'has-next-and-total'; hasNextPointer: string; totalRecordsPointer: string };
+}
+
 /** Data checks only; navigation, branches and loops belong in ordinary JS. */
 export type DataRule =
   | { type: 'required'; field: string; allowNull?: boolean }
   | { type: 'field-type'; field: string; valueType: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' }
   | { type: 'unique'; field: string }
   | { type: 'min-rows'; count: number }
-  | { type: 'pagination-complete'; minPages?: number }
+  | { type: 'pagination-complete'; minPages?: number; proof?: NumberedPaginationProof }
   | { type: 'same-entity'; field: string; equalsField: string }
   | { type: 'reference'; field: string; dataset: string; targetField: string };
 
@@ -120,6 +143,7 @@ function validateDataRule(value: unknown): void {
       return;
     case 'pagination-complete':
       if (value.minPages !== undefined && (!Number.isSafeInteger(value.minPages) || (value.minPages as number) < 1)) throw new Error('Invalid minPages');
+      if (value.proof !== undefined) parsePaginationProof(value.proof);
       return;
     case 'required':
       if (value.allowNull !== undefined && typeof value.allowNull !== 'boolean') throw new Error('Invalid allowNull');
@@ -137,4 +161,43 @@ function validateDataRule(value: unknown): void {
     default: throw new Error(`Unknown data rule ${String(value.type)}`);
   }
   if (!nonempty(value.field)) throw new Error('Data rule field is required');
+}
+
+function proofObject(value: unknown, allowed: string[]): Record<string, unknown> {
+  if (!object(value) || Object.keys(value).some(key => !allowed.includes(key))) throw new Error('Invalid source proof object');
+  return value;
+}
+export function parseJsonPointer(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 1024 || (value !== '' && !value.startsWith('/')) || /~(?![01])/u.test(value) || /[\u0000-\u001f\u007f]/u.test(value)) throw new Error('Invalid bounded JSON Pointer');
+  return value;
+}
+function proofUrl(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 4096) throw new Error('Invalid source URL');
+  const url = new URL(value);
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash || [...url.searchParams.keys()].some(key => /password|token|secret|authorization|cookie|credential|api[_-]?key/i.test(key))) throw new Error('Source URL must be HTTP(S) without credentials');
+  return url.href;
+}
+function pageParameter(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 128 || /[\u0000-\u001f\u007f&=#]/u.test(value)) throw new Error('Invalid page parameter');
+  return value;
+}
+export function parseJsonRecordProof(value: unknown): JsonRecordSourceProof {
+  const item = proofObject(value, ['kind', 'sourceUrl', 'pageParameter', 'rowsPointer', 'entityPointer', 'outputEntityPath', 'valuePointer']);
+  if (item.kind !== 'json-record') throw new Error('Invalid JSON record proof kind');
+  return { kind: 'json-record', sourceUrl: proofUrl(item.sourceUrl), ...(item.pageParameter === undefined ? {} : { pageParameter: pageParameter(item.pageParameter) }),
+    rowsPointer: parseJsonPointer(item.rowsPointer), entityPointer: parseJsonPointer(item.entityPointer), outputEntityPath: parseJsonPointer(item.outputEntityPath), valuePointer: parseJsonPointer(item.valuePointer) };
+}
+export function parsePaginationProof(value: unknown): NumberedPaginationProof {
+  const item = proofObject(value, ['kind', 'sourceUrl', 'pageParameter', 'pagePointer', 'rowsPointer', 'entityPointer', 'outputEntityPath', 'termination']);
+  if (item.kind !== 'numbered-pages' || !object(item.termination)) throw new Error('Invalid numbered pagination proof');
+  let termination: NumberedPaginationProof['termination'];
+  if (item.termination.kind === 'total-pages') {
+    const end = proofObject(item.termination, ['kind', 'pointer']);
+    termination = { kind: 'total-pages', pointer: parseJsonPointer(end.pointer) };
+  } else if (item.termination.kind === 'has-next-and-total') {
+    const end = proofObject(item.termination, ['kind', 'hasNextPointer', 'totalRecordsPointer']);
+    termination = { kind: 'has-next-and-total', hasNextPointer: parseJsonPointer(end.hasNextPointer), totalRecordsPointer: parseJsonPointer(end.totalRecordsPointer) };
+  } else throw new Error('Invalid pagination termination proof');
+  return { kind: 'numbered-pages', sourceUrl: proofUrl(item.sourceUrl), pageParameter: pageParameter(item.pageParameter), pagePointer: parseJsonPointer(item.pagePointer),
+    rowsPointer: parseJsonPointer(item.rowsPointer), entityPointer: parseJsonPointer(item.entityPointer), outputEntityPath: parseJsonPointer(item.outputEntityPath), termination };
 }

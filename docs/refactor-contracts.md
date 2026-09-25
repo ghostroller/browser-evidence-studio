@@ -29,6 +29,8 @@ MaterialService 使用完整内容条件更新：`expectedDraftRevision` 冲突�
 
 DatasetService 的 append 完成意味着已持久保存；幂等键是 execution/attempt/dataset/batch。相同键同内容返回原回执，异内容拒绝。finish 不能覆盖已提交批次，失败保留之前的回执。批次 hash 覆盖 records、provenance、复用来源。取消在持久边界前后均检查；已持久保存后取消不能撤回原件。StepResult 分开业务错误、blocked、partial、awaiting-human；辅助截图失败不吞业务数据。
 
+2026-09-26 F 接入补充：`MaterialField.name` 是显示名，`outputPath?` 用 RFC 6901 JSON Pointer 显式映射输出字段，不从显示名推断键。可选 `sourceProof: json-record` 固定来源 URL、记录集合/实体/字段指针及输出实体指针。`pagination-complete.proof?: numbered-pages` 固定逐页实体集合和结束约束，支持总页数或 hasNext + 总记录数；这些配置属于用户资料、进入 revision hash，脚本不能另定验收标准。只允许明确 `pageParameter` 的查询值变化，其余固定 URL（包括筛选 query）必须匹配；指针是数据定位，不执行代码。F 从真实捕获的 request URL/正文核验页序、实体集合、字段内容，不把 script complete 或引用存在当成内容证明。未配置 proof/输出路径时保留语义资料并明确证据不足，不能自动补值；network JSON 不能独自证明 page-displayed 或隐私遮罩要求。G 唯一修改共享类型及已完成 B 的严格输入适配；旧 revision 不添加字段、不改 hash。
+
 ## 落盘与旧材料
 
 根为每个实例的 `BES_DATA`，相对目录冻结如下：
