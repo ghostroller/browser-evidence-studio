@@ -10,6 +10,7 @@ export class StudioWindow {
   private views: WebContentsView[] = [];
   private active?: WebContentsView;
   private replay?: WebContentsView;
+  private replayReady=false;
   private rect = {x: 236, y: 160, width: 700, height: 610};
   private locked = false;
   private browserVisible = true;
@@ -97,9 +98,9 @@ export class StudioWindow {
   private contents(view:WebContentsView) {try{const contents=view.webContents;return contents&&!contents.isDestroyed()?contents:undefined;}catch{return undefined;}}
   show(view?: WebContentsView) { this.active = view&&this.views.includes(view)&&this.contents(view)?view:undefined; this.layout(); }
   setBrowserVisible(visible: boolean) { this.browserVisible=visible;this.layout(); }
-  showReplay(view: WebContentsView) {
+  showReplay(view: WebContentsView,ready=true) {
     if(this.replay && this.replay!==view)this.hideReplay(this.replay);
-    this.replay=view;this.window.contentView.addChildView(view);this.layout();
+    this.replay=view;this.replayReady=ready;if(!this.window.contentView.children.includes(view))this.window.contentView.addChildView(view);this.layout();
   }
   hideReplay(view: WebContentsView) {
     if(this.replay!==view)return;
@@ -163,7 +164,7 @@ export class StudioWindow {
     const visible = this.browserVisible && !this.uiNeedsBounds && !this.occlusion.size && right>x && bottom>y;
     // Commit the latest bounds before restoring visibility after a dialog or drag.
     for (const v of this.views) {if(!this.contents(v)){if(this.active===v)this.active=undefined;continue;}this.place(v,rect,visible&&!this.replay&&v===this.active); }
-    if(this.replay&&this.contents(this.replay))this.place(this.replay,rect,visible);
+    if(this.replay&&this.contents(this.replay))this.place(this.replay,rect,visible&&this.replayReady);
     if(!this.contents(this.mask))return;
     this.place(this.mask,rect,visible && this.locked && !!this.active && !this.replay);
   }

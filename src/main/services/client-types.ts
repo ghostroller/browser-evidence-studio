@@ -14,6 +14,8 @@ export interface ReplayHostState {
   replayId: string; projectId: string; generation: number; status: 'loading' | 'ready' | 'failed' | 'closed';
   position?: ReplayPosition; state?: ReplayState; selection?: HistoricalElementRef;
   selecting: boolean; selectionSequence: number; error?: string;
+  resources?: { status:'loading'|'ready'|'partial'; blockedRequests:number; failures:Array<{resourceId?:string;generation:number;code?:string;name:string;message:string}> };
+  selectionError?: string;
 }
 export interface ReplayOpenInput { projectId: string; position: ReplayPosition }
 export interface ReplaySeekInput extends ReplayOpenInput { replayId: string }
