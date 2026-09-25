@@ -142,6 +142,8 @@ describe('fixed material validation using real B/C stores', () => {
     await f.data.append(batch); await f.data.finish({ ...identity, status: 'complete', committedBatches: 1, committedRecords: 2 });
     const report = await f.validator().validate({ ...f.request, attemptId: 'attempt-2' });
     expect(report.overall).not.toBe('pass'); expect(report.requirements[0].checks.some(c => c.reason.includes('prior-attempt'))).toBe(true);
+    expect(report.requirements[0].schemaVerdict).toBe('pass');
+    expect(report.requirements[0].sourceVerdict).toBe('inconclusive');
   });
   it('rejects insufficient report budget explicitly instead of omitting requirements', async () => {
     const f = await fixture(); await f.append();
