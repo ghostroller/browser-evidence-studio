@@ -49,3 +49,9 @@
 Studio.navigate 调用专用 navigateObserved。先安装 Puppeteer load watcher 再调用 WebContents.loadURL；完成后实际 CDP frame/loader/URL、两侧 document.readyState/timeOrigin 相同才返回。旧 Execution context destroyed 类错误在 15 秒总期限内重试，其他异常不吞；再次导航的 loader 改变拒绝，target/page/lease 每个异步边界核对。超时停止仍属于原 owner 的导航并保留最后原始 cause，监听器/临时CDPSession清理，晚到 session 也 detach。
 
 `npm.cmd run typecheck` 通过；`npm.cmd test -- test/unit/navigation-readiness.test.ts` **1 文件/4 项通过**，navigation-typecheck-2.log/navigation-tests-2.log。验证 watcher 先行、短暂旧context、同URL不同loader拒绝、真实协议异常保留、target更换和超时cause；此为协议stub模块，根既有 desktop runner 导航回归尚待重跑。
+
+## 第六包：finish 前进程死亡的已提交结果发现
+
+未完成 execution 的摘要/列表从 C 的 durable dataset identities + summary 小索引读取，最多 128 个目录/数据集；拒绝 symlink/异常目录。不扫描 batch 正文，不领取 writer lease，不改 host-state 或原件。已完成执行仍保留其固定终态目录。已有 exact batch/body 接口可读取中断前已提交数据。
+
+实际 Node 子进程调用 ProjectExecutions.begin + C begin/append，输出耐久回执边界后由测试 SIGKILL，保持 host-state.datasets=[] 和旧 writer.lock。新的 ProjectExecutions 只读重开显示 interrupted、一个 unfinished dataset、1 batch/2 records，并按真实 datasetRecords 读取；原 host-state 与 lock 字节保持一致。首次测试误写不存在 appendBatch（C真实方法是append），失败原件和日志保留；修正真实调用后 `npm.cmd test -- test/unit/execution-crash-catalog.test.ts test/unit/project-executions.test.ts` **2 文件/3 项通过，4.15 s**（crash-catalog-tests-2.log），typecheck通过。此处验证已确认耐久batch后崩溃；C未确认commit的pending损坏仍须其明确rebuild，不自动扫正文恢复。
