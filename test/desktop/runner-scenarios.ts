@@ -85,7 +85,7 @@ async function releaseHumanConcurrently(studio: Studio, handoffId: string) {
 
 /** Called inside the real Electron desktop harness after the M0 baseline. */
 export async function runRunnerScenarios(studio: Studio, siteUrl: string) {
-  if (studio.active) await studio.seal();
+  if (studio.active) await studio.seal(); if(studio.state().session)await studio.closeSession();
   const project = await studio.createProject({ name: '原生脚本与验收合成测试', objective: '分页、身份、人工交接及取消的实际 worker 验收', scriptDirectory: path.resolve('examples/orders') });
   const profile = await studio.createProfile({ projectId: project.id, name: 'Runner 独立合成环境' });
   assert.equal(studio.active, undefined, 'A registered project and profile must be sufficient to start validation from idle');
@@ -117,7 +117,7 @@ export async function runRunnerScenarios(studio: Studio, siteUrl: string) {
     assert.equal(studio.required().locked, false);
     console.log(`M5 runner ${variant}: execution=${result.status}, acceptance=${result.validation.overall}`);
     if (variant === 'normal') {
-      await studio.seal();
+      await studio.seal(); if(studio.state().session)await studio.closeSession();
       assert.equal(studio.active, undefined, 'Sealing a validation must allow the same project and profile to start another one directly');
     }
   }
@@ -195,7 +195,7 @@ export async function runRunnerScenarios(studio: Studio, siteUrl: string) {
   await delay(200);
   assert.equal(studio.required().execution, 'cancelled');
   await retainedPage.capture.flush();
-  await studio.seal();
+  await studio.seal(); if(studio.state().session)await studio.closeSession();
   console.log('M5 cancel PASS: worker exited, result persisted, human ownership restored, captured page retained');
 
   // Use real Puppeteer and the bundled worker, with a registered fixture kept
@@ -247,7 +247,7 @@ export async function runRunnerScenarios(studio: Studio, siteUrl: string) {
     assert.equal(studio.required().controller, 'human');
     assert.equal(studio.required().locked, false);
     assert.equal(studio.current().view.webContents.isDestroyed(), false, 'Disconnecting the worker must retain the observed page');
-    await studio.seal();
+    await studio.seal(); if(studio.state().session)await studio.closeSession();
     console.log(`M5 worker close PASS: ${failure}, original error and prior evidence retained, acceptance failed`);
   }
 }

@@ -10,6 +10,7 @@ import { makeDispatch } from '@/main/services/dispatch';
 export async function runValidationStartScenarios(studio: Studio, siteUrl: string): Promise<void> {
   assert.equal(process.env.BES_TEST, '1', 'Trusted-renderer test input is restricted to synthetic desktop runs');
   assert.equal(studio.active, undefined, 'Validation-start scenarios require the preceding API run to be sealed');
+  if(studio.state().session)await studio.closeSession();
   const connection = JSON.parse(await readFile(studio.connection.file, 'utf8'));
   const dispatch = makeDispatch(studio);
   const report = { schemaVersion: 1, passed: false, projectId: '', profileId: '', authorizationRunId: '',
@@ -264,7 +265,7 @@ export async function runValidationStartScenarios(studio: Studio, siteUrl: strin
     assert.equal(applied[0].data.grantId, grant.grantId); assert.equal(applied[0].data.authorizationRunId, run.id);
     assert.equal(applied[0].data.validationRunId, accepted.runId); assert.equal(applied[0].data.validationId, accepted.id);
     report.consumedGrants = consumed.length; report.checks.push('persisted-authorization-to-validation-link');
-    await studio.seal();
+    await studio.seal(); if(studio.state().session)await studio.closeSession();
 
     // The user may authorize an input that fails its workflow schema. Failure
     // after consumption must be recorded and must not make the grant reusable.
@@ -293,7 +294,7 @@ export async function runValidationStartScenarios(studio: Studio, siteUrl: strin
     assert.equal(studio.runs.length, schemaRunCount); assert.equal(studio.state().validations.length, schemaValidationCount);
     assert.equal((await eventsFor(schemaRun.id)).filter(event => event.type === 'validation-start-grant-consumed').length, 1);
     report.checks.push('schema-failure-recorded-and-consumed-grant-not-reusable');
-    await studio.seal();
+    await studio.seal(); if(studio.state().session)await studio.closeSession();
 
     // A source can change while the consumed grant is being persisted. The
     // post-write identity check must run before sealing or starting a worker.
@@ -326,7 +327,7 @@ export async function runValidationStartScenarios(studio: Studio, siteUrl: strin
       assert.ok(changeEvents.some(event => event.type === 'validation-start-failed' && event.data.grantId === changedSourceGrant.grantId));
       report.consumedGrants++; report.checks.push('reject-source-generation-change-during-consumption-persistence');
     } finally { changedSource.store.appendEvent = originalAppend; }
-    await studio.seal();
+    await studio.seal(); if(studio.state().session)await studio.closeSession();
 
     // Fingerprinting is awaited inside the serialized start operation. The
     // trusted UI must still be able to revoke that grant before consumption.
@@ -371,7 +372,7 @@ export async function runValidationStartScenarios(studio: Studio, siteUrl: strin
     } finally {
       releaseBinding(); await bindingSettlement?.catch(() => {}); await revokeSettlement?.catch(() => {}); bindingOwner.grantBinding = originalBinding;
     }
-    await studio.seal();
+    await studio.seal(); if(studio.state().session)await studio.closeSession();
 
     // Hold the transition after its original run is fully sealed, when active
     // is absent. Cancellation must target this startup rather than require or
@@ -416,7 +417,7 @@ export async function runValidationStartScenarios(studio: Studio, siteUrl: strin
   } finally {
     unblockQueue?.(); await queueBarrier?.catch(() => {});
     if (report.projectId && studio.state().active?.projectId === report.projectId) {
-      try { await studio.stopRunner(); await studio.seal(); } catch { console.error('Validation-start scenario cleanup needs application shutdown'); }
+      try { await studio.stopRunner(); await studio.seal(); if(studio.state().session)await studio.closeSession(); } catch { console.error('Validation-start scenario cleanup needs application shutdown'); }
     }
     report.elapsedMs = Math.round(performance.now() - startedAt);
     await writeFile(path.join(studio.root, 'validation-start-result.json'), JSON.stringify(report, null, 2));

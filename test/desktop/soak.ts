@@ -113,7 +113,7 @@ function memoryReport(samples: MemorySample[]) {
 /** A fixed synthetic workload. One-minute runs are mechanism preflights, never long-run acceptance. */
 export async function runSoak(studio: Studio, url: string, minutes: number) {
   assert.ok(Number.isFinite(minutes) && minutes >= 1 && minutes <= 60);
-  if (studio.active) await studio.seal();
+  if (studio.active) await studio.seal(); if(studio.state().session)await studio.closeSession();
   const actions: ExpectedAction[] = [], requests: ExpectedRequest[] = [], checkpointIds: string[] = [], samples: MemorySample[] = [];
   const checkpointMs: number[] = [], checkpointCaptureTimestampMs: number[] = [], summaryMs: number[] = [], submitMs: number[] = [], summaryBytes: number[] = [];
   const stageMs: Record<string, number[]> = { click: [], pageAck: [], regularFetch: [], largeFetch: [], checkpoint: [], captureFlush: [], summary: [], memory: [], fieldRead: [] };
@@ -268,7 +268,7 @@ export async function runSoak(studio: Studio, url: string, minutes: number) {
     assert.ok(report.elapsedMs >= durationMs); await page.capture.flush(); await summary(); await memory(); await fieldRead('late');
     report.pageAcknowledgedActions = await page.page.$eval('#action-count', element => Number(element.textContent)); assert.equal(report.pageAcknowledgedActions, actions.length);
     await save('verifying'); const verificationAt = performance.now();
-    await studio.seal(); const reader = studio.reader(run.id);
+    await studio.seal(); if(studio.state().session)await studio.closeSession(); const reader = studio.reader(run.id);
     report.digests = await verifyExpected(reader, page.pageId, actions, requests);
     report.summary = await reader.summary(); assert.equal(report.summary.gaps, 0, 'This normal fixed load must have no unexplained capture gaps');
     report.evidenceSnapshot = await buildSoakEvidenceSnapshot(reader); assert.deepEqual(report.evidenceSnapshot.checkpointIds, checkpointIds);

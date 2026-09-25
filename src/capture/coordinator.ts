@@ -16,6 +16,10 @@ export class CaptureCoordinator {
   private contexts = new Map<number,string>();
   private paused = false;
   private stopped = false;
+  private stopComplete = false;
+  private unfinishedOnStop?:CapturedRequest[];
+  private pausedStopRecorded = false;
+  private documentGone = false;
   private inspectionEnabled = false;
   private drops = 0;
   private pendingBytes = 0;
@@ -23,11 +27,13 @@ export class CaptureCoordinator {
   private readonly fullSnapshots = new Map<number,number>();
   private pauseAt?:string;
   private frameId?:string;
+  private scriptId?:string;
   private readonly world = `bes-observer-${randomUUID()}`;
   private readonly binding = `bes_${randomUUID().replace(/-/g,'')}`;
-  constructor(readonly page: Page, readonly identity: PageIdentity, readonly store: EvidenceStore, private onSelection: (data:unknown)=>void = ()=>{}, private onDegraded:(reason:string)=>void=()=>{}) {this.requests=new RequestLedger(randomUUID(),identity.targetId);}
+  constructor(readonly page: Page, readonly identity: PageIdentity, readonly store: EvidenceStore, private onSelection: (data:unknown)=>void = ()=>{}, private onDegraded:(reason:string)=>void=()=>{}, private trackNavigationGeneration=true) {this.requests=new RequestLedger(randomUUID(),identity.targetId);}
   get health(){return this.degraded?'degraded':this.stopped?'stopped':this.paused?'paused':'recording';}
   get inspecting(){return this.inspectionEnabled;}
+  documentDestroyed(){this.documentGone=true;this.inspectionEnabled=false;}
   private fail(reason:string){if(this.degraded)return;this.degraded=true;this.onDegraded(reason);}
   private task(work: ()=>Promise<unknown>,estimatedBytes=4096) {
     if(this.stopped) return;
@@ -46,7 +52,7 @@ export class CaptureCoordinator {
     cdp.on('Runtime.executionContextCreated',({context}:any)=>{ if(context.name===this.world) this.contexts.set(context.id,context.auxData?.frameId); });
     cdp.on('Runtime.executionContextDestroyed',({executionContextId}:any)=>{this.contexts.delete(executionContextId);this.fullSnapshots.delete(executionContextId);});
     cdp.on('Runtime.executionContextsCleared',()=>{this.contexts.clear();this.fullSnapshots.clear();});
-    cdp.on('Page.frameNavigated',({frame}:any)=>{ if(!frame.parentId){ this.frameId=frame.id; this.identity.navigationGeneration++; this.inspectionEnabled=false; } if(!this.paused) this.task(()=>this.event('navigation',{frameId:frame.id,url:frame.url,loaderId:frame.loaderId,parentId:frame.parentId})); });
+    cdp.on('Page.frameNavigated',({frame}:any)=>{ if(!frame.parentId){ this.frameId=frame.id; if(this.trackNavigationGeneration)this.identity.navigationGeneration++; this.inspectionEnabled=false; } if(!this.paused) this.task(()=>this.event('navigation',{frameId:frame.id,url:frame.url,loaderId:frame.loaderId,parentId:frame.parentId})); });
     cdp.on('Runtime.exceptionThrown',(event:any)=>{if(!this.paused) this.task(()=>this.event('page-error',event));});
     cdp.on('Runtime.consoleAPICalled',(event:any)=>{if(!this.paused)this.task(()=>this.event('console',{type:event.type,args:event.args.map((x:any)=>({type:x.type,value:x.value,description:x.description?.slice(0,4000)}))}));});
     cdp.on('Runtime.bindingCalled',(event:any)=>{
@@ -100,7 +106,7 @@ export class CaptureCoordinator {
     // recursively would instrument those helpers and create an iframe loop.
     // P0 records the top document; rrweb handles reachable child DOM itself.
     const script = `(function(){if(window!==window.top)return;\n${recorder}\n;(${observe.toString()})(${JSON.stringify(this.binding)});})();`;
-    await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:script,worldName:this.world});
+    this.scriptId=(await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:script,worldName:this.world})).identifier;
     const {frameTree}=await cdp.send('Page.getFrameTree'); this.frameId=frameTree.frame.id;
     const {executionContextId}=await cdp.send('Page.createIsolatedWorld',{frameId:this.frameId,worldName:this.world});
     this.contexts.set(executionContextId,this.frameId!);
@@ -131,16 +137,39 @@ export class CaptureCoordinator {
     await this.event(complete?'rrweb-resumed':'gap',{reason:complete?reason:'fresh-rrweb-snapshot-not-observed',requestedBecause:reason,startedAt,endedAt:new Date().toISOString(),outcomes});if(!complete)this.fail('Fresh rrweb snapshot was not observed after resume');
   }
   async flush(){await Promise.allSettled([...this.pending]);if(this.drops){const dropped=this.drops;this.drops=0;await this.event('gap',{reason:'capture-backpressure',dropped});}await this.store.flush();}
-  async stop(){if(this.stopped)return;const wasPaused=this.paused;this.stopped=true;const unfinished=this.requests.reset();await this.cdp.detach().catch(error=>this.fail('Capture detach failed: '+String(error)));await this.flush();if(wasPaused)await this.event('gap',{reason:'recording-paused',startedAt:this.pauseAt,endedAt:new Date().toISOString(),endedBy:'capture-stop'});await this.unfinished(unfinished,'capture-stopped-in-flight');await this.store.flush();}
+  async stop(){
+    if(this.stopComplete)return;
+    // Detaching CDP alone leaves rrweb and capture-phase inspection listeners
+    // running inside the retained document. Remove injection, then stop every
+    // surviving observer before releasing human input or the evidence writer.
+    if(!this.stopped && this.cdp && !this.page.isClosed()&&!this.documentGone){
+      if(this.scriptId){await this.cdp.send('Page.removeScriptToEvaluateOnNewDocument',{identifier:this.scriptId});this.scriptId=undefined;}
+      for(const contextId of [...this.contexts.keys()]){
+        try{const result=await this.cdp.send('Runtime.evaluate',{expression:'window.__besStop?.();true',contextId});if(result.exceptionDetails)throw new Error(result.exceptionDetails.text||'Recorder teardown failed');}
+        catch(error){
+          // A document that has already disappeared cannot retain a recorder.
+          if(!this.page.isClosed()&&!/Cannot find context|Execution context was destroyed|Cannot find execution context/i.test(String(error)))throw error;
+        }
+      }
+    }
+    const wasPaused=this.paused;this.stopped=true;this.inspectionEnabled=false;
+    this.unfinishedOnStop??=this.requests.reset();
+    if(this.cdp&&!this.cdp.detached)await this.cdp.detach().catch(error=>{if(!this.page.isClosed()&&!this.documentGone)throw error;});
+    await this.flush();if(wasPaused&&!this.pausedStopRecorded){await this.event('gap',{reason:'recording-paused',startedAt:this.pauseAt,endedAt:new Date().toISOString(),endedBy:'capture-stop'});this.pausedStopRecorded=true;}
+    while(this.unfinishedOnStop.length){await this.unfinished([this.unfinishedOnStop[0]!],'capture-stopped-in-flight');this.unfinishedOnStop.shift();}
+    await this.store.flush();this.stopComplete=true;
+  }
 }
 
 function observe(binding:string) {
   const w=window as any; if(w.__besInstalled)return; w.__besInstalled=true;
   const emit=(data:Record<string,unknown>)=>{try{w[binding](JSON.stringify({...data,isTop:window===window.top}));}catch{}};
   const describe=(el:Element)=>({tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),name:el.getAttribute('aria-label'),text:(el.textContent||'').trim().slice(0,400),selectors:[el.id?'#'+CSS.escape(el.id):null,el.getAttribute('data-testid')?'[data-testid='+JSON.stringify(el.getAttribute('data-testid'))+']':null].filter(Boolean),rect:el.getBoundingClientRect().toJSON(),url:location.href});
+  const listeners=new AbortController(),options={capture:true,signal:listeners.signal};
   let highlighted:HTMLElement|undefined;
-  document.addEventListener('pointermove',e=>{if(!w.__besInspect)return; if(highlighted)highlighted.style.removeProperty('outline');highlighted=e.target as HTMLElement; highlighted.style.outline='2px solid #19bda0';},true);
-  document.addEventListener('click',e=>{const el=e.target as Element;if(w.__besInspect){e.preventDefault();e.stopImmediatePropagation();if(highlighted)highlighted.style.removeProperty('outline');emit({kind:'element-selected',element:describe(el)});}else emit({kind:'action',action:'click',element:describe(el),isTrusted:e.isTrusted});},true);
-  document.addEventListener('input',e=>{const el=e.target as HTMLInputElement;emit({kind:'action',action:'input',element:describe(el),inputSummary:{masked:true,length:el.value?.length},isTrusted:e.isTrusted});},true);
-  w.rrweb.record({emit:(event:unknown)=>emit({kind:'rrweb',event}),maskAllInputs:true,recordCanvas:false,collectFonts:false,inlineStylesheet:false,checkoutEveryNms:30000,sampling:{mousemove:100,scroll:100}});w.__besRecorderReady=true;
+  document.addEventListener('pointermove',e=>{if(!w.__besInspect)return; if(highlighted)highlighted.style.removeProperty('outline');highlighted=e.target as HTMLElement; highlighted.style.outline='2px solid #19bda0';},options);
+  document.addEventListener('click',e=>{const el=e.target as Element;if(w.__besInspect){e.preventDefault();e.stopImmediatePropagation();if(highlighted)highlighted.style.removeProperty('outline');emit({kind:'element-selected',element:describe(el)});}else emit({kind:'action',action:'click',element:describe(el),isTrusted:e.isTrusted});},options);
+  document.addEventListener('input',e=>{const el=e.target as HTMLInputElement;emit({kind:'action',action:'input',element:describe(el),inputSummary:{masked:true,length:el.value?.length},isTrusted:e.isTrusted});},options);
+  const stop=w.rrweb.record({emit:(event:unknown)=>emit({kind:'rrweb',event}),maskAllInputs:true,recordCanvas:false,collectFonts:false,inlineStylesheet:false,checkoutEveryNms:30000,sampling:{mousemove:100,scroll:100}});w.__besRecorderReady=true;
+  w.__besStop=()=>{w.__besInspect=false;w.__besRecorderReady=false;listeners.abort();if(highlighted)highlighted.style.removeProperty('outline');stop?.();w.__besInstalled=false;};
 }

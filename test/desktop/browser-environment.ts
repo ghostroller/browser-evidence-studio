@@ -54,7 +54,7 @@ function securityPreferences(page: ReturnType<Studio['current']>) {
 
 /** Small local compatibility regression, included in the existing desktop suite. */
 export async function runBrowserEnvironmentScenarios(studio: Studio, siteUrl: string): Promise<void> {
-  if (studio.active) await studio.seal();
+  if (studio.active) await studio.seal(); if(studio.state().session)await studio.closeSession();
   const report: Record<string, any> = { schemaVersion: 1, processId: process.pid, versions: { electron: process.versions.electron, chromium: process.versions.chrome }, startedAt: new Date().toISOString(), passed: false, limitations: ['Electron native navigation omits Client Hints; this test does not assert Chrome equivalence'], contexts: {} };
   try {
     const project = await studio.createProject({ name: '合成浏览器环境', objective: '初始请求、刷新、弹窗与 iframe 的原生浏览器属性一致性' });
@@ -95,7 +95,7 @@ export async function runBrowserEnvironmentScenarios(studio: Studio, siteUrl: st
     verifyEnvironment(report.contexts.popup, 'popup', expectedUa);
     await Promise.all([...run.pages.values()].map(page => page.capture.flush()));
     assert.ok([...run.pages.values()].every(page => page.capture.health === 'recording'), 'Ordinary CDP evidence capture must remain active');
-    await studio.seal();
+    await studio.seal(); if(studio.state().session)await studio.closeSession();
     report.passed = true;
     console.log('Browser environment PASS: native UA/getters and fetch Client Hints, initial navigation/reload/iframe/popup; Electron navigation Client Hints limitation recorded');
   } catch (error) {

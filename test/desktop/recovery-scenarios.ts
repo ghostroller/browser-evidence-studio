@@ -160,7 +160,7 @@ export async function verifyRecovery(studio: Studio, repeat: boolean) {
         assert.equal(savedCatalog.find(item => item.id === started.id)?.result?.validation.overall, 'pass');
         console.log('RECOVERY PASS: catalog barrier keeps finalizing locked until completion and human ownership become visible together');
       }
-      await studio.seal();
+      await studio.seal(); if(studio.state().session)await studio.closeSession();
       await atomicJson(path.join(studio.root, 'recovery-rerun.json'), { id: started.id, runId: started.runId });
     } finally { releaseCatalog?.();clearTimeout(catalogTimer);catalog.saveValidations=originalSave;await site.close(); }
   }

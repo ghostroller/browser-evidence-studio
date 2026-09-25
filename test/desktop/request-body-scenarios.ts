@@ -29,7 +29,7 @@ async function pages(read: (cursor?: string) => Promise<QueryPage>): Promise<any
 export async function runRequestBodyScenarios(studio: Studio, url: string): Promise<void> {
   const origin = new URL(url).origin;
   assert.equal(new URL(origin).hostname, '127.0.0.1', 'Request-body regression only operates on its local synthetic fixture');
-  if (studio.active) await studio.seal();
+  if (studio.active) await studio.seal(); if(studio.state().session)await studio.closeSession();
   const project = await studio.createProject({ name: '请求正文完整性回归', objective: '真实 POST、正文预算、凭据排除和有界回读' });
   const profile = await studio.createProfile({ projectId: project.id, name: '请求正文独立合成环境' });
   await studio.startRun({ projectId: project.id, profileId: profile.id, url: `${origin}/lab` });
@@ -89,7 +89,7 @@ export async function runRequestBodyScenarios(studio: Studio, url: string): Prom
     bodies.set(variant, await reader.artifactMetadata(found.id));
   }
   await page.capture.flush();
-  await studio.seal();
+  await studio.seal(); if(studio.state().session)await studio.closeSession();
 
   const complete = bodies.get('complete')!, large = bodies.get('large')!, truncated = bodies.get('truncated')!;
   for (const artifact of [complete, large]) assert.equal(artifact.captureStatus, 'complete');

@@ -11,7 +11,7 @@ import { captureUiFrame, setUiTheme } from './ui-layout';
 
 /** Synthetic files and the real trusted renderer; this never opens an account profile. */
 export async function runRecoveryUiScenarios(studio: Studio): Promise<void> {
-  if (studio.active) await studio.seal();
+  if (studio.active) await studio.seal(); if(studio.state().session)await studio.closeSession();
   const directory = path.resolve('examples/orders');
   const project = await studio.createProject({ name: '异常存档恢复合成验证', objective: '保存证据、确认所有权并从新运行重试', scriptDirectory: directory });
   const profile = await studio.createProfile({ projectId: project.id, name: '恢复专用合成环境' });

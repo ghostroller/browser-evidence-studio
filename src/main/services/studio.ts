@@ -19,6 +19,7 @@ import { ValidationStartGrants, type ValidationStartBinding, type ValidationStar
 import { connectManagedPage } from '@/runner/puppeteer';
 import { captureCheckpointMaterials } from '@/capture/checkpoint';
 import { appendReview, readReviews, type ReviewQuery } from './reviews';
+import { BrowserSessionLifecycle } from './browser-session';
 import { commitValidation, recoverValidationCatalog, registerValidation, saveValidationCatalog, type ValidationLifecycleContext, type ValidationLifecycleObserver, type ValidationLifecycleStage, type ValidationRecord, type ValidationRecoveryDiagnostic } from './validation-lifecycle';
 export type { ValidationLifecycleContext, ValidationLifecycleObserver, ValidationLifecycleStage } from './validation-lifecycle';
 
@@ -50,7 +51,8 @@ export interface ActiveRun {
 }
 export class Studio {
   readonly instanceId=randomUUID();
-  readonly browserSessionId=randomUUID();
+  private browser?:BrowserSessionLifecycle<ActiveRun>;
+  get browserSessionId(){return this.browser?.id;}
   projects:Project[]=[]; profiles:Profile[]=[]; runs:any[]=[]; active?:ActiveRun;
   connection:any;
   private observer!:Browser;
@@ -100,21 +102,43 @@ export class Studio {
   private async save(){await atomicJson(path.join(this.root,'workspace.json'),{schemaVersion:1,projects:this.projects,profiles:this.profiles});}
   serialized<T>(fn:()=>Promise<T>):Promise<T>{const next=this.queue.then(fn);this.queue=next.catch(()=>{});return next;}
   required(){ensure(this.active,'No active run',409);return this.active;}
+  private live(){ensure(this.browser,'No live browser session',409);return this.browser.runtime;}
   private pageContents(p:ManagedPage){try{const contents=p.view.webContents;return contents&&!contents.isDestroyed()?contents:undefined;}catch{return undefined;}}
-  current(){const r=this.required();const p=r.pages.get(r.selectedPageId);ensure(p&&this.pageContents(p),'No live selected page',409);return p;}
-  state(){const r=this.active;return {instanceId:this.instanceId,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:p.capture.inspecting,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,validationStartGrant:this.validationStartGrant({runId:r.id}).grant,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
+  current(){const r=this.live();const p=r.pages.get(r.selectedPageId);ensure(p&&this.pageContents(p),'No live selected page',409);return p;}
+  private browserState(){const browser=this.browser;if(!browser)return null;const r=browser.runtime;return {sessionId:browser.id,projectId:r.projectId,profileId:r.profileId,recordingId:browser.recordingId,controller:r.controller,leaseEpoch:r.leaseEpoch,locked:r.locked,selectedPageId:r.selectedPageId,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:!!this.active&&p.capture.inspecting,openerPageId:p.openerPageId,canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward()}]:[];})};}
+  state(){const r=this.active;return {instanceId:this.instanceId,session:this.browserState(),validationStarting:this.validationLaunch?{validationId:this.validationLaunch.validationId,validationRunId:this.validationLaunch.validationRunId}:null,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:p.capture.inspecting,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,validationStartGrant:this.validationStartGrant({runId:r.id}).grant,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
   async createProject(body:any){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');const p={id:randomUUID(),name:body.name.trim().slice(0,200),objective:String(body.objective||'').slice(0,4000),scriptDirectory:body.scriptDirectory?path.resolve(body.scriptDirectory):undefined,createdAt:now()};this.projects.push(p);await this.save();return p;}
   async updateProject(body:any){const project=this.projects.find(item=>item.id===(body.projectId||body.id));ensure(project,'Unknown project',404);if(body.name!==undefined){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');project.name=body.name.trim().slice(0,200);}if(body.objective!==undefined){ensure(typeof body.objective==='string','Objective must be text');project.objective=body.objective.slice(0,4000);}if(body.scriptDirectory!==undefined){ensure(typeof body.scriptDirectory==='string'||body.scriptDirectory===null,'Workflow directory must be a path');project.scriptDirectory=body.scriptDirectory?path.resolve(body.scriptDirectory):undefined;}await this.save();return project;}
   async createProfile(body:any){ensure(this.projects.some(p=>p.id===body.projectId),'Unknown project');ensure(typeof body.name==='string'&&body.name.trim(),'Profile name required');const p:Profile={id:randomUUID(),projectId:body.projectId,name:body.name.trim().slice(0,120),loginStatus:'unknown'};this.profiles.push(p);await this.save();return p;}
-  async startRun(body:any, launch?:ValidationLaunch){
+  async startRun(body:any, launch?:ValidationLaunch,options:{freshPage?:boolean}={}){
     ensure(!this.validationLaunch||this.validationLaunch===launch,'Validation startup owns the browser',409);launch?.abort.signal.throwIfAborted();
     ensure(!this.active,'Seal the active run first',409); const project=this.projects.find(p=>p.id===body.projectId);ensure(project,'Unknown project');
     const profile=this.profiles.find(p=>p.id===body.profileId&&p.projectId===project.id);ensure(profile,'Profile must belong to project');
-    const id=launch?.validationRunId??randomUUID();const browserSession=session.fromPartition(`persist:bes-${project.id}-${profile.id}`);
+    const previous=this.browser?.runtime;
+    ensure(!previous||(previous.projectId===project.id&&previous.profileId===profile.id),'Close the live browser session before changing project or profile',409);
+    ensure(!previous||previous.pages.size>0||options.freshPage,'Close the empty browser session before starting a new one',409);
+    const id=launch?.validationRunId??randomUUID();const browserSession=previous?.session??session.fromPartition(`persist:bes-${project.id}-${profile.id}`);
     browserSession.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false)); browserSession.setPermissionCheckHandler(()=>false);
     const store=await EvidenceStore.create(path.join(this.root,'runs',id),{id,projectId:project.id,kind:body.kind==='validate'?'validate':'demonstrate',mode:process.env.BES_TEST?'synthetic':'local',objective:project.objective,profileId:profile.id,versions:this.state().versions,browserEnvironment:browserEnvironmentMetadata(browserSession),appInstanceId:this.instanceId,browserSessionId:this.browserSessionId});
-    const r:ActiveRun={id,projectId:project.id,profileId:profile.id,store,pages:new Map(),selectedPageId:'',session:browserSession,controller:'none',leaseEpoch:1,capture:'starting',execution:'ready',locked:true};this.active=r;this.runs.unshift(store.manifest);
-    try{launch?.abort.signal.throwIfAborted();await this.manageDownloads(r);launch?.abort.signal.throwIfAborted();const page=await this.addPage(r);launch?.abort.signal.throwIfAborted();await this.navigate(String(body.url||'about:blank'),page,true);launch?.abort.signal.throwIfAborted();if(launch){launch.target={pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration};ensure(r.selectedPageId===page.pageId,'Validation startup page was replaced',409);}r.capture=[...r.pages.values()].some(p=>p.capture.health==='degraded')?'degraded':'recording';r.controller='human';r.locked=!!launch;this.window.lock(!!launch);await store.updateManifest({capture:r.capture,controller:'human',leaseEpoch:r.leaseEpoch});return this.state().active;}
+    const r:ActiveRun={id,projectId:project.id,profileId:profile.id,store,pages:previous?.pages??new Map(),selectedPageId:previous?.selectedPageId??'',session:browserSession,controller:'none',leaseEpoch:(previous?.leaseEpoch??0)+1,capture:'starting',execution:'ready',locked:true};
+    if(this.browser)this.browser.attach(r);else this.browser=new BrowserSessionLifecycle(r);
+    this.active=r;this.runs.unshift(store.manifest);this.window.lock(true);
+    try{
+      await store.updateManifest({browserSessionId:this.browser.id});launch?.abort.signal.throwIfAborted();
+      await this.manageDownloads(r);launch?.abort.signal.throwIfAborted();
+      let page:ManagedPage;
+      if(previous){
+        for(const existing of r.pages.values()){
+          existing.capture=this.createCapture(r,existing);await existing.capture.start();await existing.capture.flush();
+          await store.appendEvent({type:'page-registered',source:'electron',pageId:existing.pageId,navigationGeneration:existing.navigationGeneration,data:{pageId:existing.pageId,targetId:existing.targetId,webContentsId:existing.webContentsId,navigationGeneration:existing.navigationGeneration,appInstanceId:this.instanceId,browserSessionId:this.browser.id,resumedSession:true}});
+        }
+        if(options.freshPage){page=await this.addPage(r);launch?.abort.signal.throwIfAborted();await this.navigate(String(body.url||'about:blank'),page,true);}
+        else page=this.current();
+        await store.appendEvent({type:'recording-started-in-existing-session',source:'lifecycle',pageId:page.pageId,navigationGeneration:page.navigationGeneration,data:{browserSessionId:this.browser.id,previousRecordingId:previous.id,historyBeforeStart:'not-recorded'}});
+      }else{page=await this.addPage(r);launch?.abort.signal.throwIfAborted();await this.navigate(String(body.url||'about:blank'),page,true);}
+      launch?.abort.signal.throwIfAborted();if(launch){launch.target={pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration};ensure(r.selectedPageId===page.pageId,'Validation startup page was replaced',409);}
+      r.capture=[...r.pages.values()].some(p=>p.capture.health==='degraded')?'degraded':'recording';r.controller='human';r.locked=!!launch;this.window.lock(!!launch);await store.updateManifest({capture:r.capture,controller:'human',leaseEpoch:r.leaseEpoch});return this.state().active;
+    }
     catch(error){r.capture='degraded';r.execution='failed';await store.appendEvent({type:'gap',source:'lifecycle',data:{reason:String(error)}});throw error;}
   }
   private async manageDownloads(r:ActiveRun){
@@ -144,7 +168,7 @@ export class Studio {
       r.selectedPageId=replacement?.pageId||'';
       if(this.active===r&&!r.ending&&!this.closing){this.window.show(replacement?.view);this.window.lock(r.locked||r.controller!=='human');}
     }
-    if(r.ending||this.closing||this.active!==r){void revoked.catch(error=>console.error('Could not revoke closed-page operation',error));return;}
+    if(r.ending||this.closing||this.active!==r){if(!r.pages.size)r.controller='none';this.onChanged();void revoked.catch(error=>console.error('Could not revoke closed-page operation',error));return;}
     if(r.handoff?.pageId===identity.pageId&&r.handoff.status==='waiting'){
       r.handoff.status='needs-attention';const done=this.humanDone;this.humanDone=undefined;
       if(r.handoff.owner==='agent')r.execution='paused';
@@ -170,19 +194,20 @@ export class Studio {
     closures.add(cleanup);this.onChanged();
   }
   private async addPage(r:ActiveRun,openerPageId?:string,existingView?:WebContentsView){
+    const owner=this.browser!;
     const view=existingView||new WebContentsView({webPreferences:{session:r.session,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true,backgroundThrottling:false}});
     this.window.add(view);this.window.lock(true);
     const wc=view.webContents,pageId=randomUUID(),webContentsId=wc.id;let registered:ManagedPage|undefined;
-    wc.once('destroyed',()=>this.pageDestroyed(r,view,{pageId,webContentsId,openerPageId},registered));
-    wc.on('before-input-event',(e)=>{if(r.locked||r.controller!=='human')e.preventDefault();});wc.on('will-navigate',(e,url)=>{if(!/^https?:|^about:blank$/.test(url))e.preventDefault();});
-    wc.setWindowOpenHandler(()=>this.active!==r||r.ending||this.closing?{action:'deny'}:({action:'allow',overrideBrowserWindowOptions:{webPreferences:{session:r.session,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true,backgroundThrottling:false}},createWindow:(options)=>{
+    wc.once('destroyed',()=>this.pageDestroyed(owner.runtime,view,{pageId,webContentsId,openerPageId},registered));
+    wc.on('before-input-event',(e)=>{const live=owner.runtime;if(live.locked||live.controller!=='human')e.preventDefault();});wc.on('will-navigate',(e,url)=>{if(!/^https?:|^about:blank$/.test(url))e.preventDefault();});
+    wc.setWindowOpenHandler(()=>this.browser!==owner||owner.runtime.ending||this.closing?{action:'deny'}:({action:'allow',overrideBrowserWindowOptions:{webPreferences:{session:r.session,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true,backgroundThrottling:false}},createWindow:(options)=>{
       // Electron has already created the guest WebContents. Adopting it preserves
       // window.open/opener identity; creating another one throws in openGuestWindow.
       const child=new WebContentsView(options);
-      const parentPageId=[...r.pages.values()].find(page=>page.webContentsId===wc.id)?.pageId;
-      void this.serialized(async()=>{if(this.active!==r||r.ending||this.closing){if(child.webContents&&!child.webContents.isDestroyed())child.webContents.close();return;}const p=await this.addPage(r,parentPageId,child);await r.store.appendEvent({type:'gap',source:'electron',pageId:p.pageId,data:{reason:'popup-before-capture-ready',openerPageId:parentPageId}});this.window.lock(r.locked||r.controller!=='human');}).catch(async error=>{this.window.remove(child);if(!r.ending)await r.store.appendEvent({type:'gap',source:'electron',data:{reason:String(error)}}).catch(writeError=>console.error('Could not persist popup failure',writeError));});return child.webContents;
+      const parentPageId=[...owner.runtime.pages.values()].find(page=>page.webContentsId===wc.id)?.pageId;
+      void this.serialized(async()=>{const live=owner.runtime;if(this.browser!==owner||live.ending||this.closing){if(child.webContents&&!child.webContents.isDestroyed())child.webContents.close();return;}const p=await this.addPage(live,parentPageId,child);if(this.active===live)await live.store.appendEvent({type:'gap',source:'electron',pageId:p.pageId,data:{reason:'popup-before-capture-ready',openerPageId:parentPageId}});this.window.lock(live.locked||live.controller!=='human');}).catch(async error=>{this.window.remove(child);const live=owner.runtime;if(this.active===live&&!live.ending)await live.store.appendEvent({type:'gap',source:'electron',data:{reason:String(error)}}).catch(writeError=>console.error('Could not persist popup failure',writeError));else console.error('Could not register live session popup',error);});return child.webContents;
     }}));
-    wc.on('render-process-gone',(_e,details)=>{if(r.ending)return;r.capture='degraded';void r.store.appendEvent({type:'gap',source:'electron',data:{reason:'render-process-gone',details}}).catch(error=>console.error('Could not persist renderer failure',error));});
+    wc.on('render-process-gone',(_e,details)=>{registered?.capture.documentDestroyed();const live=owner.runtime;if(live.ending)return;live.capture='degraded';this.onChanged();if(this.active===live)void live.store.appendEvent({type:'gap',source:'electron',data:{reason:'render-process-gone',details}}).catch(error=>console.error('Could not persist renderer failure',error));});
     // An un-navigated WebContents has an empty URL and Puppeteer intentionally keeps
     // its target uninitialized. Prime only new views with about:blank before binding.
     if(!existingView)await wc.loadURL('about:blank');
@@ -191,11 +216,40 @@ export class Studio {
     try{const info=await wc.debugger.sendCommand('Target.getTargetInfo');targetId=info.targetInfo.targetId;}finally{wc.debugger.detach();}
     const target=await this.observer.waitForTarget(t=>(t as any)._targetId===targetId,{timeout:10000});const page=await target.page();ensure(page,'Business target is not a page');
     const identity:PageIdentity={pageId,targetId,webContentsId,navigationGeneration:0,openerPageId};
-    const capture=new CaptureCoordinator(page,identity,r.store,selection=>{if(r.pages.has(pageId)){r.selection=selection;this.onChanged();}},reason=>{if(r.ending||this.active!==r||!r.pages.has(pageId))return;r.capture='degraded';this.onChanged();void r.store.updateManifest({capture:'degraded',captureHealthReason:reason}).catch(error=>console.error('Could not persist capture health',error));});
+    // Navigation identity belongs to the browser session and must keep advancing
+    // when there is no recorder. The Puppeteer observer outlives capture CDP.
+    page.on('framenavigated',frame=>{if(frame===page.mainFrame()){identity.navigationGeneration++;this.onChanged();}});
+    const capture=this.createCapture(r,Object.assign(identity,{page}));
     const p=Object.assign(identity,{view,page,capture}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);r.selectedPageId=p.pageId;
-    await capture.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{...identity,view:undefined,page:undefined,capture:undefined,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});this.window.show(view);return p;
+    if(this.active===r){await capture.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{...identity,view:undefined,page:undefined,capture:undefined,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});}this.window.show(view);this.onChanged();return p;
   }
-  async navigate(url:string,p=this.current(),initial=false){ensure(/^https?:\/\//.test(url)||url==='about:blank','Only HTTP(S) and about:blank URLs supported');const r=this.required();if(!initial)ensure(!r.locked&&r.controller==='human','Browser is controlled by automation or locked',409);await p.view.webContents.loadURL(url);return {url:p.view.webContents.getURL()};}
+  private createCapture(r:ActiveRun,p:PageIdentity&{page:Page}){return new CaptureCoordinator(p.page,p,r.store,selection=>{if(this.active===r&&r.pages.has(p.pageId)){r.selection=selection;this.onChanged();}},reason=>{if(r.ending||this.active!==r||!r.pages.has(p.pageId))return;r.capture='degraded';this.onChanged();void r.store.updateManifest({capture:'degraded',captureHealthReason:reason}).catch(error=>console.error('Could not persist capture health',error));},false);}
+  async navigate(url:string,p=this.current(),initial=false){ensure(/^https?:\/\//.test(url)||url==='about:blank','Only HTTP(S) and about:blank URLs supported');const r=this.live();if(!initial)ensure(!r.locked&&r.controller==='human'&&!r.ending,'Browser is controlled by automation or locked',409);await p.view.webContents.loadURL(url);await p.page.mainFrame().evaluate(()=>document.readyState);return {url:p.view.webContents.getURL()};}
+  async navigateHistory(direction:'back'|'forward'|'reload'){
+    const r=this.live(),p=this.current();ensure(!r.locked&&r.controller==='human'&&!r.ending,'Browser is controlled by automation or locked',409);
+    if(direction==='reload')await p.page.reload();
+    else if(direction==='back'){ensure(p.view.webContents.navigationHistory.canGoBack(),'No previous page',409);await p.page.goBack();}
+    else{ensure(direction==='forward','Unknown navigation command');ensure(p.view.webContents.navigationHistory.canGoForward(),'No next page',409);await p.page.goForward();}
+    return this.browserState();
+  }
+  async selectPage(pageId:string){
+    const r=this.live(),p=r.pages.get(pageId),leaseEpoch=r.leaseEpoch;ensure(p,'Unknown page');
+    ensure(!r.locked&&!r.ending&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Cannot change execution target while running or locked',409);
+    ensure(!r.pendingOperation,'Operation connection is still starting',409);
+    const operation=r.operation;if(operation){await operation.gate.quiesce();await operation.browser.disconnect();if(r.operation===operation)r.operation=undefined;}
+    ensure(this.browser?.runtime===r&&r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Page selection was cancelled',409);r.selectedPageId=p.pageId;r.leaseEpoch++;this.window.show(p.view);this.onChanged();return this.state();
+  }
+  async closePage(pageId:string){
+    const r=this.live(),p=r.pages.get(pageId);ensure(p,'Unknown page',404);
+    ensure(r.controller==='human'&&!r.locked&&!r.ending&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Stop the runner before closing its page',409);
+    this.window.remove(p.view);await Promise.all([...(r.pageClosures??[])]);this.onChanged();return this.browserState();
+  }
+  async closeSession(){
+    const browser=this.browser;ensure(browser,'No live browser session',409);ensure(!this.active,'Seal the recording before closing its browser session',409);
+    ensure(!this.validationLaunch&&!this.workflow&&!this.workflowStarting&&!this.workflowSettlement,'Stop the runner before closing its browser session',409);
+    const r=browser.runtime;r.ending=true;r.locked=true;r.leaseEpoch++;this.window.lock(true);await this.revokeOperation(r);
+    for(const p of [...r.pages.values()])this.window.remove(p.view);this.browser=undefined;this.window.lock(false);this.onChanged();return {closed:true,sessionId:browser.id};
+  }
   private assertOperationOwner(r:ActiveRun,p:ManagedPage,leaseEpoch:number,generation?:number){
     ensure(this.active===r&&!this.closing&&!r.ending&&r.controller==='agent'&&!r.locked&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Agent no longer owns this browser',409);
     ensure(r.leaseEpoch===leaseEpoch&&r.selectedPageId===p.pageId&&r.pages.get(p.pageId)===p,'Control lease or operation page changed',409);
@@ -298,10 +352,22 @@ export class Studio {
   async snapshot(body:any={}){const r=this.required(),p=body.pageId?r.pages.get(body.pageId):this.current();ensure(p,'Snapshot page no longer exists',409);const generation=p.navigationGeneration;if(body.generation!==undefined)ensure(body.generation===generation,'Stale navigation generation',409);const max=body.maxBytes??4000;ensure(Number.isSafeInteger(max)&&max>=512&&max<=16000,'Snapshot maxBytes must be between 512 and 16000');const elements=await p.page.evaluate(()=>Array.from(document.querySelectorAll('a,button,input,select,[role],h1,h2')).slice(0,80).map((el,i)=>({ref:i,tag:el.tagName,role:el.getAttribute('role'),name:el.getAttribute('aria-label'),text:el.textContent?.trim().slice(0,180),selector:el.id?'#'+CSS.escape(el.id):null})));ensure(this.active===r&&r.pages.get(p.pageId)===p&&p.navigationGeneration===generation,'Snapshot target navigated during capture; refresh its identity',409);const result={pageId:p.pageId,generation,url:p.view.webContents.getURL(),elements:[] as typeof elements,outputTruncated:false};for(const item of elements){const candidate={...result,elements:[...result.elements,item]};if(Buffer.byteLength(JSON.stringify(candidate))+32>max)break;result.elements.push(item);}result.outputTruncated=result.elements.length<elements.length;ensure(Buffer.byteLength(JSON.stringify(result))<=max,'Snapshot metadata exceeds maxBytes; increase the budget',413);return result;}
   async pauseOperations(paused:boolean){const r=this.required();ensure(r.controller==='human','Only manual control can be paused here',409);r.locked=paused;this.window.lock(paused);return this.state().active;}
   async pauseCapture(paused:boolean){const r=this.required();for(const p of r.pages.values())await p.capture.pause(paused);r.capture=paused?'paused':[...r.pages.values()].some(p=>p.capture.health==='degraded')?'degraded':'recording';return this.state().active;}
-  async saveProfile(){const r=this.required();await r.session.cookies.flushStore();r.session.flushStorageData();const p=this.profiles.find(p=>p.id===r.profileId)!;p.savedAt=now();p.loginStatus='unknown';await this.save();await r.store.appendEvent({type:'profile-saved',source:'studio',data:{profileId:p.id,loginStatus:'unknown',scope:'persistent cookies/localStorage/IndexedDB; memory/sessionStorage not guaranteed'}});return p;}
+  async saveProfile(){const r=this.live();await r.session.cookies.flushStore();r.session.flushStorageData();const p=this.profiles.find(p=>p.id===r.profileId)!;p.savedAt=now();p.loginStatus='unknown';await this.save();if(this.active===r)await r.store.appendEvent({type:'profile-saved',source:'studio',data:{profileId:p.id,loginStatus:'unknown',scope:'persistent cookies/localStorage/IndexedDB; memory/sessionStorage not guaranteed'}});return p;}
   async seal(launch?:ValidationLaunch){ensure(!this.validationLaunch||this.validationLaunch===launch,'Validation startup owns the browser',409);launch?.abort.signal.throwIfAborted();const r=this.required();ensure(!this.workflow&&!this.workflowStarting&&!this.workflowSettlement&&!r.stopping&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Stop the runner and finish saving its report before sealing',409);r.ending=true;r.locked=true;this.window.lock(true);
-    if(r.operation){r.operation.gate.close();r.operation.browser.disconnect();r.operation=undefined;}
-    await r.stopDownloads?.();await Promise.allSettled([...(r.pageClosures??[])]);for(const p of [...r.pages.values()])await p.capture.stop();await r.store.seal();const manifest=r.store.manifest;await r.store.close();for(const p of [...r.pages.values()])this.window.remove(p.view);r.releaseDownloads?.();this.runs=this.runs.map(x=>x.id===r.id?manifest:x);this.active=undefined;return manifest;
+    r.leaseEpoch++;
+    try{
+      await this.revokeOperation(r);await r.stopDownloads?.();await Promise.all([...(r.pageClosures??[])]);
+      for(const p of [...r.pages.values()])await p.capture.stop();await r.store.seal();const manifest=r.store.manifest;await r.store.close();
+      r.releaseDownloads?.();r.releaseDownloads=undefined;r.stopDownloads=undefined;
+      this.runs=this.runs.map(x=>x.id===r.id?manifest:x);this.browser!.detach(r.id);this.active=undefined;
+      r.ending=false;r.capture='stopped';r.controller=r.pages.size?'human':'none';r.locked=false;r.selection=undefined;r.handoff=undefined;
+      this.window.lock(false);this.onChanged();return manifest;
+    }catch(error){
+      r.capture='degraded';r.ending=false;r.locked=true;this.onChanged();
+      // Keep the writer and live pages available for explicit retry/close. Never
+      // advertise a sealed recording when recorder teardown or durability failed.
+      throw error;
+    }
   }
   reader(runId:string){ensure(this.runs.some(r=>r.id===runId),'Unknown run',404);return new EvidenceReader(path.join(this.root,'runs',runId));}
   async history(runId:string){const reader=this.reader(runId);this.historyRun=runId;return {summary:await reader.summary(),checkpoints:await reader.checkpoints({limit:100,maxBytes:32768}),events:await reader.events({limit:50,maxBytes:16000}),gaps:await reader.gaps({limit:20}),validations:this.validations.filter(record=>record.runId===runId).map(record=>({id:record.id,status:record.status,validation:record.result?.validation,artifactId:record.artifactId}))};}
@@ -406,7 +472,7 @@ export class Studio {
     if(!old||old.store.manifest.kind!=='validate'||old.execution!=='ready'){
       const selected=old?.pages.get(old.selectedPageId),url=selected?this.pageContents(selected)?.getURL():'about:blank';
       if(old)await this.seal(launch);launch.abort.signal.throwIfAborted();
-      await this.startRun({projectId:project.id,profileId,url:url||'about:blank',kind:'validate'},launch);
+      await this.startRun({projectId:project.id,profileId,url:url||'about:blank',kind:'validate'},launch,{freshPage:true});
     }
     launch.abort.signal.throwIfAborted();const r=this.required(),p=this.current();launch.target??={pageId:p.pageId,targetId:p.targetId,generation:p.navigationGeneration};await this.control('agent',launch);launch.abort.signal.throwIfAborted();
     const targetLease=r.leaseEpoch;
@@ -540,5 +606,5 @@ export class Studio {
   async validation(id:string){const record=this.validations.find(v=>v.id===id);ensure(record,'Unknown validation',404);let currentVersion='unknown';if(record.result){const registered=this.projects.find(project=>project.id===record.projectId)?.scriptDirectory;if(!registered||path.relative(path.resolve(record.directory),path.resolve(registered))!=='')currentVersion='needs-revalidation';else try{const hash=await fingerprintWorkflow(registered,path.join(app.getAppPath(),'package-lock.json'));currentVersion=hash.sha256===record.result.fingerprintAfter.sha256?'matched':'needs-revalidation';}catch{currentVersion='unavailable';}}return {...record,currentVersion};}
   async review(body:any){ensure(this.validations.some(v=>v.id===body.id),'Unknown validation',404);return appendReview(this.root,body.id,body);}
   async reviews(id:string,options:ReviewQuery={}){ensure(this.validations.some(v=>v.id===id),'Unknown validation',404);return readReviews(this.root,id,options);}
-  async close(){this.closing=true;this.validationLaunch?.abort.abort(new Error('Application closing during validation startup'));this.active?.checkpointTask?.abort.abort(new Error('Application closing'));const startup=this.workflowStarting;startup?.abort.abort(new Error('Application closing'));startup?.gate?.close();if(this.active){this.active.ending=true;this.active.locked=true;this.active.leaseEpoch++;await this.revokeOperation(this.active);}await this.queue.catch(()=>{});if(startup)await startup.done;const settlement=this.workflowSettlement;if(this.workflow)await this.workflow.cancel('Application closing');if(settlement)await settlement;this.humanDone?.reject(new Error('Application closing'));this.humanDone=undefined;if(this.active){const r=this.active;await r.stopDownloads?.();await Promise.allSettled([...(r.pageClosures??[])]);for(const p of [...r.pages.values()])await p.capture.stop().catch(()=>{});await r.store.updateManifest({status:'interrupted',execution:'interrupted'});await r.store.close();this.window.closeViews();r.releaseDownloads?.();this.active=undefined;}await this.fixture?.close();this.observer?.disconnect();this.window.closeViews();}
+  async close(){this.closing=true;this.validationLaunch?.abort.abort(new Error('Application closing during validation startup'));this.active?.checkpointTask?.abort.abort(new Error('Application closing'));const startup=this.workflowStarting;startup?.abort.abort(new Error('Application closing'));startup?.gate?.close();if(this.active){this.active.ending=true;this.active.locked=true;this.active.leaseEpoch++;await this.revokeOperation(this.active);}await this.queue.catch(()=>{});if(startup)await startup.done;const settlement=this.workflowSettlement;if(this.workflow)await this.workflow.cancel('Application closing');if(settlement)await settlement;this.humanDone?.reject(new Error('Application closing'));this.humanDone=undefined;if(this.active){const r=this.active;await r.stopDownloads?.();await Promise.allSettled([...(r.pageClosures??[])]);for(const p of [...r.pages.values()])await p.capture.stop().catch(()=>{});await r.store.updateManifest({status:'interrupted',execution:'interrupted'});await r.store.close();this.window.closeViews();r.releaseDownloads?.();this.active=undefined;}await this.fixture?.close();this.observer?.disconnect();this.window.closeViews();this.browser=undefined;}
 }
