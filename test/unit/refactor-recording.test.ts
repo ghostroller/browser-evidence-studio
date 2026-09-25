@@ -25,6 +25,7 @@ async function store() {
 async function source(html = '<main id="main"><a data-key="订单\'&quot;" href="../orders/42">first</a><input type="checkbox" value="synthetic-private" checked><select><option value="synthetic-option-private" selected>one</option><option>two</option></select><ul><li>first</li></ul></main>', fixedTime?: number) {
   const dom = new JSDOM(`<!doctype html><html><head></head><body>${html}</body></html>`, { url: 'https://source.invalid/catalog/', runScripts: 'dangerously', pretendToBeVisual: true });
   windows.push(dom); const records: RecordingEnvelope[] = [];
+  Object.defineProperty(dom.window.crypto,'randomUUID',{value:undefined});
   Object.assign(dom.window, { syntheticBinding: (payload: string) => { const parsed = JSON.parse(payload); records.push({ ...parsed, receivedAt: new Date().toISOString(), gaps: parsed.errors.map((reason: string) => ({ id: randomUUID(), from: parsed.position, category: 'metadata', reason })) }); } });
   const bundle = await fs.readFile(path.resolve('node_modules/rrweb/dist/rrweb.umd.cjs'), 'utf8');
   if(fixedTime)dom.window.Date.now=()=>fixedTime;
