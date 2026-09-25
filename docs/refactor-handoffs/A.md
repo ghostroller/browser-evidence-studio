@@ -104,3 +104,13 @@ SourceFrameScopes只从已耐久SourceMetadata投影最多256个frame host/root�
 根第8次受限权限下GPU进程加载前失败（`output/desktop-1790374046808`），保留原件；第9次正常审批权限record/offline均通过，`output/desktop-1790374061582`、PID13004→27804、6.34s。同源frame资源/CDP映射及源frame/open-shadow/SVG定位器专项实际通过；仍不代表所有资产边界或长测完成。
 
 `Network.loadingFinished`同步固定`responseObservedAt` ISO，与`pageId/requestKey/frameId/loaderId`一起保存所有该完成回调产生的response-body artifact.source，包括成功、隐私排除、ID失效与正文读取失败。createdAt仍为落盘时间；既有旧原件和未观察完成的stream/unfinished材料不补造此时间。这仅表示完成响应的观察归属，不断言步骤导致该请求。协调器测试固定完成时间，延后一分钟释放body读取，核对成功及失败artifact保留原观察时间且createdAt为后一分钟。typecheck、1文件2项通过1.69s（`response-observed-typecheck.log`、`response-observed-tests.log`）。
+
+## 2026-09-26 用户复盘暂停边界
+
+任务`/root/refactor_a_resume`，唯一工作树`D:\Workspace\browser-evidence-studio\output\refactor-worktrees\20260926-A`，分支`codex/refactor-a-20260926`，实现HEAD`58d18d2`。Node v24.21.0/npm11.19.0。已提交bootstrap返修`6480169`（根`f3adf7f`、真实attempt9双进程通过），响应观测时间`58d18d2`已交根待其集成记录。没有自行启动Electron/长测，没有重建树、reset、删原件或分支。
+
+暂停时未提交`test/desktop/refactor-recording.ts`仅为新增CSSOM/adopted验证夹具：初始规则、站点main world的insertRule和replaceSync更新、真实源computedStyle断言、每次离线seek的颜色断言及诊断字段。`cssom-fixture-typecheck.log`通过，但**未运行真实桌面**，未实现任何额外CSS桥，不能把夹具存在写成能力通过。保留该dirty供下一次根审查/串行运行。此交接文档自身单独提交，不把未跑夹具混入已验证实现提交。
+
+接续第一步：核对root最新status、此树branch/HEAD/dirty、Node/npm及桌面锁；保留fixture，先读真实attempt9记录，再由root决定审查夹具并跑CSSOM专项。静态发现`rewriteReplayEvent`尚未处理styleSheetRule.replace/replaceSync，样式规则/声明/adopted事件的URL尚未按logical frame解析；须先修这些确定遗漏。隔离world的rrweb原型hook是否漏站点main-world CSSOM目前只是待验证风险。若真实失败，拟在同一coordinator内部加入窄样式dirty通知与isolated native CSSOM读取，通知内容不作为原件；具体预算、身份、隐私、释放需审查后实现，当前没有该桥。
+
+剩余A验收：blob/data/redirect/SW资源的实际CDP字节、来源链与离线恢复尚待夹具和必要实现；CSSOM/adopted动态样式如上待真实证据；viewport/DPI重建由生产ReplayHost与根验收；同毫秒精确位置已有模块验证，真实顺序播放与随机seek一致性/释放仍待最终生产门面验收；30分钟既有soak尚未加入format2分段/随机window/索引重建/跨PID比对与capture queue峰值，也尚未运行本次重构长测。不可将这些核心未完项只写unsupported即结案。Canvas、closed shadow、跨源frame脚本/媒体没有宣称支持；同源frame/open-shadow/SVG当前真实通过范围仅attempt9的指定合成节点和资源。
