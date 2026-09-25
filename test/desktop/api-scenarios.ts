@@ -13,6 +13,7 @@ const round = (value: number) => Math.round(value * 100) / 100;
 /** Uses the actual Electron API and managed page. The token stays in this closure. */
 export async function runApiScenarios(studio: Studio, siteUrl: string): Promise<void> {
   assert.equal(studio.active, undefined, 'API scenarios require the preceding run to be sealed');
+  if(studio.state().session)await studio.closeSession();
   assert.equal(typeof studio.connection?.file, 'string');
   const connection = JSON.parse(await readFile(studio.connection.file, 'utf8'));
   assert.ok(typeof connection.token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(connection.token), 'Current instance connection token is required');
@@ -202,7 +203,7 @@ export async function runApiScenarios(studio: Studio, siteUrl: string): Promise<
   } finally {
     // On a failed assertion, avoid leaving this test's browser lease alive for shutdown.
     if (ownedRunId && studio.state().active?.id === ownedRunId) {
-      try { await studio.stopRunner(); await studio.seal(); } catch { console.error('API scenario cleanup did not finish; application shutdown must finish the run'); }
+      try { await studio.stopRunner(); await studio.seal(); if(studio.state().session)await studio.closeSession(); } catch { console.error('API scenario cleanup did not finish; application shutdown must finish the run'); }
     }
     report.elapsedMs = round(performance.now() - started);
     await writeFile(path.join(studio.root, 'api-result.json'), JSON.stringify(report, null, 2));

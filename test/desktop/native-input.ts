@@ -8,12 +8,15 @@ import type { Studio } from '@/main/services/studio';
  * through Electron native input; no scrollIntoView, DOM click, or state mutation.
  */
 export async function clickSyntheticHuman(studio: Studio, selector: string): Promise<void> {
-  const run = studio.required(), managed = studio.current(), host = studio.window.window;
+  const session = studio.state().session, managed = studio.current(), host = studio.window.window;
+  assert.ok(session, 'Synthetic native input requires a live session');
   const assertOwnership = () => {
-    assert.equal(studio.required().id, run.id, 'The native input run must remain unchanged');
+    const currentSession=studio.state().session;
+    assert.equal(currentSession?.sessionId, session.sessionId, 'The native input session must remain unchanged');
+    assert.equal(currentSession?.recordingId, session.recordingId, 'The native input recording boundary must remain unchanged');
     assert.equal(studio.current().pageId, managed.pageId, 'The native input target must remain selected');
-    assert.equal(run.controller, 'human', 'Synthetic native input requires explicit human ownership');
-    assert.equal(run.locked, false, 'Synthetic native input cannot bypass an operation lock');
+    assert.equal(currentSession?.controller, 'human', 'Synthetic native input requires explicit human ownership');
+    assert.equal(currentSession?.locked, false, 'Synthetic native input cannot bypass an operation lock');
     assert.equal(managed.view.getVisible(), true, 'The business native view must be visible');
     assert.equal(studio.window.mask.getVisible(), false, 'The native input mask must be absent');
   };

@@ -12,7 +12,7 @@ async function waitUntil<T>(read:()=>T|Promise<T>,accept:(value:T)=>boolean,labe
 }
 
 export async function runCheckpointScenarios(studio:Studio,url:string){
-  if(studio.active)await studio.seal();
+  if(studio.active)await studio.seal(); if(studio.state().session)await studio.closeSession();
   const project=await studio.createProject({name:'Checkpoint cancellation',objective:'Synthetic timeout, partial capture and cancellation'});
   const profile=await studio.createProfile({projectId:project.id,name:'isolated checkpoint profile'});
   await studio.startRun({projectId:project.id,profileId:profile.id,url:url+'/orders'});
@@ -115,7 +115,7 @@ export async function runCheckpointScenarios(studio:Studio,url:string){
     console.log('CHECKPOINT PASS: real service timeout, task-bound cancellation, partial durability, unlock and late-result isolation');
   }finally{
     page.page.evaluate=originalEvaluate;page.view.webContents.capturePage=originalCapture;
-    if(studio.active===run){await studio.seal();}
+    if(studio.active===run){await studio.seal(); if(studio.state().session)await studio.closeSession();}
   }
   await runIncompleteRunnerCheckpoints(studio,url);
 }
@@ -147,11 +147,11 @@ async function runIncompleteRunnerCheckpoints(studio:Studio,url:string){
       assert.equal(retained.metadata.captureOutcome,scenario==='timed-out'?'timed-out':'completed');
       assert.equal(retained.metadata.captureStatus,scenario==='failed'?'failed':'partial');
       assert.equal(retained.artifactRefs.length,2);assert.equal(studio.required().controller,'human');assert.equal(studio.required().locked,false);
-      await studio.seal();
+      await studio.seal(); if(studio.state().session)await studio.closeSession();
     }
     console.log('CHECKPOINT RUNNER PASS: partial, failed and timed-out captures remain saved but cannot satisfy validation coverage');
   }finally{
     studio.checkpoint=originalCheckpoint;
-    if(studio.active){await studio.stopRunner();await studio.seal();}
+    if(studio.active){await studio.stopRunner();await studio.seal(); if(studio.state().session)await studio.closeSession();}
   }
 }

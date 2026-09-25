@@ -105,7 +105,7 @@ interface RestartState {
  * All browser writes use managed actions or explicit native synthetic input.
  */
 export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Promise<void> {
-  if (studio.active) await studio.seal();
+  if (studio.active) await studio.seal(); if(studio.state().session)await studio.closeSession();
   const origin = new URL(siteUrl).origin;
   const project = await studio.createProject({ name: '页面身份和 profile 生命周期', objective: '合成 popup、frame、证据预算、持久状态及崩溃验收' });
   const profile = await studio.createProfile({ projectId: project.id, name: '持久状态 A' });
@@ -226,11 +226,11 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
   assert.equal(saved.loginStatus, 'unknown', 'Saving storage alone must not become a permanent verified-login claim');
   await studio.navigate(`${origin}/storage`);
   assertStoredAccount(await storageState(studio));
-  await studio.seal();
+  await studio.seal(); if(studio.state().session)await studio.closeSession();
 
   await studio.startRun({ projectId: project.id, profileId: profile.id, url: `${origin}/storage` });
   assertStoredAccount(await storageState(studio));
-  await studio.seal();
+  await studio.seal(); if(studio.state().session)await studio.closeSession();
   const isolated = await studio.createProfile({ projectId: project.id, name: '隔离状态 B' });
   await studio.startRun({ projectId: project.id, profileId: isolated.id, url: `${origin}/storage` });
   const isolatedState = await storageState(studio);
@@ -246,7 +246,7 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
   crashed.view.webContents.forcefullyCrashRenderer();
   await Promise.race([gone, delay(10_000).then(() => { throw new Error('Renderer crash did not report a lifecycle event'); })]);
   await waitFor(() => crashedRun.capture, capture => capture === 'degraded', 'crash capture health');
-  const manifest = await studio.seal();
+  const manifest = await studio.seal(); if(studio.state().session)await studio.closeSession();
   assert.equal(manifest.status, 'sealed', 'A crashed renderer must still permit durable evidence sealing');
   const crashGaps = await eventRecords(studio.reader(crashedRun.id), ['gap']);
   assert.ok(crashGaps.some(event => /render-process-gone|capture CDP disconnected/.test(event.data.reason)));
@@ -264,16 +264,16 @@ export async function runProfileRestartScenarios(studio: Studio, siteUrl: string
   assert.equal(saved.schemaVersion, 1);
   assert.notEqual(process.pid, saved.originalProcessId, 'Restart verification must execute in a different Electron process');
   assert.equal(new URL(siteUrl).origin, saved.siteOrigin, 'Storage is scoped to the original fixture origin, including its port');
-  if (studio.active) await studio.seal();
+  if (studio.active) await studio.seal(); if(studio.state().session)await studio.closeSession();
   await studio.startRun({ projectId: saved.projectId, profileId: saved.profileId, url: `${saved.siteOrigin}/storage` });
   assertStoredAccount(await storageState(studio));
-  await studio.seal();
+  await studio.seal(); if(studio.state().session)await studio.closeSession();
   await studio.startRun({ projectId: saved.projectId, profileId: saved.isolatedProfileId, url: `${saved.siteOrigin}/storage` });
   const isolated = await storageState(studio);
   assert.equal(isolated.session.authenticated, false);
   assert.equal(isolated.localStorageAccount, null);
   assert.equal(isolated.indexedDbAccount, null);
-  await studio.seal();
+  await studio.seal(); if(studio.state().session)await studio.closeSession();
   let soak;
   if (expectSoak) {
     const report = JSON.parse(await readFile(path.join(studio.root, 'soak-result.json'), 'utf8')) as {
