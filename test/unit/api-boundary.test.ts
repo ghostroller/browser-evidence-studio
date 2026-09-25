@@ -1,23 +1,37 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { createServer, Socket } from 'node:net';
-import { test } from 'vitest';
+import { afterEach, test } from 'vitest';
 import { makeDispatch } from '@/main/services/dispatch';
 import type { Studio } from '@/main/services/studio';
 import { SocketTransport } from '@/main/browser/connection';
+import { TaskAuthorizations, type TaskCapability } from '@/main/services/task-authorization';
+import { ensure } from '@/shared/errors';
 
-function mockStudio() {
-  const pageA = { pageId: 'page-a', navigationGeneration: 3, view: {} };
-  const pageB = { pageId: 'page-b', navigationGeneration: 4, view: {} };
-  const run = { id: 'run-1', leaseEpoch: 7, controller: 'agent', execution: 'ready', selectedPageId: 'page-a', pages: new Map([['page-a', pageA], ['page-b', pageB]]) };
+const authorizations: TaskAuthorizations[] = [];
+afterEach(() => { for (const tasks of authorizations.splice(0)) tasks.close(); });
+
+async function mockStudio() {
+  const pageA = { pageId: 'page-a', targetId: 'target-a', navigationGeneration: 3, view: {} };
+  const pageB = { pageId: 'page-b', targetId: 'target-b', navigationGeneration: 4, view: {} };
+  const run = { id: 'run-1', projectId: 'project-1', profileId: 'profile-1', leaseEpoch: 7, controller: 'agent', execution: 'ready', selectedPageId: 'page-a', pages: new Map([['page-a', pageA], ['page-b', pageB]]) };
+  const tasks = new TaskAuthorizations(); authorizations.push(tasks);
+  const scope = { projectId: run.projectId, profileId: run.profileId, sessionId: 'session-1' };
+  const grant = await tasks.issue(scope, { origins: ['https://fixture.test'], pages: [pageA, pageB], capabilities: ['page-read', 'page-act', 'history-read', 'results-read'], durationMs: 60000, maxOperations: 100 });
   const calls: { method: string; body: any }[] = [];
   let queue: Promise<unknown> = Promise.resolve();
   const fake = {
+    tasks, runs: [run],
     active: run,
     required: () => run,
     serialized<T>(fn: () => Promise<T>): Promise<T> { const result = queue.then(fn); queue = result.catch(() => {}); return result; },
     block(promise: Promise<unknown>) { queue = promise; },
-    state: () => ({ active: run }),
+    state: () => ({ active: run, validations: [{ id: 'path-id', runId: run.id }] }),
+    authorizedOperation: (body: any, capability: TaskCapability, operation: (signal: AbortSignal) => Promise<unknown>, signal?: AbortSignal) => {
+      const page = run.pages.get(body.pageId ?? run.selectedPageId);
+      ensure(page, 'Unknown page or stale navigation generation', 409);
+      return tasks.run(body.authorizationId, capability, { ...scope, pageId: page.pageId, targetId: page.targetId, url: 'https://fixture.test/' }, operation, signal);
+    },
     window: { show: () => undefined },
     // Page lifecycle moved into Studio; this dispatcher fixture supplies its
     // contract while actual lease/target changes are exercised in Electron.
@@ -31,11 +45,15 @@ function mockStudio() {
     reviews: async (id: string, body: unknown) => { calls.push({ method: 'reviews', body: { id, options: body } }); return { id }; },
     reader: () => ({ summary: async (body: unknown) => { calls.push({ method: 'summary', body }); return body; } }),
   };
-  return { fake, run, calls, dispatch: makeDispatch(fake as unknown as Studio) };
+  const dispatch = makeDispatch(fake as unknown as Studio);
+  // These lease/identity tests run as a real authorized task; omission/revocation
+  // is tested separately in refactor-agent-api, without this request builder.
+  const authorizedDispatch: typeof dispatch = (method, body, source, context) => dispatch(method, { ...scope, authorizationId: grant.authorizationId, ...body }, source, context);
+  return { fake, run, calls, dispatch: authorizedDispatch };
 }
 
 test('HTTP checkpoint/snapshot reject wrong run, unknown page and stale generation before touching the browser', async () => {
-  const { dispatch, calls } = mockStudio();
+  const { dispatch, calls } = await mockStudio();
   for (const method of ['snapshot', 'checkpoint']) {
     for (const body of [
       { runId: 'other-run', pageId: 'page-a', generation: 3, leaseEpoch: 7 },
@@ -51,7 +69,7 @@ test('HTTP checkpoint/snapshot reject wrong run, unknown page and stale generati
 });
 
 test('a queued request is reauthorized after a human takes over, and selecting a page invalidates old commands', async () => {
-  const { fake, dispatch, run, calls } = mockStudio();
+  const { fake, dispatch, run, calls } = await mockStudio();
   let release!: () => void;
   fake.block(new Promise<void>((resolve) => { release = resolve; }));
   const pending = dispatch('checkpoint', { runId: 'run-1', pageId: 'page-a', generation: 3, leaseEpoch: 7 }, 'api');
@@ -66,7 +84,7 @@ test('a queued request is reauthorized after a human takes over, and selecting a
 });
 
 test('HTTP action requires the selected page generation and rejects a queued action after navigation', async () => {
-  const { fake, dispatch, run, calls } = mockStudio();
+  const { fake, dispatch, run, calls } = await mockStudio();
   const identity = { runId: run.id, pageId: 'page-a', leaseEpoch: run.leaseEpoch, type: 'click', selector: '#safe' };
   await assert.rejects(dispatch('action', identity, 'api'), (error: any) => error.status === 409);
   let release!: () => void;
@@ -81,7 +99,7 @@ test('HTTP action requires the selected page generation and rejects a queued act
 });
 
 test('a stop from startup still targets the same running validation, but cannot stop a replacement execution', async () => {
-  const { fake, run } = mockStudio();
+  const { fake, run } = await mockStudio();
   let stopped = 0;
   const studio = { ...fake, state: () => ({ active: run, validationStarting: null,
     validations: [{ id: 'validation-1', runId: run.id }] }), stopRunner: async () => { stopped++; } };
@@ -94,7 +112,7 @@ test('a stop from startup still targets the same running validation, but cannot 
 });
 
 test('human handoff release and review writes require the trusted UI source', async () => {
-  const { dispatch, calls } = mockStudio();
+  const { dispatch, calls } = await mockStudio();
   for (const method of ['replyHuman', 'releaseHuman', 'review']) {
     await assert.rejects(dispatch(method, { handoffId: 'handoff-1', validationId: 'validation-a', verdict: 'accept', reason: 'forged', leaseEpoch: 7 }, 'api'), (error: any) => error.status === 403);
   }
@@ -105,7 +123,7 @@ test('human handoff release and review writes require the trusted UI source', as
 });
 
 test('path validation identity wins for reads and summary keeps its requested budget', async () => {
-  const { dispatch, calls } = mockStudio();
+  const { dispatch, calls } = await mockStudio();
   await dispatch('validation', { validationId: 'path-id', id: 'wrong-id' }, 'api');
   await dispatch('summary', { runId: 'run-1', maxBytes: 1200 }, 'api');
   await dispatch('reviews', { validationId: 'path-id', id: 'wrong-id', maxBytes: 1200, cursor: 'bounded-next' }, 'api');

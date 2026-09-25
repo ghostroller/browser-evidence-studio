@@ -3,10 +3,14 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { test } from 'vitest';
+import { afterEach, test } from 'vitest';
 import { startApi, type ApiOptions } from '@/main/api/server';
 import { makeDispatch } from '@/main/services/dispatch';
 import type { Studio } from '@/main/services/studio';
+import { TaskAuthorizations, type TaskCapability } from '@/main/services/task-authorization';
+
+const authorizations: TaskAuthorizations[] = [];
+afterEach(() => { for (const tasks of authorizations.splice(0)) tasks.close(); });
 
 async function setup(dispatch: ApiOptions['dispatch']) {
   const root = await mkdtemp(path.join(tmpdir(), 'bes-validation-api-'));
@@ -44,11 +48,16 @@ async function eventual<T>(read: () => T | Promise<T>, predicate: (value: T) => 
 }
 
 type ValidationOptions = { signal?: AbortSignal; requireGrant?: boolean };
-function fakeStudio(validate: (body: any, options: ValidationOptions) => Promise<unknown>, controller: 'human' | 'agent' = 'agent') {
+async function fakeStudio(validate: (body: any, options: ValidationOptions) => Promise<unknown>, controller: 'human' | 'agent' = 'agent') {
   let queue: Promise<unknown> = Promise.resolve();
   const calls: string[] = [];
   const run = { id: 'run-1', projectId: 'project-1', profileId: 'profile-1', leaseEpoch: 1, controller };
+  const tasks = new TaskAuthorizations(); authorizations.push(tasks);
+  const scope = { projectId: run.projectId, profileId: run.profileId, sessionId: 'session-1', directory: process.cwd(), pageId: 'page-1', targetId: 'target-1', url: 'https://fixture.test/' };
+  const grant = await tasks.issue(scope, { origins: ['https://fixture.test'], pages: [{ pageId: scope.pageId, targetId: scope.targetId }], capabilities: ['execute', 'page-act'], durationMs: 60000, maxOperations: 100 });
   const studio = {
+    tasks,
+    authorizedOperation: (body: any, capability: TaskCapability, operation: (signal: AbortSignal) => Promise<unknown>, signal?: AbortSignal) => tasks.run(body.authorizationId, capability, scope, operation, signal),
     required: () => run,
     serialized<T>(action: () => Promise<T>) { const result = queue.then(action); queue = result.catch(() => {}); return result; },
     async validate(body: any, options: ValidationOptions) { calls.push(`validate:${body.input?.key}`); return validate(body, options); },
@@ -59,12 +68,16 @@ function fakeStudio(validate: (body: any, options: ValidationOptions) => Promise
     async revokeValidationStart() { calls.push('revokeValidationStart'); return {}; },
     async validationStartGrant(body: any) { calls.push('validationStartGrant'); return { runId: body.runId, grant: null }; },
   };
-  return { calls, run, dispatch: makeDispatch(studio as unknown as Studio) };
+  const dispatch = makeDispatch(studio as unknown as Studio);
+  // Queue/cancellation fixtures supply a real grant; production scope and absent
+  // grant rejection are covered by the dedicated authorization/API tests.
+  const authorizedDispatch: typeof dispatch = (method, body, source, context) => dispatch(method, { authorizationId: grant.authorizationId, ...body }, source, context);
+  return { calls, run, dispatch: authorizedDispatch };
 }
 
 test('cancelling queued validation B leaves active validation A running and never invokes B', async () => {
   let finishA: (() => void) | undefined, signalA: AbortSignal | undefined;
-  const fake = fakeStudio(async (body, options) => {
+  const fake = await fakeStudio(async (body, options) => {
     assert.equal(body.input.key, 'a', 'cancelled B must never enter Studio.validate');
     signalA = options.signal;
     await new Promise<void>(resolve => { finishA = resolve; });
@@ -97,7 +110,7 @@ test('active validation cancellation propagates its own signal reason and leaves
   const signals = new Map<string, AbortSignal>();
   let rejectActive: ((reason: unknown) => void) | undefined, finishIndependent: (() => void) | undefined;
   let caughtReason: unknown;
-  const fake = fakeStudio(async (body, options) => {
+  const fake = await fakeStudio(async (body, options) => {
     assert.ok(options.signal instanceof AbortSignal);
     const key = body.input.key as string;
     signals.set(key, options.signal);
@@ -138,7 +151,7 @@ test('active validation cancellation propagates its own signal reason and leaves
 });
 
 test('validation grants can be read over HTTP but only trusted UI may issue or revoke them', async () => {
-  const fake = fakeStudio(async () => ({}), 'human'), fixture = await setup(fake.dispatch);
+  const fake = await fakeStudio(async () => ({}), 'human'), fixture = await setup(fake.dispatch);
   try {
     const capabilities = await fixture.call('GET', '/v1/capabilities');
     assert.equal(capabilities.status, 200);
@@ -164,7 +177,7 @@ test('validation grants can be read over HTTP but only trusted UI may issue or r
 });
 
 test('human ownership blocks ordinary control and actions even when a startup grant ID is supplied', async () => {
-  const fake = fakeStudio(async () => ({}), 'human'), fixture = await setup(fake.dispatch);
+  const fake = await fakeStudio(async () => ({}), 'human'), fixture = await setup(fake.dispatch);
   try {
     for (const [endpoint, body] of [
       ['validations', { input: {} }],
@@ -174,8 +187,8 @@ test('human ownership blocks ordinary control and actions even when a startup gr
       const accepted = await fixture.call('POST', `/v1/runs/run-1/${endpoint}`, { leaseEpoch: 1, ...body });
       assert.equal(accepted.status, 202);
       const failed = await eventual(() => fixture.call('GET', `/v1/jobs/${accepted.json.jobId}`), result => result.json.status === 'failed');
-      assert.equal(failed.json.error.status, 409);
-      assert.match(failed.json.error.message, /Human owns this browser/);
+      assert.equal(failed.json.error.status, endpoint === 'control' ? 403 : 409);
+      assert.match(failed.json.error.message, endpoint === 'control' ? /trusted client UI/ : /Human owns this browser/);
     }
     assert.deepEqual(fake.calls, [], 'a validation grant must not open general browser control');
   } finally { await fixture.cleanup(); }
