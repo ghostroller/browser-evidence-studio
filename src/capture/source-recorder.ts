@@ -37,7 +37,7 @@ export function installSourceRecorder(config: RecorderConfiguration, urlPrivacy:
   const documentId = uuid(), streamEpoch = uuid();
   const pending = new Map<number, SourceMetadata>();
   let seq = 0, pendingBytes = 0, metadataComplete = true, failedEmits = 0;
-  let pendingSample: { nodeId: number; observation: SourceValue<Omit<SourcePresentation, 'sampledAt'>>; result?: PresentationSample } | undefined;
+  let pendingSample: { nodeId: number; observation: SourceValue<Omit<SourcePresentation, 'sampledAt'>>; result?: PresentationSample; failure?: string } | undefined;
   const credential = /password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key/i;
   const present = <T>(value: T): SourceValue<T> => ({ status: 'present', value });
   const redacted = (): SourceValue<string> => ({ status: 'redacted', reason: 'capture-privacy-policy' });
@@ -135,8 +135,12 @@ export function installSourceRecorder(config: RecorderConfiguration, urlPrivacy:
         else {
           const presentation: SourceValue<SourcePresentation> = pendingSample.observation.status === 'present'
             ? present({ ...pendingSample.observation.value, sampledAt: { ...position } }) : pendingSample.observation;
-          metadata.presentation = presentation;
-          pendingSample.result = { ref: { kind: 'dom-node', position, nodeId: metadata.nodeId, frameId: metadata.frameId, mirrorScopeId: metadata.mirrorScopeId }, presentation };
+          const addedBytes=JSON.stringify(presentation).length*2+64;
+          if(pendingBytes+addedBytes>8*1024*1024){metadataComplete=false;pendingSample.failure='presentation-metadata-byte-budget';}
+          else {
+            pendingBytes+=addedBytes;metadata.presentation = presentation;
+            pendingSample.result = { ref: { kind: 'dom-node', position, nodeId: metadata.nodeId, frameId: metadata.frameId, mirrorScopeId: metadata.mirrorScopeId }, presentation };
+          }
         }
       }
       const rootId = w.rrweb.record.mirror.getId(document);
@@ -196,7 +200,7 @@ export function installSourceRecorder(config: RecorderConfiguration, urlPrivacy:
     pendingSample = sample;
     try { w.rrweb.record.addCustomEvent('bes-source-presentation', { nodeId, frameId, mirrorScopeId }); }
     finally { pendingSample = undefined; }
-    if (!sample.result || failedEmits) throw new Error('Presentation observation was not emitted');
+    if (!sample.result || failedEmits) throw new Error(sample.failure??'Presentation observation was not emitted');
     return sample.result;
   }
   w.__besSampleSelectedNode = node => sample(node);

@@ -94,6 +94,8 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     const displayNode=[...displayModel.nodes.values()].find(node=>node.metadata?.attributes.id?.status==='present'&&node.metadata.attributes.id.value==='display-check');assert.ok(displayNode?.metadata);
     const displayRef:HistoricalElementRef={kind:'dom-node',position:displayPosition,nodeId:displayNode.id,frameId:displayNode.metadata.frameId,mirrorScopeId:displayNode.metadata.mirrorScopeId};
     assert.deepEqual(displayModel.node(displayRef).text,{status:'present',value:'shownhidden-source-text'});
+    const cancelledSample=new AbortController();cancelledSample.abort(new Error('synthetic-presentation-cancelled'));
+    await assert.rejects(current.capture.samplePresentation(displayRef,cancelledSample.signal),/synthetic-presentation-cancelled/);
     const displaySample=await current.capture.samplePresentation(displayRef);assert.equal(displaySample.presentation.status,'present');
     if(displaySample.presentation.status==='present'){assert.equal(displaySample.presentation.value.text,'shown');assert.equal(displaySample.presentation.value.visibility,'visible');}
     report.sourcePresentation=displaySample;
