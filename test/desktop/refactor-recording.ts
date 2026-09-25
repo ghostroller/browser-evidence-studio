@@ -116,6 +116,24 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
   }
 }
 
+async function waitReplayAssets(doc: Document): Promise<string[]> {
+  const errors: string[] = [];
+  async function bounded(work: Promise<unknown>, label: string): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([work, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(label + ': timeout')), 5000); })]); }
+    catch(error) { errors.push(error instanceof Error ? error.message : String(error)); }
+    finally { if(timer)clearTimeout(timer); }
+  }
+  await Promise.all([...doc.querySelectorAll<HTMLLinkElement>('link[rel=stylesheet]')].map(link => bounded(link.sheet ? Promise.resolve() : new Promise<void>((resolve, reject) => {
+    link.addEventListener('load', () => resolve(), { once: true }); link.addEventListener('error', () => reject(new Error('stylesheet failed: ' + link.href)), { once: true });
+  }), 'stylesheet ' + link.href)));
+  // fonts.ready can resolve before an external stylesheet has introduced any
+  // font face. Wait for the stylesheet boundary first, then request the fixture.
+  await bounded(doc.fonts.load('16px BesFixture').then(() => doc.fonts.ready), 'font readiness');
+  await Promise.all([...doc.images].map(image => bounded(image.decode(), 'image ' + image.src)));
+  return errors;
+}
+
 async function offlineScenario(studio: Studio): Promise<Record<string, unknown>> {
   const saved = JSON.parse(await readFile(path.join(studio.root, 'refactor-recording-fixture.json'), 'utf8')) as SavedRecording;
   assert.notEqual(saved.recordPid, process.pid, 'Offline acceptance requires a fresh Electron process');
@@ -125,20 +143,23 @@ async function offlineScenario(studio: Studio): Promise<Record<string, unknown>>
   partition.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   const resourceService = new OfflineResourceService(archive);
   let activePosition=saved.final,activeGeneration=0;
+  const protocolRequests: unknown[] = [];
   partition.protocol.handle('bes-resource', async request => {
     const url = new URL(request.url); const id = url.pathname.slice(1);
     const generation=Number(url.searchParams.get('seek'));
-    if (url.hostname !== 'archive' || url.hash || !/^[a-f0-9-]{36}$/.test(id)||generation!==activeGeneration) return new Response('', { status: 409 });
+    const diagnostic: Record<string, unknown> = { id, generation, activeGeneration };
+    if(protocolRequests.length<1000)protocolRequests.push(diagnostic);
+    if (url.hostname !== 'archive' || url.hash || !/^[a-f0-9-]{36}$/.test(id)||generation!==activeGeneration) { diagnostic.status=409;diagnostic.reason='invalid-resource-route-or-seek-generation';return new Response('', { status: 409 }); }
     const position=activePosition;
-    try { const result = await resourceService.response(id, position, id=>resourceUrl(id)+`?seek=${generation}`);if(generation!==activeGeneration)return new Response('',{status:409}); return new Response(result.bytes as BodyInit, { headers: result.headers }); }
-    catch { return new Response('', { status: 404 }); }
+    try { const result = await resourceService.response(id, position, id=>resourceUrl(id)+`?seek=${generation}`);if(generation!==activeGeneration){diagnostic.status=409;diagnostic.reason='seek-replaced-during-read';return new Response('',{status:409});}diagnostic.status=200;diagnostic.bytes=result.bytes.byteLength; return new Response(result.bytes as BodyInit, { headers: result.headers }); }
+    catch(error) { diagnostic.status=404;diagnostic.error=error instanceof Error?{name:error.name,message:error.message}:String(error);return new Response('', { status: 404 }); }
   });
   const replay = new BrowserWindow({ show: false, webPreferences: { session: partition, sandbox: true, nodeIntegration: false, contextIsolation: true, webSecurity: true, backgroundThrottling: false } });
   replay.webContents.setWindowOpenHandler(() => ({ action: 'deny' })); replay.webContents.on('will-navigate', event => event.preventDefault());
   const rendererMessages: unknown[] = [];
-  const report: Record<string, unknown> = { phase: 'offline', passed: false, pid: process.pid, recordedPid: saved.recordPid, blocked, seeks: [], rendererMessages, stage: 'created' };
-  replay.webContents.on('console-message', (_event, level, message, lineNumber, sourceId) => {
-    if (rendererMessages.length < 100) rendererMessages.push({ level, message: message.slice(0, 4000), lineNumber, sourceId: sourceId.slice(0, 1000) });
+  const report: Record<string, unknown> = { phase: 'offline', passed: false, pid: process.pid, recordedPid: saved.recordPid, blocked, seeks: [], rendererMessages, protocolRequests, stage: 'created' };
+  replay.webContents.on('console-message', details => {
+    if (rendererMessages.length < 100) rendererMessages.push({ level: details.level, message: details.message.slice(0, 4000), lineNumber: details.lineNumber, sourceId: details.sourceId.slice(0, 1000) });
   });
   const execute = async (stage: string, script: string) => { report.stage = stage; return replay.webContents.executeJavaScript(script); };
   try {
@@ -153,16 +174,19 @@ async function offlineScenario(studio: Studio): Promise<Record<string, unknown>>
       for(const resource of resources.items){if(resource.originalUrl.status!=='present')continue;const selected=await archive.resolve(resource.originalUrl.value,item.position,'top');if(selected?.status==='captured')mapping.set(resource.originalUrl.value,resourceUrl(selected.id)+`?seek=${generation}`);}
       const started = performance.now(), window = await service.window(item.position), model = new SourceModel(window.records);
       const prepared = prepareReplayEvents({ ...window, records: window.records.map(record => ({ ...record, event: rewriteReplayEvent(record.event, url => mapping.get(url) ?? 'about:blank') })) });
-      const result = await execute(`seek-${generation}-${item.label}`, `(async()=>{window.__aPlayer?.destroy();window.__aPlayer=new rrweb.Replayer(${JSON.stringify(prepared.events)},{root:document.querySelector('#replay'),speed:1,showWarning:false,showDebug:false,UNSAFE_replayCanvas:false});window.__aPlayer.pause(${prepared.pauseOffset});const frame=document.querySelector('#replay iframe');const doc=frame.contentDocument;await Promise.race([doc.fonts.ready,new Promise((_,reject)=>setTimeout(()=>reject(new Error('font readiness timeout')),5000))]);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const a=doc.querySelector('#selected'),img=doc.querySelector('#picture');return {text:a.textContent,nodeId:window.__aPlayer.getMirror().getId(a),color:frame.contentWindow.getComputedStyle(a).color,background:frame.contentWindow.getComputedStyle(doc.body).backgroundColor,font:doc.fonts.check('16px BesFixture'),image:img.complete&&img.naturalWidth>0,sandbox:frame.getAttribute('sandbox'),scriptRan:frame.contentWindow.__sourceScriptRan===true,width:frame.width,height:frame.height};})()`);
+      const result = await execute(`seek-${generation}-${item.label}`, `(async()=>{window.__aPlayer?.destroy();window.__aPlayer=new rrweb.Replayer(${JSON.stringify(prepared.events)},{root:document.querySelector('#replay'),speed:1,showWarning:false,showDebug:false,UNSAFE_replayCanvas:false});window.__aPlayer.pause(${prepared.pauseOffset});const frame=document.querySelector('#replay iframe');const doc=frame.contentDocument;const assetErrors=await (${waitReplayAssets.toString()})(doc);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const a=doc.querySelector('#selected'),img=doc.querySelector('#picture');return {text:a.textContent,nodeId:window.__aPlayer.getMirror().getId(a),color:frame.contentWindow.getComputedStyle(a).color,background:frame.contentWindow.getComputedStyle(doc.body).backgroundColor,font:doc.fonts.check('16px BesFixture'),image:img.complete&&img.naturalWidth>0,sandbox:frame.getAttribute('sandbox'),scriptRan:frame.contentWindow.__sourceScriptRan===true,width:frame.width,height:frame.height,assetErrors,stylesheets:[...doc.querySelectorAll('link[rel=stylesheet]')].map(link=>({href:link.href,loaded:!!link.sheet}))};})()`);
+      const seekReport: Record<string,unknown> = { position: item.position, durationMs: performance.now() - started, readBytes: window.readBytes, mapping: [...mapping], result };
+      (report.seeks as unknown[]).push(seekReport);
       assert.equal(result.text, item.label === 'initial' ? 'initial' : 'updated'); assert.equal(result.scriptRan, false); assert.equal(result.sandbox, 'allow-same-origin');
       assert.equal(result.color,item.label==='initial'?'rgb(17, 34, 51)':'rgb(51, 34, 17)','A seek must use that historical version of a reused stylesheet URL');
+      assert.deepEqual(result.assetErrors, [], 'Every archived stylesheet/image/font must finish successfully');
       // Native original HTML is an independent verification source, never replay DOM.
       const node = model.nodes.get(result.nodeId); assert.ok(node?.metadata);
       const ref: HistoricalElementRef = { kind: 'dom-node', position: item.position, nodeId: node.id, frameId: node.metadata.frameId, mirrorScopeId: node.metadata.mirrorScopeId };
       const locators = sourceLocators(model, ref);
       const verified = await replay.webContents.executeJavaScript(`(()=>{const doc=new DOMParser().parseFromString(${JSON.stringify(item.originalHtml)},'text/html');return ${JSON.stringify(locators)}.map(candidate=>{const step=candidate.steps.at(-1);if(step.strategy==='css'){const found=[...doc.querySelectorAll(step.expression)];return {count:found.length,target:found.some(node=>node.id==='selected')}}const query=doc.evaluate(step.expression,doc,null,XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,null);return {count:query.snapshotLength,target:Array.from({length:query.snapshotLength},(_,index)=>query.snapshotItem(index)).some(node=>node.id==='selected')}})})()`);
       for (let index = 0; index < verified.length; index++) { assert.equal(verified[index].count, locators[index].historical.matchCount); assert.equal(verified[index].target, true); }
-      (report.seeks as unknown[]).push({ position: item.position, durationMs: performance.now() - started, readBytes: window.readBytes, result, verified });
+      seekReport.verified=verified;
     }
     const last = (report.seeks as Array<{ result: { color: string; background: string; image: boolean; font: boolean } }>).at(-1)!.result;
     assert.equal(last.color, 'rgb(17, 34, 51)'); assert.equal(last.background, 'rgb(220, 230, 240)'); assert.equal(last.image, true); assert.equal(last.font, true);
