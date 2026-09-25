@@ -43,4 +43,11 @@
 
 恢复步骤：先 `collaboration.list_agents`，按上表 ID 发消息/接续，核对工作树 HEAD/status 与 handoff；仍 running 的流不重复派发。原生 ID 不存在时核对留存成果后原树接续并登记替代 ID。根仅审查已明确 SHA 的提交，再串行集成、测受影响范围。每个结果更新本记录的提交、测试路径、阻塞和下一动作；不将任务“完成”直接改成 T 项 verified。
 
+### 接管后的实际集成日志
+
+- `f46540a`：主控协议/启动状态提交，保留 S0 handoff 历史。A/B/C 都实际回报了正确目录/分支/clean 起点；三流独立安装依赖，默认 npm-cache 写权限错误保留，正常权限流程重试。A/C 已回报各安装 682 packages，B 已运行自身 typecheck。
+- `e3088cf`：根唯一提交字段 `checkpointId` / `bindingStatus` 契约补充，主树 `npm.cmd run typecheck` 通过。B 获准仅接入此提交，其对应 SHA 为 `dc13f6f`；将来集成 B 代码时不重复应用等价契约提交。A/C 已通知，录放契约未改。
+- 根在可审查提交前提前发现并通知：A Mirror 域 ID 含冒号与 B 路径 ID 校验冲突（B 已区分）；C abort 后业务 promise 先拒绝可能越过 quiescence 等待、批次排队总预算、回执身份验证；B 同草稿连续发布 parent 链和调用方可变对象风险。这些是返修检查项，尚不声明修复/测试通过。
+- 本轮生产集成入口尚未改动；Electron/桌面/物理输入/长测锁仍空闲。下一动作：接收第一份明确实现 SHA + handoff，根读差异并运行相应模块测试，按依赖接入后再调度 D/E/F。
+
 当前未测项：跨源 frame、Shadow/Canvas、精确同毫秒回放、结构缺口恢复、离线资产、30 分钟新 session 连续分段内存、安装包及真人站点。既有资料原件没有迁移；生产 recorder 的 checkbox value 遮罩缺口由 A 按 S0 原型证据处理。
