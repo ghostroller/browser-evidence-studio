@@ -1,5 +1,5 @@
 import type { DatasetIdentity, ExecutionBinding, RequirementResult } from '@/contracts/execution';
-import type { ReadBudget, SourceValue } from '@/contracts/recording';
+import type { ReadBudget, SourceNode, SourceValue } from '@/contracts/recording';
 import type { JsonValue, ReportedAssertion, Verdict } from '@/contracts/workflow';
 import type { PersistentDatasetService } from '@/runner/datasets';
 
@@ -16,6 +16,8 @@ export interface SourceDocument {
   representation: 'network-json' | 'dom-text' | 'dom-property';
   /** DOM existence and a replay node alone do not establish visible page text. */
   display: 'observed' | 'unknown';
+  /** Only a host reader may build this from the same validated source stream. */
+  dom?: { node: SourceNode; ancestors: Array<Pick<SourceNode, 'ref' | 'attributes'>> };
 }
 export interface SourceReader {
   read(sourceRef: string, budget: ReadBudget): Promise<SourceDocument | undefined>;

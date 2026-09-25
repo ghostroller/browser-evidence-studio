@@ -193,7 +193,10 @@ describe('fixed material validation using real B/C stores', () => {
     expect(report.requirements[0].evidence.filter(e => e.reason.includes('redacted'))).toHaveLength(2);
   });
   it('accepts an explicitly empty root output pointer and applies its frozen field type', async () => {
-    const content = material(); content.fields[0].outputPath = ''; content.fields[0].valueType = 'object'; content.fields[0].sourceProof!.valuePointer = '';
+    const content = material(); content.fields[0].outputPath = ''; content.fields[0].valueType = 'object';
+    const sourceProof = content.fields[0].sourceProof;
+    if (sourceProof?.kind !== 'json-record') throw new Error('The fixture requires a JSON record proof');
+    sourceProof.valuePointer = '';
     const f = await fixture(content); await f.append();
     const report = await f.validator().validate(f.request);
     expect(report.overall).toBe('pass');

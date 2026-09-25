@@ -2,6 +2,7 @@ import type { MaterialField } from '@/contracts/materials';
 import type { DataRule, JsonValue } from '@/contracts/workflow';
 import { canonicalJson } from '@/runner/datasets';
 import { equal, pointer } from './rules';
+import { sameReplayPosition } from '@/contracts/recording';
 import type { Check, SourceDocument } from './types';
 
 /** Strip only the frozen page parameter. Filters, variants, origin and remaining query stay significant. */
@@ -21,6 +22,7 @@ export function fieldProof(f: MaterialField, row: JsonValue, docs: SourceDocumen
   if (f.outputPath === undefined) return { name, verdict: 'inconclusive', reason: 'Field has no frozen outputPath; its display name is not an output mapping' };
   const proof = f.sourceProof;
   if (!proof) return { name, verdict: 'inconclusive', reason: 'Field has no frozen content proof; a source ID or script-selected pointer alone cannot prove its meaning' };
+  if (proof.kind === 'dom-text') return displayedFieldProof(f, row, docs);
   if (f.sourcePolicy === 'page-displayed') return { name, verdict: 'inconclusive', reason: 'A JSON response cannot independently prove displayed text or a displayed mask' };
   const output = pointer(row, f.outputPath), entity = pointer(row, proof.outputEntityPath);
   if (!output.exists || !entity.exists || entity.value === null) return { name, verdict: 'fail', reason: 'Output field or entity key is absent/null at the frozen output path' };
@@ -48,6 +50,29 @@ export function fieldProof(f: MaterialField, row: JsonValue, docs: SourceDocumen
     }
   }
   return { name, verdict: conflicting ? 'fail' : matched ? 'pass' : 'inconclusive', reason: conflicting ? 'Captured entity has a different field value under the frozen source constraint' : matched ? 'Captured request URL, entity and field value satisfy the frozen source constraint' : 'No captured source matches the frozen URL, row/entity path and field value' };
+}
+
+function displayedFieldProof(field: MaterialField, row: JsonValue, docs: SourceDocument[]): Check {
+  const name = `source:${field.id}`, proof = field.sourceProof;
+  if (proof?.kind !== 'dom-text' || field.outputPath === undefined) return { name, verdict: 'inconclusive', reason: 'No frozen DOM text proof' };
+  const output = pointer(row, field.outputPath), entity = pointer(row, proof.outputEntityPath);
+  if (!output.exists || !entity.exists || typeof output.value !== 'string' || typeof entity.value !== 'string') return { name, verdict: 'fail', reason: 'Displayed text and its source entity attribute require exact string output; no implicit numeric or mask conversion' };
+  let matched = false, conflicting = false;
+  for (const doc of docs) {
+    const node = doc.dom?.node, sample = node?.presentation;
+    if (doc.representation !== 'dom-text' || doc.display !== 'observed' || doc.content.status !== 'present' || !node?.metadataComplete || sample?.status !== 'present' ||
+      sample.value.visibility !== 'visible' || !sample.value.basis.length || !sameReplayPosition(sample.value.sampledAt, node.ref.position) ||
+      node.ref.position.recordingId !== doc.scope.recordingId || !matchesUrl(doc.requestUrl, proof.sourceUrl, proof.pageParameter)) continue;
+    const semantic = Object.hasOwn(node.attributes, proof.nodeAttribute.name) ? node.attributes[proof.nodeAttribute.name] : undefined;
+    if (semantic?.status !== 'present' || semantic.value !== proof.nodeAttribute.value || doc.content.value !== sample.value.text) continue;
+    const ancestry = [node, ...doc.dom!.ancestors];
+    if (ancestry.some(parent => !sameReplayPosition(parent.ref.position, node.ref.position) || parent.ref.frameId !== node.ref.frameId || parent.ref.mirrorScopeId !== node.ref.mirrorScopeId)) continue;
+    const owner = ancestry.find(parent => Object.hasOwn(parent.attributes, proof.entityAttribute));
+    const key = owner?.attributes[proof.entityAttribute];
+    if (key?.status !== 'present' || key.value !== entity.value) continue;
+    if (sample.value.text === output.value) matched = true; else conflicting = true;
+  }
+  return { name, verdict: conflicting ? 'fail' : matched ? 'pass' : 'inconclusive', reason: conflicting ? 'The same captured entity/field has different visible source text' : matched ? 'Exact visible source sample, semantic attribute, entity and fixed URL match the output' : 'No visible source sample at its exact event boundary matches the fixed entity/field meaning' };
 }
 
 export function paginationProof(rule: Extract<DataRule, { type: 'pagination-complete' }>, rows: JsonValue[], docs: SourceDocument[]): Check {
