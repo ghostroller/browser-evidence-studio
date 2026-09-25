@@ -120,3 +120,26 @@ test('late collections and edits cannot cross a draft or project switch', async 
   expect(screen.queryByText(/已保存到草稿/)).toBeNull();
   expect(screen.getByRole('button', { name: /Project two card/ })).toBeTruthy();
 });
+
+test('recording-reference read failure stays visible and never submits a checkpoint edit', async () => {
+  let references = 0;
+  const call = vi.fn(async (method: string, body: any) => {
+    if (method === 'materialDrafts') return { items: [{ draftId: 'draft-one', draftRevision: 0, status: 'available' }] };
+    if (method === 'materialRevisions') return { items: [] };
+    if (method === 'materialDraft') return { draftId: 'draft-one', draftRevision: 0 };
+    if (method === 'materialCollection') {
+      if (body.collection === 'recordingRefs' && ++references > 1) throw new Error('reference index unavailable');
+      const value = content()[body.collection as keyof MaterialContent];
+      return { items: body.collection === 'checkpoints' ? [] : value };
+    }
+    throw new Error(method);
+  });
+  window.studio = { call, bounds: vi.fn() };
+  render(<MaterialWorkbench projectId="project-one" position={position} onOpenReplay={vi.fn()} onSelectTarget={vi.fn()} />);
+  fireEvent.click(await screen.findByRole('button', { name: /draft-one/ }));
+  await waitFor(() => expect(screen.getByLabelText('标题')).toBeTruthy());
+  fireEvent.change(screen.getByLabelText('标题'), { target: { value: 'New checkpoint' } });
+  fireEvent.click(screen.getByRole('button', { name: '保存卡片草稿' }));
+  await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('reference index unavailable'));
+  expect(call.mock.calls.some(([method]) => method === 'editMaterialDraft')).toBe(false);
+});

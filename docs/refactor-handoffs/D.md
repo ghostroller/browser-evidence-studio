@@ -31,3 +31,12 @@
 - 草稿列表、选中草稿、五种资料集合和分页各按项目/草稿/修订/请求代际提交。切项目或草稿会清空全部本地卡片、需求、字段编辑输入；旧写入或发布回执不可污染新草稿。保存卡片在异步读取录制引用后仍检查原草稿，避免把旧输入写到新项目。
 - 回放速度严格以相邻事件的 `sourceTimeMs` 差计算。长空档只因浏览器 timer 限制按 60 秒分片，未隐式压缩；同毫秒事件仍逐个按 eventSeq seek。关闭 ReplayHost 仅对主进程明确的“view no longer active”视为已关闭，其余错误送工作台可见。
 - `npm.cmd run typecheck` 和三组 D renderer 测试（9 项）通过；新增 deferred 旧集合、旧编辑在切草稿/切项目后完成的负例，以及 4 秒源时间间隔不会在 3 秒时跳转。Electron 仍由 root 独占运行。
+
+## 暂停边界：可信任务授权与真实 UI fixture
+
+- 接续 HEAD `5a0ff0645048de18293c1a110755f2ffd4426044`，本包修改均限定 D 所有权：`src/renderer/**`、`test/renderer/refactor-*`、`test/desktop/refactor-workbench.ts` 与本交接。完成提交后应为 clean；提交 SHA 由 D 向 root 单独报告。未触及主目录或其他工作树。
+- `TaskAuthorizations` 经现有 `studio.call` 真实调用 E 的 `taskAuthorizations/authorizeTask/revokeTask`。显式选择能力、期限、预算；纯历史/资料/结果授权可离线创建；浏览器授权必须绑定当前 human active run 的 session/profile/lease、具体受管理页面及精确 HTTP(S) origin，执行还要求登记脚本目录。列表显示实例、剩余次数、到期及撤销状态。E 的主进程独占颁发和撤销；页面内容不能触发此 UI API。
+- 历史回放展示 E 的资源部分缺失、失败详情和选取错误，不把结构 ready 当作归档资源完整。档案对话框增加“回放此存档”，使保留 active run 时仍能打开已封存录制。`saveCard` 录制引用读取失败在当前草稿可见，切换项目/草稿后旧失败不污染新编辑。
+- 新建 `test/desktop/refactor-workbench.ts` 导出 `runRefactorWorkbenchUi(studio,{projectId,recordingId,replayPosition,executionId?,targetSelector?})`：经 React 控件操作 sealed 历史回放、创建/复制 checkpoint、真实原生 ReplayHost 选择与 Esc、绑定无注释字段、授权/撤销、固定结果页。该 fixture **只编译，尚未在 Electron 执行**；须由 root 持有桌面锁并在 G 的 active human run + sealed recording 链后接入。目标 selector 可使用 `[data-entity="o-1"] [data-field="amount"]`。真实界面断言和原生坐标仍待首轮运行修正，不能宣称验收通过。
+- 本包 `npm.cmd run typecheck`、`npm.cmd test -- test/renderer/refactor-authorizations.test.tsx test/renderer/refactor-materials.test.tsx test/renderer/refactor-replay.test.tsx test/renderer/refactor-results.test.tsx test/renderer/app-archive.test.tsx`：5 文件 17 项通过；`git diff --check` 通过。新增离线与浏览器授权 UI 测试、录制引用读取失败不写入的负例。未启动 Electron；根报告 G 首轮真实 DOM 链通过并要求在此暂停复盘。
+- 下一步由 root 审查本包并整合 E/A/B/C/F/G，串行运行 `runRefactorWorkbenchUi`。重点核对 sealed archive replay 的 target selector 坐标、原生 Esc、资料草稿持久结果以及 fixed result 的旧/新记录入口；失败应保留真实输出并修复，不将编译/单测视为桌面完成。
