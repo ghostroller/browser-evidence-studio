@@ -68,3 +68,7 @@ root真实attempt2：`output/desktop-1790368992121` 的run `2044933f-4cae-413d-9
 实际`npm.cmd run typecheck`和`npm.cmd test -- test/unit/refactor-recording.test.ts test/unit/request-body.test.ts`通过，2文件18项，5.14s；日志`output/refactor-a-resume/privacy-typecheck.log`和`privacy-tests.log`。桌面privacy fixture已加跨raw/CDP/journal/artifact原件断言但尚未运行。第4次根record仍通过，offline进入seek后CSS颜色为默认蓝色；资源加载/诊断返修接续中，不宣称离线验收通过。
 
 第4次资源诊断返修：offline先等link load/sheet，再请求font并等image.decode；此前fonts.ready可能在样式表引入字体前已resolve。颜色断言不改，并新增各资源失败断言。每次seek在断言前写result、stylesheet状态和当时URL映射；protocol回调记录有界id/代际/status/错误，不吞404根因。console使用Electron当前event对象。仅typecheck通过（`offline-assets-typecheck.log`），根真实第5次尚待运行，不能据静态等待逻辑断言根因已解决。
+
+隐私包审查返修：大JSON的旧9MiB验收不能退为read-failed。`prepareResponseBody`在现有40MiB资源工作集上限内，先分块检查完整观察文本，保留8MiB UTF8完整码点前缀及真实观察字节数；EvidenceStore.putArtifactPrefix只接受大于前缀的实测长度。CDP单资源缓冲调整为10MiB以容纳既有9MiB验收，未扩大64MiB总缓冲或40MiB工作集cap。过大base64/HTML等不支持的隐私表示明确excluded；观察字符串超过工作集范围明确失败。普通小响应仍走完整隐私策略。catch保留遮罩后4KiB cause；落盘错误移出读取catch，必须进入采集失败/耐久gap路径。
+
+`npm.cmd test -- test/unit/refactor-recording.test.ts test/unit/evidence.test.ts test/unit/request-body.test.ts`通过3文件33项，13.51s；`response-prefix-tests-attempt2.log`。首次测试误把reader总返回预算当正文1024字节，失败日志保留；修正为验证真实返回前缀及落盘8MiB。typecheck修正测试unknown窄化后通过，`response-prefix-typecheck-attempt3.log`。真实9MiB CDP/desktop仍待根验收，不把模块准备器测试当真实采集已通过。

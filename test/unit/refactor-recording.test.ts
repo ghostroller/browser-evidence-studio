@@ -19,6 +19,8 @@ import { rewriteCssUrls, rewriteSrcset } from '@/resources/rewrite';
 import { captureMetadata, credentialUrl } from '@/capture/url-privacy';
 import { RequestLedger } from '@/capture/request-ledger';
 import { captureRequestBody, requestMetadata } from '@/capture/request-body';
+import { prepareResponseBody, RESPONSE_CAPTURE_BYTES } from '@/capture/response-body';
+import { EvidenceReader } from '@/evidence/reader';
 
 const stores: EvidenceStore[] = [], windows: JSDOM[] = [];
 afterEach(async () => { for (const store of stores.splice(0)) await store.close(); for (const window of windows.splice(0)) window.window.close(); });
@@ -45,6 +47,22 @@ function target(records: RecordingEnvelope[], key = 'a'): HistoricalElementRef {
   return { kind: 'dom-node', position: last.position, nodeId: node.id, frameId: node.metadata!.frameId, mirrorScopeId: node.metadata!.mirrorScopeId };
 }
 describe('format-2 production recorder and bounded archive', () => {
+  it('persists a 9 MiB observed response as an 8 MiB prefix with measured original bytes and checks its private tail',async()=>{
+    const bytes=9*1024*1024,text='{"rows":"'+'x'.repeat(bytes-11)+'"}';expect(Buffer.byteLength(text)).toBe(bytes);
+    const prepared=prepareResponseBody({body:text,base64Encoded:false},'application/json');
+    expect(prepared.observedBytes).toBe(bytes);expect(prepared.data?.length).toBe(RESPONSE_CAPTURE_BYTES);
+    const evidence=await store(),artifact=await evidence.putArtifactPrefix({kind:'response-body',mediaType:'application/json',data:prepared.data,limitBytes:RESPONSE_CAPTURE_BYTES},prepared.observedBytes!);
+    expect(artifact).toMatchObject({captureStatus:'truncated',capturedBytes:RESPONSE_CAPTURE_BYTES,originalBytes:bytes});
+    const page=await new EvidenceReader(evidence.runDir).artifact(artifact.id,{maxBytes:1024});
+    expect(typeof page.text).toBe('string');const readText=String(page.text);
+    expect(readText.length).toBeGreaterThan(0);expect(readText).toBe(text.slice(0,readText.length));
+    expect((await fs.stat(path.join(evidence.runDir,artifact.path!))).size).toBe(RESPONSE_CAPTURE_BYTES);
+    const privateTail=prepareResponseBody({body:'x'.repeat(RESPONSE_CAPTURE_BYTES+1)+' https://a.invalid/?access_token=private-tail',base64Encoded:false},'text/plain');
+    expect(privateTail.data).toBeUndefined();expect(privateTail.excludedReason).toBe('credential-bearing-large-response');
+    const unicode=prepareResponseBody({body:'x'.repeat(RESPONSE_CAPTURE_BYTES-1)+'🙂'+'x'.repeat(1024),base64Encoded:false},'text/plain');
+    expect(unicode.data?.length).toBe(RESPONSE_CAPTURE_BYTES-1);expect(unicode.observedBytes).toBe(RESPONSE_CAPTURE_BYTES+1027);
+    await expect(evidence.putArtifactPrefix({kind:'response-body',mediaType:'text/plain',data:'abc',limitBytes:3},2)).rejects.toThrow('measured original bytes');
+  });
   it('redacts credential URLs in every newly captured representation while preserving public URL literals',async()=>{
     const privateUrl='https://source.invalid/submit?access_token=synthetic-url-private',publicUrl='../orders/42?sort=descending&empty=';
     const html=`<a href="${privateUrl}">private link</a><img src="${privateUrl}"><form action="${privateUrl}"></form><a href="${publicUrl}">public link</a><p>${privateUrl}</p>`;
