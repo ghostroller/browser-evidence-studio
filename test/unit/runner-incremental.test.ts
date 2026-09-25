@@ -119,3 +119,54 @@ test('oversized entry output is refused before worker message serialization and 
     assert.equal((await service.records(result.datasetSummaries![0], 'legacy-emitData', { limit: 5, maxBytes: 4096 })).items.length, 1);
   });
 });
+
+test('checkpoint handles round-trip with manager-resolved workflow and active step scopes', async () => fixture(`
+  const stepIdentity={executionId:identity.executionId,attemptId:'step-sample',stepId:'details'};
+  const workflow=await call('checkpoint','workflow');
+  await call('stepEvent',{identity:stepIdentity,state:'running',occurredAt:new Date().toISOString()});
+  const step=await call('checkpoint','step',{stepAttemptId:stepIdentity.attemptId});
+  await call('stepEvent',{identity:stepIdentity,state:'succeeded',occurredAt:new Date().toISOString(),result:{status:'succeeded',identity:stepIdentity,value:null}});
+  parentPort.postMessage({type:'complete',output:{workflow,step},nodeVersion:process.versions.node});
+`, async options => {
+  const scopes: unknown[] = [];
+  options.hooks = { ...hooks, checkpoint: async (key, _details, _signal, scope) => { scopes.push(scope); return { id: key, sourceRefs: ['sample-' + key] }; } };
+  const result = await (await startWorkflow(options)).done;
+  assert.equal(result.status, 'completed', result.error);
+  assert.deepEqual(scopes, [{ executionId: 'execution', attemptId: result.workflowAttemptId }, { executionId: 'execution', attemptId: 'step-sample', stepId: 'details' }]);
+  assert.deepEqual(result.output, { step: { id: 'step', sourceRefs: ['sample-step'] }, workflow: { id: 'workflow', sourceRefs: ['sample-workflow'] } });
+}));
+
+for (const invalid of ['unknown', 'stale', 'oversized'] as const) test(`checkpoint ${invalid} identity or receipt fails the execution`, async () => fixture(`
+  const stepIdentity={executionId:identity.executionId,attemptId:'step-sample',stepId:'details'};
+  if ('${invalid}' === 'stale') {
+    await call('stepEvent',{identity:stepIdentity,state:'running',occurredAt:new Date().toISOString()});
+    await call('stepEvent',{identity:stepIdentity,state:'succeeded',occurredAt:new Date().toISOString(),result:{status:'succeeded',identity:stepIdentity,value:null}});
+  }
+  await call('checkpoint','bad','${invalid}'==='oversized'?undefined:{stepAttemptId:'step-sample'}).catch(()=>{});
+`, async options => {
+  let calls = 0;
+  options.hooks = { ...hooks, checkpoint: async key => { calls++; return { id: key, sourceRefs: ['x'.repeat(513)] }; } };
+  const result = await (await startWorkflow(options)).done;
+  assert.equal(result.status, 'failed');
+  assert.match(result.error ?? '', invalid === 'oversized' ? /handle budget/ : /currently running/);
+  assert.equal(calls, invalid === 'oversized' ? 1 : 0);
+  assert.deepEqual(result.checkpoints, []);
+}));
+
+for (const conflict of ['checkpoint', 'terminal'] as const) test(`pending checkpoint rejects concurrent ${conflict} and preserves step identity`, async () => fixture(`
+  const stepIdentity={executionId:identity.executionId,attemptId:'step-sample',stepId:'details'};
+  await call('stepEvent',{identity:stepIdentity,state:'running',occurredAt:new Date().toISOString()});
+  void call('checkpoint','first',{stepAttemptId:stepIdentity.attemptId}).catch(()=>{});
+  if ('${conflict}' === 'checkpoint') await call('checkpoint','second',{stepAttemptId:stepIdentity.attemptId}).catch(()=>{});
+  else await call('stepEvent',{identity:stepIdentity,state:'succeeded',occurredAt:new Date().toISOString(),result:{status:'succeeded',identity:stepIdentity,value:null}}).catch(()=>{});
+`, async options => {
+  options.hooks = { ...hooks, checkpoint: async (_key, _details, signal) => new Promise((_resolve, reject) => {
+    if (signal?.aborted) reject(signal.reason);
+    else signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }) };
+  const result = await (await startWorkflow(options)).done;
+  assert.equal(result.status, 'failed');
+  assert.match(result.error ?? '', conflict === 'checkpoint' ? /Concurrent checkpoint/ : /while its checkpoint/);
+  assert.deepEqual(result.checkpoints, []);
+  assert.equal(result.steps?.at(-1)?.state, 'failed');
+}));

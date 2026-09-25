@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { readFile, realpath } from 'node:fs/promises';
 import Ajv from 'ajv';
-import type { CheckpointDetails, DataProvenance, Dataset, HumanRequest, JsonValue, ReportedAssertion, WorkflowManifest, WorkflowReporter } from '@/contracts/workflow';
+import type { CheckpointDetails, CheckpointReceipt, DataProvenance, Dataset, HumanRequest, JsonValue, ReportedAssertion, WorkflowManifest, WorkflowReporter } from '@/contracts/workflow';
 import { GateTransport, type GateCloseDiagnostic } from './gate';
 import { fingerprintInput, fingerprintWorkflow, loadWorkflow, resolveRegisteredFile, type WorkflowFingerprint } from './fingerprint';
 import { validateExecution, type ValidationResult } from './validation';
@@ -14,9 +14,11 @@ import { parseStepSelection, type StepEvent, type StepSelection } from './steps'
 import { prepareExecutionSnapshot, type ExecutionSnapshot } from './snapshot';
 import { canonicalJson, executionId } from './datasets';
 
+/** Resolved by the manager; script checkpoint details are not scope facts. */
+export interface CheckpointHostScope { executionId: string; attemptId: string; stepId?: string }
 export type RunnerHooks = Omit<WorkflowReporter, 'signal' | 'requestHuman' | 'checkpoint'> & {
   requestHuman(request: HumanRequest, signal?: AbortSignal): Promise<void>;
-  checkpoint(key: string, details?: CheckpointDetails, signal?: AbortSignal): Promise<{ id: string }>;
+  checkpoint(key: string, details?: CheckpointDetails, signal?: AbortSignal, scope?: CheckpointHostScope): Promise<CheckpointReceipt>;
 };
 export interface StartWorkflowOptions {
   directory: string;
@@ -143,6 +145,8 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   const steps: StepSummary[] = [];
   const evidenceErrors: { method: string; error: OriginalError }[] = [];
   const interruptedSteps = new Map<string, StepEvent>();
+  const checkpointAttempts = new Set<string>();
+  const stepTransitions = new Set<string>();
   let output: unknown;
   let runtimeNodeVersion: string | null = null;
   let stopping = false;
@@ -214,9 +218,26 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
       case 'checkpoint': {
         const [key, details] = args as [string, CheckpointDetails | undefined];
         if (typeof key !== 'string' || !/^[\w.-]{1,128}$/.test(key)) throw new Error('Invalid checkpoint key');
-        const result = await exclusive(() => options.hooks.checkpoint(key, details, cancellation.signal));
-        checkpoints.push({ id: result.id, key }); sources.add(result.id);
-        return result;
+        if (activeExclusive) throw new Error('Concurrent checkpoint/handoff requests are not allowed');
+        if (details !== undefined && (!details || typeof details !== 'object' || Array.isArray(details))) throw new Error('Invalid checkpoint details');
+        let scope: CheckpointHostScope | undefined = executionBinding ? { executionId: executionBinding.executionId, attemptId: workflowAttemptId } : undefined;
+        if (details?.stepAttemptId !== undefined) {
+          executionId(details.stepAttemptId);
+          const step = interruptedSteps.get(details.stepAttemptId);
+          if (!scope || !step || step.state !== 'running' || stepTransitions.has(details.stepAttemptId)) throw new Error('Checkpoint requires a currently running step attempt');
+          scope = { executionId: scope.executionId, attemptId: step.identity.attemptId, stepId: step.identity.stepId };
+        }
+        const pinnedAttempt = details?.stepAttemptId;
+        if (pinnedAttempt) checkpointAttempts.add(pinnedAttempt);
+        try {
+          const result = await exclusive(() => options.hooks.checkpoint(key, details, cancellation.signal, scope));
+          const validRef = (ref: unknown): ref is string => typeof ref === 'string' && ref.length > 0 && Buffer.byteLength(ref) <= 512 && !/[\u0000-\u001f\u007f]/.test(ref);
+          if (!result || !validRef(result.id) || (result.sourceRefs !== undefined && (!Array.isArray(result.sourceRefs) || result.sourceRefs.length > 64 || !result.sourceRefs.every(validRef)))) throw new Error('Checkpoint receipt exceeds the host evidence handle budget');
+          const receipt: CheckpointReceipt = { id: result.id, ...(result.sourceRefs ? { sourceRefs: [...new Set(result.sourceRefs)] } : {}) };
+          checkpoints.push({ id: receipt.id, key }); sources.add(receipt.id);
+          for (const ref of receipt.sourceRefs ?? []) sources.add(ref);
+          return receipt;
+        } finally { if (pinnedAttempt) checkpointAttempts.delete(pinnedAttempt); }
       }
       case 'emitData': {
         const [name, records, provenance] = args as [string, JsonValue[], DataProvenance];
@@ -293,10 +314,17 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
         const event = args[0] as StepEvent;
         if (!event?.identity || event.identity.executionId !== executionBinding?.executionId || !['running', 'succeeded', 'partial', 'failed', 'blocked', 'cancelled', 'awaiting-human'].includes(event.state) || steps.length >= 2048 || reportBytes > 64 * 1024) throw new Error('Invalid step event or step report budget exceeded');
         executionId(event.identity.attemptId); executionId(event.identity.stepId);
-        await options.execution.saveStep(event);
-        steps.push(summarizeStep(event));
-        if (event.state === 'running' || event.state === 'awaiting-human') interruptedSteps.set(event.identity.attemptId, event);
-        else interruptedSteps.delete(event.identity.attemptId);
+        if (checkpointAttempts.has(event.identity.attemptId)) throw new Error('Step state cannot change while its checkpoint is being captured');
+        if (stepTransitions.has(event.identity.attemptId)) throw new Error('Concurrent state changes for one step attempt are not allowed');
+        const activeStep = interruptedSteps.get(event.identity.attemptId);
+        if (activeStep && canonicalJson(activeStep.identity) !== canonicalJson(event.identity)) throw new Error('Cannot replace an active step identity');
+        stepTransitions.add(event.identity.attemptId);
+        try {
+          await options.execution.saveStep(event);
+          steps.push(summarizeStep(event));
+          if (event.state === 'running' || event.state === 'awaiting-human') interruptedSteps.set(event.identity.attemptId, event);
+          else interruptedSteps.delete(event.identity.attemptId);
+        } finally { stepTransitions.delete(event.identity.attemptId); }
         return;
       }
       case 'interruptStep': {

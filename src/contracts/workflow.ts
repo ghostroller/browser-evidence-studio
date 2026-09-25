@@ -96,10 +96,18 @@ export interface CheckpointDetails {
   title?: string;
   description?: string;
   requirementIds?: string[];
+  /** Lookup key only. The host must resolve this to a currently running step. */
+  stepAttemptId?: string;
+}
+
+export interface CheckpointReceipt {
+  id: string;
+  /** Host-persisted evidence handles, never caller-provided observations. */
+  sourceRefs?: string[];
 }
 
 export interface WorkflowReporter {
-  checkpoint(key: string, details?: CheckpointDetails): Promise<{ id: string }>;
+  checkpoint(key: string, details?: CheckpointDetails): Promise<CheckpointReceipt>;
   emitData(name: string, records: JsonValue[], provenance: DataProvenance): Promise<void>;
   attachArtifact(name: string, content: string | Uint8Array, mediaType: string): Promise<{ id: string }>;
   assertion(assertion: ReportedAssertion): Promise<void>;
