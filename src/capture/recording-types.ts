@@ -1,5 +1,10 @@
 import type { eventWithTime } from '@rrweb/types';
-import type { RecordingGap, ReplayPosition, SourceNode } from '@/contracts/recording';
+import type { HistoricalElementRef, RecordingGap, ReplayPosition, SourceNode, SourcePresentation, SourceValue } from '@/contracts/recording';
+
+export interface PresentationSample {
+  ref: HistoricalElementRef;
+  presentation: SourceValue<SourcePresentation>;
+}
 
 /** Internal format-2 payload. The containing evidence journal remains schema 1. */
 export interface SourceMetadata extends Omit<SourceNode, 'ref' | 'text'> {
