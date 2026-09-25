@@ -174,8 +174,10 @@ export class FileMaterialService implements MaterialService {
       if (annotation.bindingStatus === 'bound' && !await this.sourceVerifier!.target(annotation.target)) throw new MaterialError('INVALID_SOURCE', `Annotation ${annotation.id} target is not recorded.`);
     }
     for (const field of content.fields) {
-      if (field.target && field.bindingStatus === 'bound' && (!this.sourceVerifier || !await this.sourceVerifier.target(field.target))) {
-        throw new MaterialError('INVALID_SOURCE', `Field ${field.id} target is not recorded.`);
+      if (field.target && field.bindingStatus === 'bound') {
+        if (!this.sourceVerifier || await this.sourceVerifier.position(field.target.position) !== 'reliable' || !await this.sourceVerifier.target(field.target)) {
+          throw new MaterialError('INVALID_SOURCE', `Field ${field.id} target is not reliable recorded source.`);
+        }
       }
     }
   }
