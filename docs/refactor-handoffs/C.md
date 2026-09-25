@@ -24,8 +24,16 @@
 
 ## 尚待接入与明确限制
 
-当前是可独立验证的领域模块，尚未接入 production worker/manager、main、UI、B 实际资料。不能宣称端到端模块执行或固定资料验收已完成。取消测试中的 Node worker 消息是可执行调度测试，不代替 Electron 原生输入“无迟到点击”。尚需 root 分配串行桌面时段后验证真实 Puppeteer。
+领域模块已接入 production worker/manager 可选 fixed execution 入口；main、UI、B 实际资料尚由 E/root 接入。不能宣称端到端固定资料验收已完成。Node worker 测试不代替 Electron 原生输入。真实 Puppeteer fixture 已在 `test/desktop/refactor-runner.ts`，由 root 接统一 phase 并串行执行；C 未自行启动桌面。
 
-计划接入口：`startWorkflow({ execution: { binding, datasets, saveStep? }, ...existing })`；E 从 B 实际不可变 revision 构造 binding，负责 service.close 生命周期。旧 reporter 保留。接入新 reporter 时 manager 只保留批次摘要和文件引用。代码 hash→动态 import 的可修改窗口在下一包通过执行快照收敛；不将当前 fingerprint 检查当 AT36 已通过。
+最终接入口：`startWorkflow({ execution: { binding, datasets, saveStep }, snapshotDirectory?, ...existing })`，saveStep 显式必需。E 从 B 实际不可变 revision 构造 binding，校验 codeFingerprint/inputFingerprint，负责 service.close；使用 `event => service.saveStep(event)`。旧 reporter 保留，fixed execution 下 emitData 适配为单批耐久输出，不调用旧全量 hooks.emitData。
+
+结果新增 executionBinding、workflowAttemptId、datasetSummaries（每个真实 attempt/dataset）、steps（生命周期摘要，无 value 全量数据）、snapshot、originalError、evidenceErrors。一个 workflow 的 dataset 可属于不同 step attempt；F/E 必须读取本次持久报告中的真实身份，不按 latest 混合。step 完整原件在 attempts/attemptId 下；未完成 step 在实际 worker exit 后补 failed/cancelled 终态。
+
+快照：注册业务目录及项目内 node_modules 复制为独立目录，拒绝链接；最多 20,000 文件/256 MiB、20,000 目录，启动取消检查贯穿复制。加载时执行同一份校验后的字节，动态 import 也拒绝副本篡改和越出快照的模块。快照留存，不自动清理；main 应传执行归档目录。项目仅在祖先目录安装的依赖须装入业务项目；原生 addon/没有可校验 source 的格式拒绝。此为代码加载边界，普通可信 Node 业务脚本仍有自身文件/网络权限，不宣称文件/网络沙箱。
+
+实际 `npm.cmd test -- test/unit/validation.test.ts test/unit/runner-incremental.test.ts test/unit/runner-snapshot.test.ts test/unit/runner-steps.test.ts`：4 文件/30 项通过，6.30 s；typecheck 通过；npm.cmd run build 通过（保留现有 use-client、chunk size、tailwind sourcemap 警告）。新增 snapshot 子进程证明后期动态 import 和项目内依赖使用副本原值，修改源不换代码，修改副本/越目录 import 被拒；incremental 真实 worker 测试证明失败截图保留数据和 cause、取消前耐久数据保留、退出后才写终态、延迟命令不发送、旧 emitData 适配和绑定不匹配拒绝。主树另已复验早期 187 项，root 记录为准。
+
+portable runtime entry 是 `src/runner/portable.ts`，仅 Node built-ins 和步骤/错误包装，由 root 纳入现有构建为单文件 ESM；安装版不需要运行时 Vite。尚需选择性跨执行重跑的普通代码示例/前置再验证说明，不能将 helper 内自动 retry 当成该流程已交付。
 
 有效性 evidenceRefs 是显式记录，不自动等于内容核验，后续 F 判定。完整 JSON schema/主键语义来自用户资料，当前冻结 DatasetBatch 无 step/schema 字段；本服务按批追加，拒绝同 batchId 异内容，不自动按实体覆盖旧行。finish complete 是脚本声明，不能独立证明分页完整。

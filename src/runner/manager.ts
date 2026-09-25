@@ -1,12 +1,18 @@
 import { Worker } from 'node:worker_threads';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, realpath } from 'node:fs/promises';
 import Ajv from 'ajv';
 import type { CheckpointDetails, DataProvenance, Dataset, HumanRequest, JsonValue, ReportedAssertion, WorkflowManifest, WorkflowReporter } from '@/contracts/workflow';
 import { GateTransport, type GateCloseDiagnostic } from './gate';
 import { fingerprintInput, fingerprintWorkflow, loadWorkflow, resolveRegisteredFile, type WorkflowFingerprint } from './fingerprint';
 import { validateExecution, type ValidationResult } from './validation';
 import type { HostMessage, WorkerMessage } from './context';
+import type { DatasetBatch, DatasetCompletion, DatasetIdentity, DatasetService, ExecutionBinding, OriginalError, StepIdentity } from '../contracts/execution';
+import { originalError } from './errors';
+import type { StepEvent } from './steps';
+import { prepareExecutionSnapshot, type ExecutionSnapshot } from './snapshot';
+import { canonicalJson, executionId } from './datasets';
 
 export type RunnerHooks = Omit<WorkflowReporter, 'signal' | 'requestHuman' | 'checkpoint'> & {
   requestHuman(request: HumanRequest, signal?: AbortSignal): Promise<void>;
@@ -28,6 +34,9 @@ export interface StartWorkflowOptions {
   beforeWorker?: (prepared: WorkflowPrepared) => Promise<void>;
   onStarted?: (nodeVersion: string, signal: AbortSignal) => Promise<void>;
   startupSignal?: AbortSignal;
+  execution?: { binding: ExecutionBinding; datasets: DatasetService; saveStep: (event: StepEvent) => Promise<void> };
+  /** Main-owned archive directory for immutable code copies. Defaults to a fresh temporary directory. */
+  snapshotDirectory?: string;
 }
 
 export interface WorkflowPrepared {
@@ -36,6 +45,8 @@ export interface WorkflowPrepared {
   inputSha256: string;
   fingerprintBefore: WorkflowFingerprint;
   startedAt: string;
+  snapshot?: ExecutionSnapshot;
+  sourceEntryPath?: string;
 }
 
 export interface WorkflowRunResult {
@@ -57,8 +68,23 @@ export interface WorkflowRunResult {
   error?: string;
   errorSource?: 'worker' | 'worker-disconnect' | 'transport' | 'host' | 'worker-exit';
   errorStack?: string;
+  originalError?: OriginalError;
+  executionBinding?: ExecutionBinding;
+  workflowAttemptId?: string;
+  datasetSummaries?: DatasetSummary[];
+  steps?: StepSummary[];
+  evidenceErrors?: { method: string; error: OriginalError }[];
+  snapshot?: ExecutionSnapshot;
   operationTransportClose?: GateCloseDiagnostic;
   validation: ValidationResult;
+}
+export interface DatasetSummary extends DatasetIdentity { status: DatasetCompletion['status'] | 'unfinished'; committedBatches: number; committedRecords: number }
+export type StepSummary = Pick<StepEvent, 'identity' | 'state' | 'occurredAt' | 'diagnostics'> & { error?: OriginalError; dependencies?: StepIdentity[]; handoffId?: string };
+function summarizeStep(event: StepEvent): StepSummary {
+  return { identity: event.identity, state: event.state, occurredAt: event.occurredAt, ...(event.diagnostics ? { diagnostics: event.diagnostics } : {}),
+    ...(event.result && 'error' in event.result ? { error: event.result.error } : {}),
+    ...(event.result?.status === 'blocked' ? { dependencies: event.result.dependencies } : {}),
+    ...(event.result?.status === 'awaiting-human' ? { handoffId: event.result.handoffId } : {}) };
 }
 
 export interface WorkflowHandle {
@@ -69,7 +95,7 @@ export interface WorkflowHandle {
 
 export async function startWorkflow(options: StartWorkflowOptions): Promise<WorkflowHandle> {
   const loaded = await loadWorkflow(options.directory, options.manifest);
-  const { manifest, entryPath } = loaded;
+  const { manifest, entryPath: sourceEntryPath } = loaded;
   const ajv = new Ajv({ allErrors: true, strict: true });
   const loadSchema = async (name: string) => {
     const schemaFile = await resolveRegisteredFile(options.directory, path.resolve(path.dirname(loaded.manifestPath), name));
@@ -82,6 +108,12 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   const validateOutput = manifest.outputSchema ? await loadSchema(manifest.outputSchema) : undefined;
   const fingerprintBefore = await fingerprintWorkflow(options.directory, options.dependencyLockPath);
   const inputSha256 = fingerprintInput(options.input);
+  options.startupSignal?.throwIfAborted();
+  const snapshot = await prepareExecutionSnapshot(options.directory, fingerprintBefore, options.snapshotDirectory, options.startupSignal);
+  const entryPath = path.join(snapshot.directory, path.relative(await realpath(options.directory), sourceEntryPath));
+  if (options.execution && (options.execution.binding.codeFingerprint !== fingerprintBefore.sha256 || options.execution.binding.inputFingerprint !== inputSha256)) throw new Error('Execution binding does not match the actual code and input fingerprints');
+  const executionBinding = options.execution ? structuredClone(options.execution.binding) : undefined;
+  const workflowAttemptId = randomUUID();
   const checkpoints: WorkflowRunResult['checkpoints'] = [];
   const datasets: Dataset[] = [];
   const assertions: ReportedAssertion[] = [];
@@ -90,15 +122,20 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   const startedMs = Date.now();
   const startedAt = new Date(startedMs).toISOString();
   options.startupSignal?.throwIfAborted();
-  await options.beforeWorker?.({ manifest, entryPath, inputSha256, fingerprintBefore, startedAt });
+  await options.beforeWorker?.({ manifest, entryPath, inputSha256, fingerprintBefore, startedAt, snapshot, sourceEntryPath });
   options.startupSignal?.throwIfAborted();
   const worker = new Worker(options.workerPath ?? path.join(import.meta.dirname, 'runner-worker.js'), {
-    workerData: { entryPath, exportName: manifest.exportName, input: options.input, targetId: options.targetId },
+    workerData: { entryPath, exportName: manifest.exportName, input: options.input, targetId: options.targetId, snapshot, ...(executionBinding ? { execution: { binding: executionBinding, attemptId: workflowAttemptId } } : {}) },
   });
   let status: WorkflowRunResult['status'] = 'interrupted';
   let error: string | undefined;
   let errorSource: WorkflowRunResult['errorSource'];
   let errorStack: string | undefined;
+  let firstError: OriginalError | undefined;
+  const datasetSummaries = new Map<string, DatasetSummary>();
+  const steps: StepSummary[] = [];
+  const evidenceErrors: { method: string; error: OriginalError }[] = [];
+  const interruptedSteps = new Map<string, StepEvent>();
   let output: unknown;
   let runtimeNodeVersion: string | null = null;
   let stopping = false;
@@ -132,12 +169,13 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   };
   const maxDuration = setTimeout(() => { void stop('failed', 'Workflow maximum duration elapsed'); }, options.maxDurationMs ?? 30 * 60_000);
 
-  async function stop(nextStatus: WorkflowRunResult['status'], reason: string, source: WorkflowRunResult['errorSource'] = 'host', stack?: string): Promise<void> {
+  async function stop(nextStatus: WorkflowRunResult['status'], reason: string, source: WorkflowRunResult['errorSource'] = 'host', stack?: string, cause?: OriginalError): Promise<void> {
     if (stopping) { await done; return; }
     status = nextStatus;
     error = reason;
     errorSource = source;
     errorStack = stack?.slice(0,8192);
+    firstError ??= cause ?? { name: nextStatus === 'cancelled' ? 'AbortError' : 'Error', message: reason, ...(stack ? { stack } : {}) };
     if (disconnectDeadline) clearTimeout(disconnectDeadline);
     cancellation.abort(new Error(reason));
     worker.postMessage({ type: 'cancel', reason } satisfies HostMessage);
@@ -159,8 +197,11 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   }
 
   async function report(message: Extract<WorkerMessage, { type: 'reporter' }>): Promise<unknown> {
+    cancellation.signal.throwIfAborted();
     const args = message.args;
-    totalReportedBytes += Buffer.byteLength(JSON.stringify(args));
+    const reportBytes = Buffer.byteLength(JSON.stringify(args));
+    if (options.execution && reportBytes > 1024 * 1024 + 16384) throw new Error('One reporter call exceeds 1 MiB; split data into batches');
+    if (!['appendBatch', 'beginDataset', 'finishDataset'].includes(message.method)) totalReportedBytes += reportBytes;
     if (totalReportedBytes > 32 * 1024 * 1024) throw new Error('Workflow reporter exceeded 32 MiB; emit bounded datasets and attach focused evidence');
     switch (message.method) {
       case 'checkpoint': {
@@ -173,6 +214,16 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
       case 'emitData': {
         const [name, records, provenance] = args as [string, JsonValue[], DataProvenance];
         if (typeof name !== 'string' || !Array.isArray(records) || !provenance || !Array.isArray(provenance.sourceRefs) || !['browser', 'node', 'derived'].includes(provenance.origin)) throw new Error('Invalid emitted dataset');
+        if (options.execution) {
+          const identity = { executionId: options.execution.binding.executionId, attemptId: workflowAttemptId, datasetId: executionId(name) };
+          await beginDataset(identity);
+          const receipt = await options.execution.datasets.append({ ...identity, batchId: 'legacy-emitData', records, provenance }, cancellation.signal);
+          acceptReceipt(identity, receipt.recordCount, receipt.replayed);
+          const completion: DatasetCompletion = { ...identity, status: provenance.pagination?.complete === false ? 'partial' : 'complete', committedBatches: 1, committedRecords: records.length, ...(provenance.pagination ? { pagination: provenance.pagination } : {}) };
+          await options.execution.datasets.finish(completion);
+          datasetSummaries.get(canonicalJson(identity))!.status = completion.status;
+          return;
+        }
         if (datasets.some(dataset => dataset.name === name)) throw new Error(`Dataset ${name} was already emitted; build the final dataset in ordinary JS`);
         await options.hooks.emitData(name, records, provenance);
         datasets.push({ name, records, ...provenance }); return;
@@ -213,8 +264,62 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
         if (typeof text !== 'string' || Buffer.byteLength(text) > 8192) throw new Error('Progress message exceeds 8 KiB');
         return options.hooks.progress(text);
       }
+      case 'beginDataset': return beginDataset(args[0] as DatasetIdentity);
+      case 'appendBatch': {
+        if (!options.execution) throw new Error('Incremental dataset execution is not configured');
+        const batch = args[0] as DatasetBatch;
+        const identity = checkDataset(batch);
+        const receipt = await options.execution.datasets.append(batch, cancellation.signal);
+        acceptReceipt(identity, receipt.recordCount, receipt.replayed);
+        return receipt;
+      }
+      case 'finishDataset': {
+        if (!options.execution) throw new Error('Incremental dataset execution is not configured');
+        const completion = args[0] as DatasetCompletion;
+        const identity = checkDataset(completion);
+        await options.execution.datasets.finish(completion);
+        datasetSummaries.get(canonicalJson(identity))!.status = completion.status;
+        return;
+      }
+      case 'stepEvent': {
+        if (!options.execution) throw new Error('Step persistence is not configured');
+        const event = args[0] as StepEvent;
+        if (!event?.identity || event.identity.executionId !== executionBinding?.executionId || !['running', 'succeeded', 'partial', 'failed', 'blocked', 'cancelled', 'awaiting-human'].includes(event.state) || steps.length >= 2048 || reportBytes > 64 * 1024) throw new Error('Invalid step event or step report budget exceeded');
+        executionId(event.identity.attemptId); executionId(event.identity.stepId);
+        await options.execution.saveStep(event);
+        steps.push(summarizeStep(event));
+        if (event.state === 'running' || event.state === 'awaiting-human') interruptedSteps.set(event.identity.attemptId, event);
+        else interruptedSteps.delete(event.identity.attemptId);
+        return;
+      }
+      case 'interruptStep': {
+        const [identity, reason] = args as [StepIdentity, OriginalError];
+        if (identity?.executionId !== executionBinding?.executionId || !interruptedSteps.has(identity.attemptId)) throw new Error('Cannot interrupt an unknown step');
+        void stop('failed', reason.message, 'worker', reason.stack, reason);
+        return;
+      }
       default: throw new Error('Unknown reporter method');
     }
+  }
+  function checkDataset(identity: DatasetIdentity): DatasetIdentity {
+    if (!options.execution || !identity || identity.executionId !== executionBinding?.executionId) throw new Error('Dataset has the wrong execution identity');
+    executionId(identity.attemptId); executionId(identity.datasetId);
+    const key = canonicalJson({ executionId: identity.executionId, attemptId: identity.attemptId, datasetId: identity.datasetId });
+    if (!datasetSummaries.has(key)) throw new Error('Dataset must begin before appending or finishing');
+    return { executionId: identity.executionId, attemptId: identity.attemptId, datasetId: identity.datasetId };
+  }
+  async function beginDataset(identity: DatasetIdentity): Promise<void> {
+    if (!options.execution || !identity || identity.executionId !== executionBinding?.executionId) throw new Error('Dataset has the wrong execution identity');
+    executionId(identity.attemptId); executionId(identity.datasetId);
+    if (identity.attemptId !== workflowAttemptId && !interruptedSteps.has(identity.attemptId)) throw new Error('Dataset requires the current workflow or an active step attempt');
+    const key = canonicalJson(identity);
+    if (!datasetSummaries.has(key) && datasetSummaries.size >= 128) throw new Error('Execution exceeds 128 dataset summaries');
+    await options.execution.datasets.begin(identity);
+    if (!datasetSummaries.has(key)) datasetSummaries.set(key, { ...identity, status: 'unfinished', committedBatches: 0, committedRecords: 0 });
+  }
+  function acceptReceipt(identity: DatasetIdentity, count: number, replayed: boolean): void {
+    const summary = datasetSummaries.get(canonicalJson(identity))!;
+    if (!replayed) { summary.committedBatches++; summary.committedRecords += count; }
   }
 
   worker.on('message', (message: WorkerMessage) => {
@@ -241,10 +346,12 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
     } else if (message.type === 'cdp.close') {
       options.transport.close('worker');
     } else if (message.type === 'reporter') {
+      if (reportCalls >= 64) { void stop('failed', 'Too many concurrent reporter operations; await their receipts'); return; }
       reportCalls += 1;
       const reported = report(message).then(value => send({ type: 'reply', id: message.id, value }), cause => {
-        send({ type: 'reply', id: message.id, error: String(cause) });
-        void stop('failed', String(cause));
+        send({ type: 'reply', id: message.id, error: String(cause), originalError: originalError(cause) });
+        if (message.method === 'attachArtifact' && !cancellation.signal.aborted) evidenceErrors.push({ method: message.method, error: originalError(cause) });
+        else void stop('failed', String(cause), 'host', cause instanceof Error ? cause.stack : undefined, originalError(cause));
       }).finally(() => { reportCalls -= 1; outstandingReports.delete(reported); });
       outstandingReports.add(reported);
     } else if (message.type === 'complete') {
@@ -252,6 +359,7 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
       runtimeNodeVersion = message.nodeVersion;
       output = message.output;
       if (reportCalls > 0) { void stop('failed', 'Workflow completed with pending reporter operations'); return; }
+      if (interruptedSteps.size) { void stop('failed', 'Workflow completed with unfinished step attempts'); return; }
       if (validateOutput && !validateOutput(output)) { void stop('failed', `Output violates schema: ${ajv.errorsText(validateOutput.errors)}`); return; }
       void options.transport.quiesce().then(() => {
         if (stopping) return;
@@ -260,12 +368,14 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
       }, cause => { void stop('failed', `Workflow completion could not drain browser operations: ${String(cause)}`); });
     } else if (message.type === 'failed') {
       runtimeNodeVersion = message.nodeVersion;
-      void stop('failed', `${message.name ? `${message.name.slice(0,128)}: ` : ''}${message.error.slice(0,4096)}`, 'worker', message.stack);
+      if (message.cleanupError) evidenceErrors.push({ method: 'worker-cleanup', error: message.cleanupError });
+      void stop('failed', `${message.name ? `${message.name.slice(0,128)}: ` : ''}${message.error.slice(0,4096)}`, 'worker', message.stack, message.originalError);
     }
   });
   worker.once('error', cause => {
     if (stopping) return;
     status = 'failed'; error = cause.message.slice(0,4096); errorSource = 'worker'; errorStack = cause.stack?.slice(0,8192);
+    firstError ??= originalError(cause);
   });
   worker.once('exit', code => {
     stopping = true;
@@ -280,6 +390,12 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
     }
     void (async () => {
       await Promise.allSettled(outstandingReports);
+      for (const event of interruptedSteps.values()) {
+        const failure: StepEvent = { identity: event.identity, state: status === 'cancelled' ? 'cancelled' : 'failed', occurredAt: new Date().toISOString(),
+          result: { status: status === 'cancelled' ? 'cancelled' : 'failed', identity: event.identity, error: firstError ?? { name: 'WorkerInterrupted', message: error ?? 'Worker exited without completing this step' } } };
+        try { await options.execution?.saveStep(failure); steps.push(summarizeStep(failure)); }
+        catch (cause) { status = 'failed'; error = `${error ?? ''} Step interruption could not be saved: ${String(cause)}`.trim(); }
+      }
       let fingerprintAfter: WorkflowFingerprint;
       try { fingerprintAfter = await fingerprintWorkflow(options.directory, options.dependencyLockPath); }
       catch (cause) {
@@ -287,7 +403,8 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
         fingerprintAfter = { sha256: 'unavailable-after-execution', files: [], dependencyLockSha256: null };
       }
       const validation = validateExecution({ manifest, execution: status, checkpoints, datasets, assertions, fingerprintBefore, fingerprintAfter, knownSourceRefs: [...sources] });
-      settle({ status, startedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedMs, manifest, entryPath, inputSha256, runtimeNodeVersion, fingerprintBefore, fingerprintAfter, checkpoints, datasets, assertions, humanAttempts, output, error, errorSource, errorStack, operationTransportClose: options.transport.closeDiagnostic, validation });
+      if (executionBinding) validation.warnings.push('Dataset summaries require fixed-material evaluation; script completion does not verify user requirements or pagination');
+      settle({ status, startedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedMs, manifest, entryPath, inputSha256, runtimeNodeVersion, fingerprintBefore, fingerprintAfter, checkpoints, datasets, assertions, humanAttempts, output, error, errorSource, errorStack, originalError: firstError, snapshot, ...(executionBinding ? { executionBinding, workflowAttemptId, datasetSummaries: [...datasetSummaries.values()], steps } : {}), evidenceErrors, operationTransportClose: options.transport.closeDiagnostic, validation });
     })();
   });
   return { done, cancel: reason => stop('cancelled', reason ?? 'Cancelled by user') };
