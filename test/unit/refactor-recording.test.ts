@@ -47,6 +47,15 @@ function target(records: RecordingEnvelope[], key = 'a'): HistoricalElementRef {
   return { kind: 'dom-node', position: last.position, nodeId: node.id, frameId: node.metadata!.frameId, mirrorScopeId: node.metadata!.mirrorScopeId };
 }
 describe('format-2 production recorder and bounded archive', () => {
+  it('does not let an explicit presentation bypass the source metadata budget',async()=>{
+    const {dom,records}=await source('<a>bounded node</a>'),element=dom.window.document.querySelector('a')!;
+    element.setAttribute('data-near-budget','x'.repeat(4*1024*1024-4096));
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,20));
+    Object.defineProperty(element,'innerText',{get(){return 'x'.repeat(8192);}});
+    const sampler=(dom.window as unknown as {__besSamplePresentation(ref:HistoricalElementRef):Promise<PresentationSample>}).__besSamplePresentation;
+    await expect(sampler(target(records))).rejects.toThrow('presentation-metadata-byte-budget');
+    expect(records.at(-1)?.metadataComplete).toBe(false);expect(records.at(-1)?.metadata.some(item=>item.presentation!==undefined)).toBe(false);
+  });
   it('samples only an explicit source node at its own rrweb boundary and leaves unsampled history missing',async()=>{
     const {dom,records}=await source('<a id="sample">source structure text</a><p id="untouched">other node</p><input value="private-input"><div class="rr-mask" id="masked">private-mask</div>');
     const ref=target(records),before=new SourceModel(records.slice(records.findIndex(record=>record.event.type===2)));

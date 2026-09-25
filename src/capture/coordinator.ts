@@ -112,7 +112,7 @@ export class CaptureCoordinator {
       const payloadBytes=Buffer.byteLength(event.payload);if(payloadBytes>16*1024*1024){this.drops++;this.droppedChannels.set('structure',(this.droppedChannels.get('structure')||0)+1);this.unknownStructuralLoss=true;this.recoveryNeeded=true;this.fail('Recorder event exceeds 16 MiB; exact source boundary unavailable');this.recoverSnapshot();return;}
       let data;try{data=JSON.parse(event.payload);}catch{this.fail('Malformed recorder payload');return;}
       const source=data.event?.type===3?data.event.data?.source:undefined;
-      const channel:CaptureChannel=data.kind!=='rrweb'?'metadata':[1,3,6].includes(source)?'sampling':'structure';
+      const channel:CaptureChannel=data.kind!=='rrweb'||data.event?.type===5&&data.event.data?.tag==='bes-source-presentation'?'metadata':[1,3,6].includes(source)?'sampling':'structure';
       const accepted=this.task(async()=>{ const frameId=this.contexts.get(event.executionContextId);
         if(data.kind==='rrweb'){
           const losses=[...this.losses].map(([category,range])=>({id:randomUUID(),from:range.from,to:range.to,category:category==='network'?'resource':category,reason:'capture-channel-budget',count:range.count}));this.losses.clear();
@@ -228,23 +228,27 @@ export class CaptureCoordinator {
   }
   /** Existing authorized capture facade only: sample an explicitly identified
    * live source node, then return its NEW durable historical observation. */
-  async samplePresentation(ref:HistoricalElementRef):Promise<PresentationSample>{
+  async samplePresentation(ref:HistoricalElementRef,signal?:AbortSignal):Promise<PresentationSample>{
+    signal?.throwIfAborted();
     parseReplayPosition(ref.position);
     if(ref.kind!=='dom-node'||!Number.isSafeInteger(ref.nodeId)||ref.nodeId<0||typeof ref.frameId!=='string'||typeof ref.mirrorScopeId!=='string')throw new Error('Invalid presentation target');
     if(this.stopped||this.paused||!this.lastPosition||!sameStream(ref.position,this.lastPosition))throw new Error('Presentation target is not in the active recording document');
     const service=new ArchiveReplayService(this.store.runDir);
     // Establish that the supplied historical identity existed in its own source
     // structure before resolving that same mirror identity on the live page.
-    await service.node(ref,{maxBytes:1024*1024,limit:1});
+    await service.node(ref,{maxBytes:1024*1024,limit:1},signal);signal?.throwIfAborted();
     const contexts=await this.readyObservers();
+    signal?.throwIfAborted();
     if(contexts.ready.length!==1)throw new Error('Exactly one active source observer is required for presentation sampling');
     const result=await this.cdp.send('Runtime.evaluate',{expression:`window.__besSamplePresentation(${JSON.stringify(ref)})`,contextId:contexts.ready[0].contextId,awaitPromise:true,returnByValue:true});
-    if(result.exceptionDetails)throw new Error('Source presentation sampling failed: '+captureError(new Error(result.exceptionDetails.text)).message);
+    signal?.throwIfAborted();
+    if(result.exceptionDetails){const exception=result.exceptionDetails.exception;const safe=captureError(Object.assign(new Error(exception?.description??result.exceptionDetails.text),{name:exception?.className??'Error'}));throw new Error(`Source presentation sampling failed (${safe.name}): ${safe.message}`);}
     const observed=result.result.value as PresentationSample|undefined;
     if(!observed?.ref||!sameStream(observed.ref.position,ref.position)||observed.ref.nodeId!==ref.nodeId||observed.ref.frameId!==ref.frameId||observed.ref.mirrorScopeId!==ref.mirrorScopeId||observed.ref.position.eventSeq<=ref.position.eventSeq)throw new Error('Source presentation returned another target identity');
     parseReplayPosition(observed.ref.position);
     await this.flush();
-    const archived=await service.node(observed.ref,{maxBytes:1024*1024,limit:1});
+    signal?.throwIfAborted();
+    const archived=await service.node(observed.ref,{maxBytes:1024*1024,limit:1},signal);signal?.throwIfAborted();
     if(!archived.metadataComplete||!archived.presentation||JSON.stringify(archived.presentation)!==JSON.stringify(observed.presentation)||archived.presentation.status==='present'&&!sameReplayPosition(archived.presentation.value.sampledAt,observed.ref.position))throw new Error('Source presentation did not reach a complete durable source boundary');
     return{ref:observed.ref,presentation:archived.presentation};
   }
@@ -302,9 +306,10 @@ function observe(binding:string,urlPrivacy:(value:string,base?:string)=>boolean)
   const privateElement=(el:Element)=>{if(/^(input|textarea|select|option)$/i.test(el.localName)||el.querySelector('.rr-mask,.rr-block,input,textarea,select,option'))return true;let current:Element|null=el;while(current){if(current.matches('.rr-mask,.rr-block'))return true;const root:Node=current.getRootNode();current=current.parentElement??('host' in root?(root as ShadowRoot).host:null);}return false;};
   const describe=(el:Element)=>{const privateText=privateElement(el);return{tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),name:privateText?'[redacted]':el.getAttribute('aria-label'),text:privateText?'[redacted]':(el.textContent||'').trim().slice(0,400),selectors:privateText?[]:[el.id?'#'+CSS.escape(el.id):null,el.getAttribute('data-testid')?'[data-testid='+JSON.stringify(el.getAttribute('data-testid'))+']':null].filter(Boolean),rect:el.getBoundingClientRect().toJSON(),url:urlPrivacy(location.href)?'[redacted credential URL]':location.href};};
   const listeners=new AbortController(),options={capture:true,signal:listeners.signal};
+  const sampleError=(error:unknown)=>{const message=error instanceof Error?error.message:String(error);return{name:error instanceof Error?error.name:'Error',message:urlPrivacy(message)||/password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key/i.test(message)?'[redacted credential-bearing error message]':message.slice(0,4096)};};
   let highlighted:HTMLElement|undefined;
   document.addEventListener('pointermove',e=>{if(!w.__besInspect)return; if(highlighted)highlighted.style.removeProperty('outline');highlighted=e.target as HTMLElement; highlighted.style.outline='2px solid #19bda0';},options);
-  document.addEventListener('click',e=>{const el=(e.composedPath().find(node=>node instanceof Element)??e.target) as Element;if(w.__besInspect){e.preventDefault();e.stopImmediatePropagation();if(highlighted)highlighted.style.removeProperty('outline');void w.__besSampleSelectedNode(el).then((sample:PresentationSample)=>emit({kind:'element-selected',element:describe(el),sample}),()=>emit({kind:'element-selected',element:describe(el),sampleError:'source-presentation-unavailable'}));}else emit({kind:'action',action:'click',element:describe(el),isTrusted:e.isTrusted});},options);
+  document.addEventListener('click',e=>{const el=(e.composedPath().find(node=>node instanceof Element)??e.target) as Element;if(w.__besInspect){e.preventDefault();e.stopImmediatePropagation();if(highlighted)highlighted.style.removeProperty('outline');void w.__besSampleSelectedNode(el).then((sample:PresentationSample)=>emit({kind:'element-selected',element:describe(el),sample}),(error:unknown)=>emit({kind:'element-selected',element:describe(el),sampleError:sampleError(error)}));}else emit({kind:'action',action:'click',element:describe(el),isTrusted:e.isTrusted});},options);
   document.addEventListener('input',e=>{const el=e.target as HTMLInputElement;emit({kind:'action',action:'input',element:describe(el),inputSummary:{masked:true,length:el.value?.length},isTrusted:e.isTrusted});},options);
   w.__besStop=()=>{w.__besInspect=false;w.__besRecorderReady=false;listeners.abort();if(highlighted)highlighted.style.removeProperty('outline');w.__besStopSource?.();w.__besInstalled=false;};
 }
