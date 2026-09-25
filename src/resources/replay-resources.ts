@@ -39,7 +39,7 @@ export function rewriteReplayEvent(original: eventWithTime, resolve: (url: strin
  * to the authorized replay view and refuse any ID outside that run. */
 export class OfflineResourceService {
   constructor(private readonly archive: ResourceArchive) {}
-  async response(id: string, position: ReplayPosition): Promise<{ bytes: Uint8Array; headers: Record<string, string> }> {
+  async response(id: string, position: ReplayPosition, urlForResource: (id:string)=>string = resourceUrl): Promise<{ bytes: Uint8Array; headers: Record<string, string> }> {
     const { reference, bytes } = await this.archive.read(id);
     if (reference.position.recordingId !== position.recordingId || reference.position.pageId !== position.pageId || reference.position.documentId !== position.documentId || reference.position.streamEpoch !== position.streamEpoch || reference.position.eventSeq > position.eventSeq) throw new Error('Resource belongs to another historical position');
     let content: Uint8Array = bytes;
@@ -52,7 +52,7 @@ export class OfflineResourceService {
         if (url.startsWith('#')) { mapped.set(url, url); continue; }
         let absolute: string; try { absolute = new URL(url, base).href; } catch { mapped.set(url, 'about:blank'); continue; }
         const dependency = await this.archive.resolve(absolute, position, reference.frameId);
-        mapped.set(url, dependency?.status === 'captured' ? resourceUrl(dependency.id) : 'about:blank');
+        mapped.set(url, dependency?.status === 'captured' ? urlForResource(dependency.id) : 'about:blank');
       }
       content = Buffer.from(rewriteCssUrls(css, url => mapped.get(url) ?? 'about:blank'));
     }

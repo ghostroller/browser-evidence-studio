@@ -33,10 +33,13 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
   const font = await readFile(path.join(process.env.WINDIR ?? 'C:\\Windows', 'Fonts', 'arial.ttf'));
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY9sAAAAASUVORK5CYII=', 'base64');
   const requests: string[] = [];
+  let styleVersion=0;
   const html = `<!doctype html><html><head><link rel="stylesheet" href="/assets/main.css"></head><body><main id="fixture"><a id="selected" data-key="订单'&quot;" href="../orders/42">initial</a><a id="duplicate">one</a><a id="duplicate">two</a><input id="choice" type="checkbox" value="synthetic-private" checked><textarea id="private-text">synthetic-private-textarea</textarea><img id="picture" src="/assets/pixel.png"><svg><a data-key="svg" href="/svg-target"><text>svg target</text></a></svg><div id="shadow-host"></div><iframe id="child" src="/frame"></iframe><form action="/forbidden"><button id="danger" onclick="fetch('/forbidden')">action</button></form></main><script>document.querySelector('#shadow-host').attachShadow({mode:'open'}).innerHTML='<a data-key="shadow" href="/shadow-target">shadow</a>';window.__sourceScriptRan=true;</script></body></html>`;
   const server = createServer((request, response) => {
     requests.push(request.url ?? '');
-    if (request.url === '/assets/main.css') { response.setHeader('content-type', 'text/css'); response.end('@import "nested.css"; @font-face {font-family:BesFixture;src:url("font.ttf")} #selected {color:rgb(17, 34, 51);font-family:BesFixture}'); }
+    response.setHeader('cache-control','no-store');
+    if(request.url==='/switch-version'){styleVersion++;response.end('switched');}
+    else if (request.url === '/assets/main.css') { response.setHeader('content-type', 'text/css'); response.end(`@import "nested.css"; @font-face {font-family:BesFixture;src:url("font.ttf")} #selected {color:${styleVersion?'rgb(51, 34, 17)':'rgb(17, 34, 51)'};font-family:BesFixture}`); }
     else if (request.url === '/assets/nested.css') { response.setHeader('content-type', 'text/css'); response.end('body {background:rgb(220, 230, 240)} #picture {width:13px;height:17px}'); }
     else if (request.url === '/assets/font.ttf') { response.setHeader('content-type', 'font/ttf'); response.end(font); }
     else if (request.url === '/assets/pixel.png') { response.setHeader('content-type', 'image/png'); response.end(png); }
@@ -75,11 +78,15 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
       }
     }
     await boundary('initial', 'initial');
-    await current.page.evaluate(() => {
+    await current.page.evaluate(async () => {
       const selected = document.querySelector('#selected')!; selected.textContent = 'updated'; selected.setAttribute('href', '../orders/43'); selected.setAttribute('data-empty', '');
       const input = document.querySelector('#choice') as HTMLInputElement; input.checked = false; input.dispatchEvent(new Event('input', { bubbles: true }));
       const late = document.createElement('span'); late.id = 'late'; late.textContent = 'late'; document.querySelector('#fixture')!.appendChild(late);
+      await fetch('/switch-version',{method:'POST'});
+      const old=document.querySelector('link[rel=stylesheet]')!;old.remove();
+      await new Promise<void>((resolve,reject)=>{const link=document.createElement('link');link.rel='stylesheet';link.href='/assets/main.css';link.onload=()=>resolve();link.onerror=()=>reject(new Error('Updated stylesheet failed'));document.head.appendChild(link);});
     });
+    await current.page.waitForFunction(()=>getComputedStyle(document.querySelector('#selected')!).color==='rgb(51, 34, 17)');
     await boundary('updated', 'updated');
     const queueMetrics = current.capture.queueMetrics;
     await studio.control('human'); await studio.seal();
@@ -108,10 +115,13 @@ async function offlineScenario(studio: Studio): Promise<Record<string, unknown>>
   partition.webRequest.onBeforeRequest((details, callback) => { if (/^https?:|^wss?:|^file:/i.test(details.url)) { blocked.push(details.url); callback({ cancel: true }); } else callback({}); });
   partition.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   const resourceService = new OfflineResourceService(archive);
+  let activePosition=saved.final,activeGeneration=0;
   partition.protocol.handle('bes-resource', async request => {
     const url = new URL(request.url); const id = url.pathname.slice(1);
-    if (url.hostname !== 'archive' || url.search || url.hash || !/^[a-f0-9-]{36}$/.test(id)) return new Response('', { status: 400 });
-    try { const result = await resourceService.response(id, saved.final); return new Response(result.bytes as BodyInit, { headers: result.headers }); }
+    const generation=Number(url.searchParams.get('seek'));
+    if (url.hostname !== 'archive' || url.hash || !/^[a-f0-9-]{36}$/.test(id)||generation!==activeGeneration) return new Response('', { status: 409 });
+    const position=activePosition;
+    try { const result = await resourceService.response(id, position, id=>resourceUrl(id)+`?seek=${generation}`);if(generation!==activeGeneration)return new Response('',{status:409}); return new Response(result.bytes as BodyInit, { headers: result.headers }); }
     catch { return new Response('', { status: 404 }); }
   });
   const replay = new BrowserWindow({ show: false, webPreferences: { session: partition, sandbox: true, nodeIntegration: false, contextIsolation: true, webSecurity: true, backgroundThrottling: false } });
@@ -121,13 +131,16 @@ async function offlineScenario(studio: Studio): Promise<Record<string, unknown>>
     await replay.loadURL('about:blank');
     await replay.webContents.executeJavaScript(`document.head.innerHTML='<meta http-equiv="Content-Security-Policy" content="${OFFLINE_CSP.replace(/"/g, '&quot;')}">';document.body.innerHTML='<div id="replay"></div>';true`);
     await replay.webContents.executeJavaScript(rrwebSource);
-    const resources = await archive.list(1000); const mapping = new Map<string, string>();
-    for (const resource of resources.items.sort((a, b) => a.position.eventSeq - b.position.eventSeq || a.capturedAt.localeCompare(b.capturedAt))) if (resource.status === 'captured' && resource.originalUrl.status === 'present' && resource.position.documentId === saved.final.documentId) mapping.set(resource.originalUrl.value, resourceUrl(resource.id));
+    const resources = await archive.list(1000);
     for (const item of [...saved.positions, ...saved.positions].reverse()) {
+      activePosition=item.position;activeGeneration++;const generation=activeGeneration;
+      const mapping=new Map<string,string>();
+      for(const resource of resources.items){if(resource.originalUrl.status!=='present')continue;const selected=await archive.resolve(resource.originalUrl.value,item.position,'top');if(selected?.status==='captured')mapping.set(resource.originalUrl.value,resourceUrl(selected.id)+`?seek=${generation}`);}
       const started = performance.now(), window = await service.window(item.position), model = new SourceModel(window.records);
       const prepared = prepareReplayEvents({ ...window, records: window.records.map(record => ({ ...record, event: rewriteReplayEvent(record.event, url => mapping.get(url) ?? 'about:blank') })) });
       const result = await replay.webContents.executeJavaScript(`(async()=>{window.__aPlayer?.destroy();window.__aPlayer=new rrweb.Replayer(${JSON.stringify(prepared.events)},{root:document.querySelector('#replay'),speed:1,showWarning:false,showDebug:false,UNSAFE_replayCanvas:false});window.__aPlayer.pause(${prepared.pauseOffset});const frame=document.querySelector('#replay iframe');const doc=frame.contentDocument;await Promise.race([doc.fonts.ready,new Promise((_,reject)=>setTimeout(()=>reject(new Error('font readiness timeout')),5000))]);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const a=doc.querySelector('#selected'),img=doc.querySelector('#picture');return {text:a.textContent,nodeId:window.__aPlayer.getMirror().getId(a),color:frame.contentWindow.getComputedStyle(a).color,background:frame.contentWindow.getComputedStyle(doc.body).backgroundColor,font:doc.fonts.check('16px BesFixture'),image:img.complete&&img.naturalWidth>0,sandbox:frame.getAttribute('sandbox'),scriptRan:frame.contentWindow.__sourceScriptRan===true,width:frame.width,height:frame.height};})()`);
       assert.equal(result.text, item.label === 'initial' ? 'initial' : 'updated'); assert.equal(result.scriptRan, false); assert.equal(result.sandbox, 'allow-same-origin');
+      assert.equal(result.color,item.label==='initial'?'rgb(17, 34, 51)':'rgb(51, 34, 17)','A seek must use that historical version of a reused stylesheet URL');
       // Native original HTML is an independent verification source, never replay DOM.
       const node = model.nodes.get(result.nodeId); assert.ok(node?.metadata);
       const ref: HistoricalElementRef = { kind: 'dom-node', position: item.position, nodeId: node.id, frameId: node.metadata.frameId, mirrorScopeId: node.metadata.mirrorScopeId };
