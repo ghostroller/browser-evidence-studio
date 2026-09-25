@@ -12,9 +12,9 @@ const same = (a?: ReplayPosition | null, b?: ReplayPosition | null) => a && b &&
 const streamId = (value: Stream) => `${value.first.pageId}/${value.first.documentId}/${value.first.streamEpoch}`;
 
 /** Controls E's isolated native ReplayHost. The renderer never owns an rrweb iframe. */
-export function ReplayWorkspace({ projectId, recordingId, requestedPosition, selecting, canStop, onPosition, onTarget, onCancelSelection, onStop, onClose }: {
+export function ReplayWorkspace({ projectId, recordingId, requestedPosition, selecting, canStop, onPosition, onTarget, onCancelSelection, onStop, onClose, onError }: {
   projectId: string; recordingId: string; requestedPosition?: ReplayPosition | null; selecting: boolean;
-  canStop: boolean; onPosition(position: ReplayPosition, state?: ReplayState): void; onTarget(target: HistoricalElementRef): void; onCancelSelection(): void; onStop(): void; onClose(): void;
+  canStop: boolean; onPosition(position: ReplayPosition, state?: ReplayState): void; onTarget(target: HistoricalElementRef): void; onCancelSelection(): void; onStop(): void; onClose(): void; onError?(message: string): void;
 }) {
   const [streams, setStreams] = useState<Stream[]>([]);
   const [streamCursor, setStreamCursor] = useState('');
@@ -45,6 +45,14 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const speedRef = useRef(speed);
   speedRef.current = speed;
   const call = useCallback((method: string, body: Record<string, unknown> = {}) => window.studio.call(method, { projectId, ...body }), [projectId]);
+  const closeNative = useCallback((replayId: string) => {
+    void call('closeReplay', { replayId }).catch(failure => {
+      if (String(failure).includes('Replay view is no longer active')) return;
+      const message = `历史视图关闭失败：${String(failure)}`;
+      if (mounted.current) setError(message);
+      onError?.(message);
+    });
+  }, [call, onError]);
   const applyHost = useCallback((next: Host, token: number) => {
     if (token !== seekToken.current || next.status === 'closed') return;
     hostRef.current = next; setHost(next);
@@ -61,13 +69,13 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
         ? await call('seekReplay', { replayId: current.replayId, position: target })
         : await call('openReplay', { position: target });
       if (!mounted.current || token !== seekToken.current) {
-        if (opened) void call('closeReplay', { replayId: next.replayId }).catch(() => undefined);
+        if (opened) closeNative(next.replayId);
         return;
       }
       applyHost(next, token);
     } catch (failure) { if (mounted.current && token === seekToken.current) setError(String(failure)); }
     finally { if (mounted.current && token === seekToken.current) setSeeking(false); }
-  }, [applyHost, call]);
+  }, [applyHost, call, closeNative]);
   const loadPositions = useCallback(async (selected: Stream, ordinal = 0) => {
     const result: { items: PositionRow[]; nextOrdinal?: number } = await call('recordingPositions', { position: selected.first, ordinal, limit: 100 });
     if (!mounted.current || streamRef.current !== selected) return;
@@ -88,8 +96,8 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
         void seek(requestedPosition || first.first); }
     }).catch(failure => { if (token === loadToken.current) setError(String(failure)); });
     return () => { mounted.current = false; ++loadToken.current; ++seekToken.current; playRef.current = false; const current = hostRef.current;
-      hostRef.current = null; if (current) void call('closeReplay', { replayId: current.replayId }).catch(() => undefined); };
-  }, [projectId, recordingId, call, loadPositions, seek]);
+      hostRef.current = null; if (current) closeNative(current.replayId); };
+  }, [projectId, recordingId, call, loadPositions, seek, closeNative]);
   const requestedKey = requestedPosition && `${requestedPosition.recordingId}/${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}/${requestedPosition.eventSeq}`;
   useEffect(() => {
     if (!requestedPosition || !streams.length || requestedHandled.current === requestedKey || same(positionRef.current, requestedPosition)) return;
@@ -159,9 +167,9 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
         if (cancelled || !playRef.current) return;
         if (!next) { playRef.current = false; setPlaying(false); return; }
         const elapsed = Math.max(0, next.sourceTimeMs - (positionRef.current?.sourceTimeMs ?? next.sourceTimeMs));
-        // Keep same-millisecond events ordered and compress long idle periods.
-        const delay = Math.max(16, Math.min(3000, elapsed / speedRef.current));
-        timer = setTimeout(async () => {
+        // Wait for source time at the selected speed. Chunk only for timer limits.
+        let remaining = elapsed / speedRef.current;
+        const advance = async () => {
           if (cancelled || !playRef.current) return;
           const currentHost = hostRef.current;
           if (!currentHost) { playRef.current = false; setPlaying(false); return; }
@@ -171,7 +179,13 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
             if (!cancelled && mounted.current && token === seekToken.current) applyHost(updated, token);
           } catch (failure) { if (!cancelled) { playRef.current = false; setPlaying(false); setError(String(failure)); } }
           finally { advancePending.current = false; if (!cancelled && playRef.current) void schedule(); }
-        }, delay);
+        };
+        const waitChunk = () => {
+          if (cancelled || !playRef.current) return;
+          const chunk = Math.min(remaining, 60_000);
+          timer = setTimeout(() => { remaining -= chunk; if (remaining > 0) waitChunk(); else void advance(); }, chunk);
+        };
+        waitChunk();
       } catch (failure) { if (!cancelled) { playRef.current = false; setPlaying(false); setError(String(failure)); } }
       finally { if (!timer) advancePending.current = false; }
     };
