@@ -147,6 +147,26 @@ describe('fixed material validation using real B/C stores', () => {
     const f = await fixture(); await f.append();
     await expect(f.validator().validate(f.request, { maxBytes: 1024, limit: 10 })).rejects.toMatchObject({ code: 'REPORT_LIMIT', statusCode: 413 });
   });
+  it('revalidates reused data against current contents without rewriting prior provenance', async () => {
+    const f = await fixture(); await f.append();
+    const identity = { ...f.identity, attemptId: 'attempt-current' };
+    const refs = ['current-1', 'current-2'];
+    for (let i = 0; i < 2; i++) f.docs.set(refs[i], { ...structuredClone(f.docs.get(`source-${i + 1}`)!), sourceRef: refs[i], scope: { ...f.docs.get('source-1')!.scope, attemptId: identity.attemptId } });
+    await f.data.begin(identity);
+    await f.data.append({ ...identity, batchId: 'reuse', records: output, provenance: { origin: 'browser', sourceRefs: ['source-1', 'source-2'] }, reusedFrom: { ...f.identity, batchId: 'batch-1', validityEvidenceRefs: refs } });
+    await f.data.finish({ ...identity, status: 'complete', committedBatches: 1, committedRecords: 2 });
+    const request = { ...f.request, attemptId: identity.attemptId };
+    const valid = await f.validator().validate(request);
+    expect(valid.overall).toBe('pass');
+    expect((await f.data.batchMetadata(identity, 'reuse', { maxBytes: 65536, limit: 1 })).provenance.sourceRefs).toEqual(['source-1', 'source-2']);
+    const current = f.docs.get('current-2')!;
+    current.content = { status: 'present', value: { page: 2, total: 2, hasNext: false, items: [{ ...output[1], amount: 'changed-current' }] } };
+    expect((await f.validator().validate(request)).overall).toBe('fail');
+    current.scope.attemptId = f.identity.attemptId;
+    expect((await f.validator().validate(request)).overall).not.toBe('pass');
+    f.docs.delete('current-2');
+    expect((await f.validator().validate(request)).overall).not.toBe('pass');
+  });
   it('reads UTF-8 Chinese and emoji across 16 KiB source chunks and detects original corruption', async () => {
     const f = await fixture();
     const runDir = path.join(f.root, 'runs', 'recording-f');

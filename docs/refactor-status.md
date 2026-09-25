@@ -104,3 +104,8 @@
 - A 第五次专项 `A-desktop-attempt-5.log`：record PID 42232 通过，offline PID 13936 失败，7.27 s；原件 `output/desktop-1790371821202`、run `ba3e9d3f-a3be-40da-84bd-531361d7c085` 保留。updated seek 的 CSS、图片、字体和 8 个源 CSS/XPath 对照通过；initial seek 的字体被同 seq 后到的失败 cache probe 覆盖。根定位后交 A；`5850f88` 修复已收到待集成复测，不能记离线整体通过。桌面进程均已退出，锁空闲。
 - 根补 checkpoint 回执和 host scope：未知/已终止步骤拒绝，采样与步骤状态切换互斥，引用字节预算固定。首次 `checkpoint-scope-tests.log` 两项失败（负例错误地期待执行继续，且测试 hook 未响应 abort），保留原日志；按既有非法 reporter 致执行失败协议修正测试与合成 hook，`checkpoint-scope-tests-2.log` **2 文件/19 项通过，3.92 s**，typecheck 通过。未降低生产错误标准，A/E 真实采样链仍待集成。
 - D `d245a88` 首个 UI 包收到，根审查要求修正资料读取错误被隐藏、跨 execution/attempt 迟到请求覆盖、native replay 迟到打开的清理及按 sourceTime 播放；尚未集成。E 强制授权和真实 B/C/F 门面仍在原任务实现；A `17ab383` 源显示值采样包已收到待审查。下一动作：依次集成已审查 A 包、重跑录制/离线专项，再接入 E/D 和最终系统验证。
+### A 第六次真实通过与 F 复用核验
+
+- A `5850f88/17ab383 → 27c8db0/e48b2df`：根 typecheck/build 通过，`A-sample-tests.log` 实际 **2 文件/17 项，5.10 s**（命令多列一个不存在的 response-privacy 文件，Vitest 实际只跑两个文件，按实际计数）。第六次 `node test/desktop/launch.js --refactor-recording` **record/offline 均通过**，PID 32660/28956、7.91 s，`output/desktop-1790372576006` / `A-desktop-attempt-6.log`。原站关闭、新进程离线恢复两个历史 CSS 版本、图片及字体，源定位器对照和显示文字 shown/隐藏文字区别实际通过。仅本专项范围，不代表跨 frame、最终 UI 或长测完成。
+- 根 F 复用核验与 host identity snapshot 接续见 F handoff；typecheck + **3 文件/33 项，12.67 s** 通过。当前证据重新按固定字段/分页证明，旧 provenance 不重标、不改原件。
+- E `c205d6f` 已交付但仍待返修审查：重复 running 的合法恢复、全部 scope 的歧义判断、资源读取错误保留、ReplayHost 迟到代际和释放、精确字节计量。根不接入已知会把错误隐藏的包，原 E 任务处理，其他工作继续。D 首包同样在原任务修复迟到请求/播放时间；三流均未自行开桌面。

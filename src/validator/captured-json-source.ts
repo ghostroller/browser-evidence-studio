@@ -16,9 +16,10 @@ export class CapturedJsonSourceReader implements SourceReader {
     if (!Number.isSafeInteger(budget.maxBytes) || budget.maxBytes < 1024 || budget.maxBytes > 1024 * 1024 || !Number.isSafeInteger(budget.limit) || budget.limit < 1 || budget.cursor) throw new ValidatorError('INVALID_BUDGET', 'Source reads require a 1 KiB–1 MiB explicit budget');
     const location = await this.locate(sourceRef);
     if (!location) return undefined;
+    const scope = structuredClone(location.scope);
     const metadata = await location.reader.artifactMetadata(sourceRef);
     if (Buffer.byteLength(JSON.stringify(metadata)) > budget.maxBytes) throw new ValidatorError('SOURCE_LIMIT', 'Source metadata exceeds budget', 413);
-    const base = { sourceRef, scope: structuredClone(location.scope), capturedAt: metadata.createdAt, representation: 'network-json' as const, display: 'unknown' as const };
+    const base = { sourceRef, scope, capturedAt: metadata.createdAt, representation: 'network-json' as const, display: 'unknown' as const };
     if (metadata.id !== sourceRef || metadata.kind !== 'response-body' || !/json/i.test(metadata.mediaType)) return { ...base, content: { status: 'unsupported', reason: 'Source is not a captured JSON response body' } };
     const source = metadata.source;
     if (!source || typeof source !== 'object' || typeof source.url !== 'string' || typeof source.requestKey !== 'string') return { ...base, content: { status: 'missing', reason: 'Captured request URL or request identity is absent' } };

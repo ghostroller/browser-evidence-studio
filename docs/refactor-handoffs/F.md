@@ -62,3 +62,8 @@ root 接入本包后按上述窄端口连接实际 C WorkflowRunResult（workflo
 - `outputPath=''` 是合法 RFC6901 根指针，只有 undefined 才是未配置；字段来源与类型检查统一。类型不匹配仍失败，不跳过根输出检查。
 - 增加真实 EvidenceStore 两类隐私 marker 测试、根指针来源通过/类型错误失败测试；原生产 reader fixture 改为中文与 emoji 混排的约40 KiB正文，明确核对跨16 KiB续读完整值，继续保留篡改 hash 检测。
 - `npm.cmd run typecheck` 通过；`npm.cmd test -- test/unit/validator-materials.test.ts` 17/17，通过耗时5.69秒。日志：`output/refactor-f-20260926/typecheck-review-fix.log`、`validator-review-fix.log`。未启动 Electron；生产端口接入边界不变。
+## 根接续：当前证据核验显式复用
+
+F 原任务完成后由根唯一接续这部分领域代码。沿用 `reusedFrom.validityEvidenceRefs`，不新增脚本 DSL 或可信布尔标记：C 的同 execution / prior attempt / 原始 records 与 provenance 一致约束保持；F 再读 prior batch 完整性，并用明确引用的**当前 attempt**原件重新执行冻结字段和分页内容检查。旧 provenance 保留在原件，不把旧 source scope 改成当前。仅脚本声明、引用缺失、旧 scope、当前值变化或漏尾页仍不能通过。没有冻结内容约束时仍为 inconclusive。
+
+根 `F-reuse-typecheck.log` 通过；`F-reuse-tests.log` **3 文件/33 项通过，12.67 s**，包含真实 B/C 存储与来源变化负例，尚非 E 生产映射和重跑 UI 的集成证明。DOM/JSON reader 同时在首个异步读取前固定 host target/scope，防止调用方修改身份。先前“不支持独立复用核验”保留为历史事实，以本段为最新能力。
