@@ -7,10 +7,10 @@ import type { CheckpointDetails, DataProvenance, Dataset, HumanRequest, JsonValu
 import { GateTransport, type GateCloseDiagnostic } from './gate';
 import { fingerprintInput, fingerprintWorkflow, loadWorkflow, resolveRegisteredFile, type WorkflowFingerprint } from './fingerprint';
 import { validateExecution, type ValidationResult } from './validation';
-import type { HostMessage, WorkerMessage } from './context';
+import { assertWorkflowOutputBudget, type HostMessage, type WorkerMessage } from './context';
 import type { DatasetBatch, DatasetCompletion, DatasetIdentity, DatasetService, ExecutionBinding, OriginalError, StepIdentity } from '../contracts/execution';
 import { originalError } from './errors';
-import type { StepEvent } from './steps';
+import { parseStepSelection, type StepEvent, type StepSelection } from './steps';
 import { prepareExecutionSnapshot, type ExecutionSnapshot } from './snapshot';
 import { canonicalJson, executionId } from './datasets';
 
@@ -37,6 +37,8 @@ export interface StartWorkflowOptions {
   execution?: { binding: ExecutionBinding; datasets: DatasetService; saveStep: (event: StepEvent) => Promise<void> };
   /** Main-owned archive directory for immutable code copies. Defaults to a fresh temporary directory. */
   snapshotDirectory?: string;
+  /** Ordinary business code applies selection through steps.selected(); no hidden workflow DSL. */
+  selection?: StepSelection;
 }
 
 export interface WorkflowPrepared {
@@ -47,6 +49,7 @@ export interface WorkflowPrepared {
   startedAt: string;
   snapshot?: ExecutionSnapshot;
   sourceEntryPath?: string;
+  selection?: StepSelection;
 }
 
 export interface WorkflowRunResult {
@@ -75,13 +78,15 @@ export interface WorkflowRunResult {
   steps?: StepSummary[];
   evidenceErrors?: { method: string; error: OriginalError }[];
   snapshot?: ExecutionSnapshot;
+  selection?: StepSelection;
   operationTransportClose?: GateCloseDiagnostic;
   validation: ValidationResult;
 }
 export interface DatasetSummary extends DatasetIdentity { status: DatasetCompletion['status'] | 'unfinished'; committedBatches: number; committedRecords: number }
-export type StepSummary = Pick<StepEvent, 'identity' | 'state' | 'occurredAt' | 'diagnostics'> & { error?: OriginalError; dependencies?: StepIdentity[]; handoffId?: string };
+export type StepSummary = Pick<StepEvent, 'identity' | 'state' | 'occurredAt' | 'diagnostics' | 'rerun'> & { error?: OriginalError; dependencies?: StepIdentity[]; handoffId?: string };
 function summarizeStep(event: StepEvent): StepSummary {
   return { identity: event.identity, state: event.state, occurredAt: event.occurredAt, ...(event.diagnostics ? { diagnostics: event.diagnostics } : {}),
+    ...(event.rerun ? { rerun: event.rerun } : {}),
     ...(event.result && 'error' in event.result ? { error: event.result.error } : {}),
     ...(event.result?.status === 'blocked' ? { dependencies: event.result.dependencies } : {}),
     ...(event.result?.status === 'awaiting-human' ? { handoffId: event.result.handoffId } : {}) };
@@ -94,6 +99,7 @@ export interface WorkflowHandle {
 }
 
 export async function startWorkflow(options: StartWorkflowOptions): Promise<WorkflowHandle> {
+  const selection = parseStepSelection(options.selection);
   const loaded = await loadWorkflow(options.directory, options.manifest);
   const { manifest, entryPath: sourceEntryPath } = loaded;
   const ajv = new Ajv({ allErrors: true, strict: true });
@@ -122,10 +128,10 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   const startedMs = Date.now();
   const startedAt = new Date(startedMs).toISOString();
   options.startupSignal?.throwIfAborted();
-  await options.beforeWorker?.({ manifest, entryPath, inputSha256, fingerprintBefore, startedAt, snapshot, sourceEntryPath });
+  await options.beforeWorker?.({ manifest, entryPath, inputSha256, fingerprintBefore, startedAt, snapshot, sourceEntryPath, selection });
   options.startupSignal?.throwIfAborted();
   const worker = new Worker(options.workerPath ?? path.join(import.meta.dirname, 'runner-worker.js'), {
-    workerData: { entryPath, exportName: manifest.exportName, input: options.input, targetId: options.targetId, snapshot, ...(executionBinding ? { execution: { binding: executionBinding, attemptId: workflowAttemptId } } : {}) },
+    workerData: { entryPath, exportName: manifest.exportName, input: options.input, targetId: options.targetId, snapshot, selection, ...(executionBinding ? { execution: { binding: executionBinding, attemptId: workflowAttemptId } } : {}) },
   });
   let status: WorkflowRunResult['status'] = 'interrupted';
   let error: string | undefined;
@@ -355,6 +361,8 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
       }).finally(() => { reportCalls -= 1; outstandingReports.delete(reported); });
       outstandingReports.add(reported);
     } else if (message.type === 'complete') {
+      try { assertWorkflowOutputBudget(message.output); }
+      catch (cause) { void stop('failed', String(cause), 'host', cause instanceof Error ? cause.stack : undefined, originalError(cause)); return; }
       completeReceived = true;
       runtimeNodeVersion = message.nodeVersion;
       output = message.output;
@@ -391,7 +399,7 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
     void (async () => {
       await Promise.allSettled(outstandingReports);
       for (const event of interruptedSteps.values()) {
-        const failure: StepEvent = { identity: event.identity, state: status === 'cancelled' ? 'cancelled' : 'failed', occurredAt: new Date().toISOString(),
+        const failure: StepEvent = { identity: event.identity, state: status === 'cancelled' ? 'cancelled' : 'failed', occurredAt: new Date().toISOString(), ...(event.rerun ? { rerun: event.rerun } : {}),
           result: { status: status === 'cancelled' ? 'cancelled' : 'failed', identity: event.identity, error: firstError ?? { name: 'WorkerInterrupted', message: error ?? 'Worker exited without completing this step' } } };
         try { await options.execution?.saveStep(failure); steps.push(summarizeStep(failure)); }
         catch (cause) { status = 'failed'; error = `${error ?? ''} Step interruption could not be saved: ${String(cause)}`.trim(); }
@@ -404,7 +412,7 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
       }
       const validation = validateExecution({ manifest, execution: status, checkpoints, datasets, assertions, fingerprintBefore, fingerprintAfter, knownSourceRefs: [...sources] });
       if (executionBinding) validation.warnings.push('Dataset summaries require fixed-material evaluation; script completion does not verify user requirements or pagination');
-      settle({ status, startedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedMs, manifest, entryPath, inputSha256, runtimeNodeVersion, fingerprintBefore, fingerprintAfter, checkpoints, datasets, assertions, humanAttempts, output, error, errorSource, errorStack, originalError: firstError, snapshot, ...(executionBinding ? { executionBinding, workflowAttemptId, datasetSummaries: [...datasetSummaries.values()], steps } : {}), evidenceErrors, operationTransportClose: options.transport.closeDiagnostic, validation });
+      settle({ status, startedAt, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedMs, manifest, entryPath, inputSha256, runtimeNodeVersion, fingerprintBefore, fingerprintAfter, checkpoints, datasets, assertions, humanAttempts, output, error, errorSource, errorStack, originalError: firstError, snapshot, selection, ...(executionBinding ? { executionBinding, workflowAttemptId, datasetSummaries: [...datasetSummaries.values()], steps } : {}), evidenceErrors, operationTransportClose: options.transport.closeDiagnostic, validation });
     })();
   });
   return { done, cancel: reason => stop('cancelled', reason ?? 'Cancelled by user') };

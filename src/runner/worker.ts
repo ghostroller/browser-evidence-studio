@@ -1,6 +1,6 @@
 import { parentPort, workerData } from 'node:worker_threads';
 import { pathToFileURL } from 'node:url';
-import { createReporter, type HostMessage, type ReporterMethod, type WorkerInput, type WorkerMessage } from './context';
+import { assertWorkflowOutputBudget, createReporter, type HostMessage, type ReporterMethod, type WorkerInput, type WorkerMessage } from './context';
 import { connectManagedPage } from './puppeteer';
 import type { ProtocolTransport } from './gate';
 import { originalError, restoreError } from './errors';
@@ -52,7 +52,7 @@ async function main(): Promise<void> {
   }, cancellation.signal, options.execution);
   const { browser, page } = await connectManagedPage(transport, options.targetId);
   const steps = options.execution ? createStepRunner({ executionId: options.execution.binding.executionId, signal: cancellation.signal,
-    save: event => reporter.stepEvent(event), interrupt: (identity, reason) => reporter.interruptStep(identity, originalError(reason)) }) : undefined;
+    save: event => reporter.stepEvent(event), interrupt: (identity, reason) => reporter.interruptStep(identity, originalError(reason)), selection: options.selection }) : undefined;
   const snapshotLoader = options.snapshot ? installSnapshotLoader(options.snapshot) : undefined;
   let primaryError: unknown;
   try {
@@ -60,10 +60,11 @@ async function main(): Promise<void> {
     const module = await import(/* @vite-ignore */ pathToFileURL(options.entryPath).href);
     const entry = module[options.exportName];
     if (typeof entry !== 'function') throw new Error(`Workflow export ${options.exportName} is not a function`);
-    const output = await entry({ page, input: options.input, reporter, steps });
+    const output = await entry({ page, input: options.input, reporter, steps, selection: options.selection });
     cancellation.signal.throwIfAborted();
     if (steps?.pending()) throw new Error('Workflow returned with unawaited steps');
     if (pending.size) throw new Error('Workflow returned with unawaited reporter calls');
+    assertWorkflowOutputBudget(output);
     send({ type: 'complete', output, nodeVersion: process.versions.node });
     // The host closes the command gate and drains in-flight operations before
     // acknowledging completion. No detached timer may keep driving the page.
