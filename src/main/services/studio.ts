@@ -252,19 +252,30 @@ export class Studio {
     // Keep registry/native ownership until Electron confirms destruction. A
     // beforeunload rejection must leave a visible, usable page in the session.
     await new Promise<void>((resolve,reject)=>{
-      let settled=false;
+      let settled=false,cancellationAcknowledged=false;
+      let dismissalError:unknown;
       const finish=(error?:unknown)=>{if(settled)return;settled=true;clearTimeout(timer);contents.removeListener('destroyed',destroyed);contents.removeListener('will-prevent-unload',prevented);p.page.off('dialog',beforeUnloadDialog);if(error)reject(error);else resolve();};
       const destroyed=()=>finish();
-      const prevented=()=>finish(new StudioError(409,'page_close_prevented','The page prevented closing; its live session is retained'));
+      const preventedError=(detail='')=>{const error=new StudioError(409,'page_close_prevented','The page prevented closing; its live session is retained'+detail+(dismissalError?'; dialog response diagnostic: '+String(dismissalError):''));if(dismissalError)error.cause=dismissalError;return error;};
+      const prevented=()=>{
+        if(cancellationAcknowledged)return;cancellationAcknowledged=true;
+        // Native events and the observer socket arrive on separate channels.
+        // Drain one read response before allowing another close: a late dialog
+        // notification from this cancellation must not become the next attempt.
+        void p.page.mainFrame().evaluate(()=>document.readyState).then(()=>finish(preventedError()),error=>finish(preventedError('; observer readiness check failed: '+String(error))));
+      };
       // The permanent Puppeteer observer enables CDP Page. Chromium may route
       // beforeunload through javascriptDialogOpening and await its response,
       // before Electron can report will-prevent-unload. Dismiss only this close
       // attempt's beforeunload dialog (cancel closing), never arbitrary dialogs.
       const beforeUnloadDialog=(dialog:Dialog)=>{
-        if(dialog.type()!=='beforeunload')return;
-        void dialog.dismiss().then(prevented,error=>finish(new StudioError(409,'page_close_dialog_failed','Could not cancel the beforeunload dialog; close remains unconfirmed: '+String(error))));
+        if(dialog.type()!=='beforeunload'||cancellationAcknowledged)return;
+        // Electron may already have cancelled before this CDP response arrives.
+        // Keep any rejection as evidence while awaiting the native outcome;
+        // neither a stale dialog nor a protocol failure proves close success.
+        void dialog.dismiss().then(prevented,error=>{dismissalError=error;});
       };
-      const timer=setTimeout(()=>finish(new StudioError(409,'page_close_timeout','The page did not confirm closing within 5 seconds; its live session is retained')),5000);
+      const timer=setTimeout(()=>finish(cancellationAcknowledged?preventedError('; observer readiness was not confirmed within 5 seconds'):new StudioError(409,'page_close_timeout','The page did not confirm closing within 5 seconds; its live session is retained'+(dismissalError?'; dialog response failed: '+String(dismissalError):''))),5000);
       contents.once('destroyed',destroyed);contents.once('will-prevent-unload',prevented);p.page.on('dialog',beforeUnloadDialog);
       try{contents.close({waitForBeforeUnload:true});}catch(error){finish(error);}
     });

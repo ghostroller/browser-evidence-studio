@@ -82,14 +82,14 @@ export async function runSessionScenarios(studio:Studio,origin:string){
     report.checks.push('idle navigation identity, back/forward/reload and history isolation; sealed file hashes unchanged');
     await clickSyntheticHuman(studio,'#console-error');
     await page.page.evaluate(()=>{window.onbeforeunload=()=>false;});
-    const beforeUnload={dialogs:[] as string[],electronPreventedEvents:0};report.beforeUnload=beforeUnload;
+    const beforeUnload={dialogs:[] as string[],electronPreventedEvents:0,rejections:[] as string[]};report.beforeUnload=beforeUnload;
     const observedDialog=(dialog:Dialog)=>beforeUnload.dialogs.push(dialog.type());
     const observedPrevented=()=>{beforeUnload.electronPreventedEvents++;};
     page.page.on('dialog',observedDialog);page.view.webContents.on('will-prevent-unload',observedPrevented);
     try{
-      await assert.rejects(()=>studio.closePage(page.pageId),/page prevented closing/);
+      await assert.rejects(()=>studio.closePage(page.pageId),error=>{beforeUnload.rejections.push(String(error));return /page prevented closing/.test(String(error));});
       assert.equal(studio.current(),page);assert.equal(page.view.webContents.isDestroyed(),false);assert.equal(studio.state().session?.locked,false);
-      await assert.rejects(()=>studio.closeSession(),/page prevented closing/);
+      await assert.rejects(()=>studio.closeSession(),error=>{beforeUnload.rejections.push(String(error));return /page prevented closing/.test(String(error));});
       assert.equal(studio.current(),page);assert.equal(page.view.webContents.isDestroyed(),false);assert.equal(studio.state().session?.locked,false);
       assert.ok(beforeUnload.dialogs.includes('beforeunload')||beforeUnload.electronPreventedEvents>0,'A rejected close must be explained by an observed browser beforeunload event');
     }finally{page.page.off('dialog',observedDialog);page.view.webContents.removeListener('will-prevent-unload',observedPrevented);}
