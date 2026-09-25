@@ -132,11 +132,17 @@ async function offlineScenario(studio: Studio): Promise<Record<string, unknown>>
   });
   const replay = new BrowserWindow({ show: false, webPreferences: { session: partition, sandbox: true, nodeIntegration: false, contextIsolation: true, webSecurity: true, backgroundThrottling: false } });
   replay.webContents.setWindowOpenHandler(() => ({ action: 'deny' })); replay.webContents.on('will-navigate', event => event.preventDefault());
-  const report: Record<string, unknown> = { phase: 'offline', passed: false, pid: process.pid, recordedPid: saved.recordPid, blocked, seeks: [] };
+  const rendererMessages: unknown[] = [];
+  const report: Record<string, unknown> = { phase: 'offline', passed: false, pid: process.pid, recordedPid: saved.recordPid, blocked, seeks: [], rendererMessages, stage: 'created' };
+  replay.webContents.on('console-message', (_event, level, message, lineNumber, sourceId) => {
+    if (rendererMessages.length < 100) rendererMessages.push({ level, message: message.slice(0, 4000), lineNumber, sourceId: sourceId.slice(0, 1000) });
+  });
+  const execute = async (stage: string, script: string) => { report.stage = stage; return replay.webContents.executeJavaScript(script); };
   try {
     await replay.loadURL('about:blank');
-    await replay.webContents.executeJavaScript(`document.head.innerHTML='<meta http-equiv="Content-Security-Policy" content="${OFFLINE_CSP.replace(/"/g, '&quot;')}">';document.body.innerHTML='<div id="replay"></div>';true`);
-    await replay.webContents.executeJavaScript(rrwebSource);
+    await execute('install-csp', `const policy=document.createElement('meta');policy.httpEquiv='Content-Security-Policy';policy.content=${JSON.stringify(OFFLINE_CSP)};document.head.appendChild(policy);document.body.innerHTML='<div id="replay"></div>';true`);
+    await execute('install-rrweb', rrwebSource);
+    report.stage = 'load-shell';
     const resources = await archive.list(1000);
     for (const item of [...saved.positions, ...saved.positions].reverse()) {
       activePosition=item.position;activeGeneration++;const generation=activeGeneration;
@@ -144,7 +150,7 @@ async function offlineScenario(studio: Studio): Promise<Record<string, unknown>>
       for(const resource of resources.items){if(resource.originalUrl.status!=='present')continue;const selected=await archive.resolve(resource.originalUrl.value,item.position,'top');if(selected?.status==='captured')mapping.set(resource.originalUrl.value,resourceUrl(selected.id)+`?seek=${generation}`);}
       const started = performance.now(), window = await service.window(item.position), model = new SourceModel(window.records);
       const prepared = prepareReplayEvents({ ...window, records: window.records.map(record => ({ ...record, event: rewriteReplayEvent(record.event, url => mapping.get(url) ?? 'about:blank') })) });
-      const result = await replay.webContents.executeJavaScript(`(async()=>{window.__aPlayer?.destroy();window.__aPlayer=new rrweb.Replayer(${JSON.stringify(prepared.events)},{root:document.querySelector('#replay'),speed:1,showWarning:false,showDebug:false,UNSAFE_replayCanvas:false});window.__aPlayer.pause(${prepared.pauseOffset});const frame=document.querySelector('#replay iframe');const doc=frame.contentDocument;await Promise.race([doc.fonts.ready,new Promise((_,reject)=>setTimeout(()=>reject(new Error('font readiness timeout')),5000))]);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const a=doc.querySelector('#selected'),img=doc.querySelector('#picture');return {text:a.textContent,nodeId:window.__aPlayer.getMirror().getId(a),color:frame.contentWindow.getComputedStyle(a).color,background:frame.contentWindow.getComputedStyle(doc.body).backgroundColor,font:doc.fonts.check('16px BesFixture'),image:img.complete&&img.naturalWidth>0,sandbox:frame.getAttribute('sandbox'),scriptRan:frame.contentWindow.__sourceScriptRan===true,width:frame.width,height:frame.height};})()`);
+      const result = await execute(`seek-${generation}-${item.label}`, `(async()=>{window.__aPlayer?.destroy();window.__aPlayer=new rrweb.Replayer(${JSON.stringify(prepared.events)},{root:document.querySelector('#replay'),speed:1,showWarning:false,showDebug:false,UNSAFE_replayCanvas:false});window.__aPlayer.pause(${prepared.pauseOffset});const frame=document.querySelector('#replay iframe');const doc=frame.contentDocument;await Promise.race([doc.fonts.ready,new Promise((_,reject)=>setTimeout(()=>reject(new Error('font readiness timeout')),5000))]);await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const a=doc.querySelector('#selected'),img=doc.querySelector('#picture');return {text:a.textContent,nodeId:window.__aPlayer.getMirror().getId(a),color:frame.contentWindow.getComputedStyle(a).color,background:frame.contentWindow.getComputedStyle(doc.body).backgroundColor,font:doc.fonts.check('16px BesFixture'),image:img.complete&&img.naturalWidth>0,sandbox:frame.getAttribute('sandbox'),scriptRan:frame.contentWindow.__sourceScriptRan===true,width:frame.width,height:frame.height};})()`);
       assert.equal(result.text, item.label === 'initial' ? 'initial' : 'updated'); assert.equal(result.scriptRan, false); assert.equal(result.sandbox, 'allow-same-origin');
       assert.equal(result.color,item.label==='initial'?'rgb(17, 34, 51)':'rgb(51, 34, 17)','A seek must use that historical version of a reused stylesheet URL');
       // Native original HTML is an independent verification source, never replay DOM.
