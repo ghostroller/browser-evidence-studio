@@ -76,3 +76,11 @@ root真实attempt2：`output/desktop-1790368992121` 的run `2044933f-4cae-413d-9
 第5次根record通过，offline updated位置CSS/字体/图片/8个定位器通过，回initial字体失败。根原件`output/desktop-1790371821202`证明同seq缓存probe失败覆盖了已捕获font。resolve改为明确区分：fromCache且无requestId的failed/missing只代表probe失败，不是新资源版本；原manifest和诊断保留；真实后续request失败仍阻止使用旧captured版。查询按源seq/追加顺序找首个真实版本，只有probe时仍返回失败，没有盲目降级到任意旧字节。
 
 同包隐私加固：畸形JSON无法可靠执行键级隐私策略时excluded，保存privacy-unverifiable与安全解析错误身份；新captureError保留name/code/4KiB普通message，credential URL或裸password/token等错误消息遮罩。真实原件不回写。新增probe/新请求失败和畸形JSON/错误秘密负例；typecheck、专属录制和request-body模块测试通过，日志`resource-probe-typecheck.log`和`resource-probe-tests.log`。源sample草稿仍未提交，不混入此返修。
+
+## 明确节点源显示值采样接口
+
+生产入口`CaptureCoordinator.samplePresentation(ref: HistoricalElementRef): Promise<PresentationSample>`，`PresentationSample`导出于`src/capture/recording-types.ts`，内容`{ref,presentation:SourceValue<SourcePresentation>}`。只接当前recording/page/document/epoch中已在原件证明存在的ref；源observer再核对frame/mirror/node身份。采样返回**新的**source eventSeq/ref，host等待flush并从原件重新读回验证同一presentation后返回；E可在既有授权capture门面调用，未新增公共HTTP/控制抽象。
+
+源页明确节点只读一次innerText、geometry/computedStyle/checkVisibility和中心hit-test，不对全树逐节点求innerText；先让选择任务前的mutation observer微任务交付，再于同一JS任务内读取并通过rrweb custom event`bes-source-presentation`与SourceMetadata一起入原件。`sampledAt`等于该真实源事件位置。遮罩节点/含私密子树/表单值直接redacted，超过8192字符返回missing，SVG等没有原生innerText的节点unsupported；同源frame的祖先可见性未取样时visibility=unknown并保留basis。无sample旧位置返回明确missing，不从textContent、live或replay补造显示值。
+
+inspect点击也复用明确节点采样，选择事件含`sample`（失败则`sampleError`）；host等索引耐久后回调。open-shadow点击使用composedPath，描述摘要也遵守私密祖先/子树。`npm.cmd test -- test/unit/refactor-recording.test.ts`14项通过5.46s（`presentation-tests.log`），typecheck通过（`presentation-typecheck-final.log`）。JSDOM测试给明确节点设置innerText getter，只证明调用/序列/磁盘源回读与隐私，不当作真实布局证明。desktop fixture已接生产API：初始/更新文本位置使用sample ref，另验证`shown<span hidden>hidden-source-text</span>`的真实innerText为shown而原始结构文本保留隐藏文本；该真实场景尚待根串行运行。

@@ -81,6 +81,7 @@ export class SourceModel {
     if (metadata.frameId !== ref.frameId || metadata.mirrorScopeId !== ref.mirrorScopeId) throw new EvidenceError('SOURCE_SCOPE_MISMATCH', 'Node ID belongs to another frame or mirror scope.', 409);
     const { tagName, namespaceURI, documentUrl, baseURI, attributes, properties } = metadata;
     return { ref, tagName, namespaceURI, documentUrl, baseURI, attributes, properties,
+      presentation: metadata.presentation ?? { status: 'missing', reason: 'no-source-presentation-observation' },
       text: { status: 'present', value: this.text(node) }, metadataComplete: this.metadataComplete && metadata.metadataComplete };
   }
   attribute(node: SourceTreeNode, name: string): SourceValue<string> {
