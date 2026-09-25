@@ -101,7 +101,13 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     await writeFile(path.join(studio.root, 'refactor-recording-fixture.json'), JSON.stringify(saved, null, 2));
     Object.assign(report, { passed: true, runId: run.id, positions: positions.map(item => ({ label: item.label, position: item.position })), resources: resources.items.map(item => ({ id: item.id, mediaType: item.mediaType, status: item.status, bytes: item.bytes })), queueMetrics });
     return report;
+  } catch(error){report.error=error instanceof Error?{name:error.name,message:error.message,stack:error.stack}:String(error);throw error;
   } finally {
+    // Persist the assertion before teardown, so an open synthetic connection
+    // cannot hide the cause behind the launcher's process timeout.
+    await writeFile(path.join(studio.root, 'refactor-recording-record-report.json'), JSON.stringify(report, null, 2));
+    if(!studio.active&&studio.state().session)await studio.closeSession();
+    server.closeIdleConnections();server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     await writeFile(path.join(studio.root, 'refactor-recording-record-report.json'), JSON.stringify(report, null, 2));
   }
@@ -156,6 +162,7 @@ async function offlineScenario(studio: Studio): Promise<Record<string, unknown>>
     assert.equal(await replay.webContents.executeJavaScript('document.querySelectorAll("#replay iframe").length'), 0);
     Object.assign(report, { passed: true, memory: { main: process.memoryUsage(), renderers: app.getAppMetrics().filter(metric => metric.pid === replay.webContents.getOSProcessId()).map(metric => metric.memory) } });
     return report;
+  } catch(error){report.error=error instanceof Error?{name:error.name,message:error.message,stack:error.stack}:String(error);throw error;
   } finally {
     await writeFile(path.join(studio.root, 'refactor-recording-offline-report.json'), JSON.stringify(report, null, 2));
     if (!replay.isDestroyed()) replay.destroy(); partition.webRequest.onBeforeRequest(null); partition.protocol.unhandle('bes-resource');

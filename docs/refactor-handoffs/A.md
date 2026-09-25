@@ -52,3 +52,7 @@ root主入口须在ready之前为`bes-resource`注册standard/secure/corsEnabled
 桌面资源时点审查补丁：source fixture在initial/updated两点使用**同一**`/assets/main.css` URL返回不同颜色；offline每次seek以当时position逐URL resolve，拒绝用final资源替代initial。协议URL携带seek代际，处理开始固定position，异步完成前复核代际；CSS嵌套依赖沿用该代际。`OfflineResourceService.response`新增可选`urlForResource(id)`以支持调用方的安全路由/代际。此补丁仍只有typecheck，等待root真实桌面结果。
 
 root真实桌面attempt1：typecheck/41模块测试/build通过，但生产初始isolated world的`crypto.randomUUID`不可用，record启动失败、offline未开始。日志`output/refactor-integration-20260926/A-desktop-attempt-1.log`，合成原件`output/desktop-1790368796190`（root树）。修正为每次注入调用`crypto.getRandomValues`生成v4 UUID，保持每document/epoch独立，不从host传一个固定ID重复使用；模块fixture同时移除randomUUID以覆盖该缺失环境，仍需root真实重跑。
+
+root真实attempt2：`output/desktop-1790368992121` 的run `2044933f-4cae-413d-9100-ab71ff4822f8`已封存但degraded；只读复核看到7次resource预算拒绝、1次network预算拒绝，font/ttf仅browser-cached-resource-unavailable，确认不能通过扩大内存上限掩盖。修改为最多256条/1MiB的轻量descriptor队列，实际response/CDP缓存正文一次仅读取一个并独立保留32MiB+4096工作集预约，直到解码/落盘全部完成才释放；新文档资源等真实source baseline提交，不能绑定旧about:blank。stop先禁止新增任务，再读完已接受descriptor并持久化，最后detach CDP。
+
+测试finally先写原始异常报告，关闭其自身synthetic session，再关闭源站所有连接，避免断言被server.close等待隐藏。模块新增并发大正文descriptor顺序/限额测试及跨rrweb/HTML/JSON隐私、__proto__普通属性、CSS/srcset parser验证，typecheck与8项A测试通过。metadata变更丢失后受影响属性变为missing，不展示旧值冒充当时原值；动作摘要遵守rr-mask/rr-block及表单遮罩。

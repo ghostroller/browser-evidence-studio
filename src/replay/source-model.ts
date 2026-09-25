@@ -40,7 +40,7 @@ export class SourceModel {
     const event = record.event;
     if (event.type === 2) { this.nodes.clear(); this.metadata.clear(); this.metadataComplete = record.metadataComplete; }
     if (!record.metadataComplete) this.metadataComplete = false;
-    for (const item of record.metadata) this.metadata.set(item.nodeId, item);
+    for (const item of record.metadata) this.metadata.set(item.nodeId, structuredClone(item));
     if (event.type === 2) this.rootId = this.restore(event.data.node);
     if (event.type === 3 && event.data.source === 0) {
       for (const change of event.data.removes) this.remove(change.id);
@@ -63,9 +63,16 @@ export class SourceModel {
         const node = this.nodes.get(change.id); if (!node) this.fail(`Missing source text node ${change.id}`);
         node.textContent = change.value ?? '';
       }
-      for (const change of event.data.attributes) if (!record.metadata.some(item => item.nodeId === change.id)) this.metadataComplete = false;
+      for (const change of event.data.attributes) if (!record.metadata.some(item => item.nodeId === change.id)) {
+        this.metadataComplete = false;const node=this.nodes.get(change.id);
+        if(node?.metadata){node.metadata=structuredClone(node.metadata);node.metadata.metadataComplete=false;for(const name of Object.keys(change.attributes))Object.defineProperty(node.metadata.attributes,name,{value:{status:'missing',reason:'source-attribute-mutation-metadata-gap'},writable:true,enumerable:true,configurable:true});}
+      }
     }
-    for (const item of record.metadata) { const node = this.nodes.get(item.nodeId); if (node) node.metadata = item; }
+    if(event.type===3&&event.data.source===5){const input=event.data;if(!record.metadata.some(item=>item.nodeId===input.id)){
+      this.metadataComplete=false;const node=this.nodes.get(input.id);if(node?.metadata){node.metadata=structuredClone(node.metadata);node.metadata.metadataComplete=false;node.metadata.properties.value={status:'missing',reason:'source-input-metadata-gap'};node.metadata.properties.checked={status:'missing',reason:'source-input-metadata-gap'};}
+    }
+    }
+    for (const item of record.metadata) { const node = this.nodes.get(item.nodeId); if (node) node.metadata = this.metadata.get(item.nodeId); }
   }
   node(ref: HistoricalElementRef): SourceNode {
     const node = this.nodes.get(ref.nodeId), metadata = node?.metadata;
@@ -77,7 +84,7 @@ export class SourceModel {
       text: { status: 'present', value: this.text(node) }, metadataComplete: this.metadataComplete && metadata.metadataComplete };
   }
   attribute(node: SourceTreeNode, name: string): SourceValue<string> {
-    return node.metadata?.attributes[name] ?? (node.metadata?.metadataComplete ? { status: 'absent' } : { status: 'missing', reason: 'source-metadata-gap' });
+    return node.metadata&&Object.hasOwn(node.metadata.attributes,name)?node.metadata.attributes[name]:(node.metadata?.metadataComplete ? { status: 'absent' } : { status: 'missing', reason: 'source-metadata-gap' });
   }
   private text(node: SourceTreeNode, depth = 0): string {
     if (depth > 512) this.fail('Source text exceeds depth budget');
