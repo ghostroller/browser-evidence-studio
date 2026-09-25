@@ -112,6 +112,25 @@ describe('project materials', () => {
     expect(removed.fields[0].bindingStatus).toBe('needs-rebind');
   });
 
+  it('accepts a described field alone, a field with a target, and a field with target plus annotation', async () => {
+    const draft = await service.createDraft(PROJECT, 'human');
+    const described = fixture();
+    described.fields[0] = { id: 'amount', dataset: 'orders', name: 'Paid amount', description: 'Charged amount', sourcePolicy: 'any-evidenced' };
+    described.annotations = [];
+    described.checkpoints[0].annotationIds = [];
+    let result = await service.updateDraft(PROJECT, draft.draftId, 0, described, 'human');
+    expect(result.status).toBe('saved');
+    const withTarget = structuredClone(described);
+    withTarget.fields[0] = { ...withTarget.fields[0], target: target(position('recording-one')), checkpointId: 'first', bindingStatus: 'bound' };
+    result = await service.updateDraft(PROJECT, draft.draftId, 1, withTarget, 'human');
+    expect(result.status).toBe('saved');
+    result = await service.updateDraft(PROJECT, draft.draftId, 2, fixture(), 'human');
+    expect(result.status).toBe('saved');
+    const current = await service.getDraft(PROJECT, draft.draftId);
+    expect(current.content.fields[0].annotationId).toBe('note-one');
+    expect(current.content.requirements).toHaveLength(1);
+  });
+
   it('rejects unsafe paths, foreign recordings, wrong target identity and stale page cursors', async () => {
     await expect(service.createDraft('CON', 'human')).rejects.toBeInstanceOf(MaterialError);
     await expect(service.createDraft('../escape', 'human')).rejects.toBeInstanceOf(MaterialError);
@@ -166,6 +185,29 @@ describe('project materials', () => {
     const second = await service.diff(PROJECT, v1.revisionId, v2.revisionId, { maxBytes: 1024, limit: 1, cursor: page.nextCursor });
     expect(second.items).toHaveLength(1);
     expect(second.returnedBytes).toBe(Buffer.byteLength(JSON.stringify(second), 'utf8'));
+  });
+
+  it('discovers drafts and revisions through bounded summaries with stale-cursor detection', async () => {
+    const first = await service.createDraft(PROJECT, 'human');
+    const second = await service.createDraft(PROJECT, 'agent');
+    const draftPage = await service.listDrafts(PROJECT, { maxBytes: 1024, limit: 1 });
+    expect(draftPage.items).toHaveLength(1);
+    expect(draftPage.returnedBytes).toBe(Buffer.byteLength(JSON.stringify(draftPage), 'utf8'));
+    const next = await service.listDrafts(PROJECT, { maxBytes: 1024, limit: 1, cursor: draftPage.nextCursor });
+    expect(new Set([draftPage.items[0].draftId, next.items[0].draftId])).toEqual(new Set([first.draftId, second.draftId]));
+    const v1 = await service.publish(PROJECT, first.draftId, 0, 'human');
+    const v2 = await service.publish(PROJECT, second.draftId, 0, 'agent');
+    const revisions = await service.listRevisions(PROJECT, { maxBytes: 1024, limit: 1 });
+    expect(revisions.items).toHaveLength(1);
+    expect(revisions.returnedBytes).toBe(Buffer.byteLength(JSON.stringify(revisions), 'utf8'));
+    const revisionTail = await service.listRevisions(PROJECT, { maxBytes: 1024, limit: 1, cursor: revisions.nextCursor });
+    expect(new Set([revisions.items[0].revisionId, revisionTail.items[0].revisionId])).toEqual(new Set([v1.revisionId, v2.revisionId]));
+    await service.createDraft(PROJECT, 'human');
+    await expect(service.listDrafts(PROJECT, { maxBytes: 1024, limit: 1, cursor: draftPage.nextCursor })).rejects.toMatchObject({ code: 'INVALID_CURSOR' });
+    const damagedFile = path.join(root, 'projects', PROJECT, 'materials', 'revisions', `${v1.revisionId}.json`);
+    await fs.writeFile(damagedFile, '{damaged');
+    const discovered = await service.listRevisions(PROJECT, { maxBytes: 4096, limit: 10 });
+    expect(discovered.items.find(item => item.revisionId === v1.revisionId)).toMatchObject({ status: 'unavailable', reason: 'INVALID_RECORD' });
   });
 
   it('detects revision corruption without replacing the original manifest', async () => {
