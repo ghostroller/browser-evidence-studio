@@ -73,7 +73,7 @@ export class ValidatorService {
     const requirements: ValidatedRequirement[] = [];
     for (const requirement of revision.content.requirements) {
       const dataset = requirement.dataset ? datasets.get(requirement.dataset) : undefined;
-      const checks: Check[] = [], evidence: EvidenceAssessment[] = [];
+      const checks: Check[] = [], sourceChecks: Check[] = [], evidence: EvidenceAssessment[] = [];
       const documents = new Map<string, SourceDocument>();
       if (dataset) for (const ref of new Set([...dataset.refs.values()].flat())) {
         const source = await this.readSource(ref, dataset.identity, cache, consumed);
@@ -82,7 +82,7 @@ export class ValidatorService {
       }
       if (dataset) for (const batchId of dataset.reused) {
         const refs = dataset.refs.get(batchId) ?? [];
-        checks.push(check('reuse-source-availability', refs.length > 0 && refs.every(ref => documents.has(ref)) ? 'pass' : 'inconclusive',
+        sourceChecks.push(check('reuse-source-availability', refs.length > 0 && refs.every(ref => documents.has(ref)) ? 'pass' : 'inconclusive',
           'Reused prior-attempt records keep their original provenance; current validity references must resolve in this exact attempt and pass the frozen content checks below'));
       }
       const scriptAssertions = (request.assertions ?? []).filter(x => x.requirementId === requirement.id);
@@ -100,7 +100,6 @@ export class ValidatorService {
           else checks.push(check('pagination-complete', 'inconclusive', 'A script complete flag, page count or terminalReason does not prove that the last page was collected; independent task-specific terminal evidence is required'));
         }
       }
-      const sourceChecks: Check[] = [];
       const fields = revision.content.fields.filter(f => requirement.fieldIds.includes(f.id));
       for (const materialField of fields) {
         if (!dataset || !dataset.rows.length) { sourceChecks.push(check(`source:${materialField.id}`, 'inconclusive', 'No output rows to compare with source content')); continue; }
