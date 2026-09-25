@@ -18,3 +18,10 @@
 - D 树 `npm.cmd run typecheck` 通过；`npm.cmd test -- test/renderer/refactor-materials.test.tsx test/renderer/app-archive.test.tsx test/renderer/validation-view.test.tsx`：3 文件、12 项通过。专属测试证明并发草稿冲突不重复提交、字段无元素到精确历史元素绑定不强制注释。未运行桌面（由 root 串行）。
 - E 的 ReplayHost 与固定执行结果门面在 D 开发时仍在 E 树实施，D 通过 E 冻结方法名编译但尚无真实主进程连通测试；不能把类型检查称为桌面完成。root 集成 E 后需对照实际返回形状、跑专属 UI 合成场景和真实 Electron 的蒙版/焦点/协议安全。A 的离线 replay 与源显示采样仍由 A/root 验证。
 - 当前资料规则/来源证明用 JSON 高级编辑，B 严格校验错误透传；未加入可视规则设计器。未在 D 树新增跨进程 IPC、原件写入或人类资料批准机制。固定版本存在不等于人工批准，F 仍以 `candidate` 表示。
+
+## 审查返修（独立后续提交）
+
+- 新固定验证从 `state.validations` 的 `executionId`/`executionBinding` 进入结果中心；旧记录仍从原只读验收入口打开。固定结果通过 E 的 `executionReports` 有界列表发现历史报告并重开。资料修订读取失败明确报错，已选版本不在当前列表时阻止悄然回退到旧流程。
+- 结果中心所有深层读取按项目、执行、dataset attempt、batch、report 加请求代际约束。切换执行立即清除子状态；迟到批次、记录和报告不能覆盖新选择。分页按钮也通过同一身份检查，不直接写入旧闭包数据。
+- 原生回放在打开响应晚于卸载时主动关闭返回的 replayId；选取回执和轮询错误按 host generation/请求代际筛掉。播放按相邻事件源时间差与速度调度，保留同毫秒 eventSeq 顺序，长空档上限 3 秒；无整段预载。
+- 再次运行 `npm.cmd run typecheck` 通过；`npm.cmd test -- test/renderer/refactor-results.test.tsx test/renderer/refactor-replay.test.tsx test/renderer/refactor-materials.test.tsx test/renderer/app-archive.test.tsx`：4 文件 13 项通过，包括异步乱序、晚到 native host 清理与源时间播放。仍未运行 Electron；root 串行桌面测试。
