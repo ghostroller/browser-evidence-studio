@@ -2,24 +2,26 @@ import type { eventWithTime, serializedNodeWithId } from '@rrweb/types';
 import type { ReplayPosition } from '@/contracts/recording';
 import { ResourceArchive } from './archive';
 import { OFFLINE_CSP, rewriteCssUrls, rewriteSrcset } from './rewrite';
+import type { RecordingEnvelope } from '@/capture/recording-types';
 
 export const resourceUrl = (id: string): string => `bes-resource://archive/${id}`;
 /** Presentation copy only. Original URLs and SourceMetadata remain untouched. */
-export function rewriteReplayEvent(original: eventWithTime, resolve: (url: string) => string): eventWithTime {
+export function rewriteReplayEvent(original: eventWithTime, resolve: (url: string, frameId?:string) => string, frameForNode?: (nodeId:number)=>string|undefined): eventWithTime {
   const event = structuredClone(original);
-  function attributes(attributes: Record<string, unknown>): void {
+  function attributes(attributes: Record<string, unknown>,nodeId:number): void {
+    const resolveNode=(url:string)=>resolve(url,frameForNode?frameForNode(nodeId):'top');
     for (const [name, value] of Object.entries(attributes)) {
       if (name.startsWith('on') || ['action', 'formaction', 'srcdoc', 'ping'].includes(name)) { delete attributes[name]; continue; }
       if (typeof value !== 'string') continue;
-      if (name === '_cssText' || name === 'style') attributes[name] = rewriteCssUrls(value, resolve);
-      else if (name === 'srcset') attributes[name] = rewriteSrcset(value, resolve);
-      else if (['src', 'href', 'poster', 'xlink:href', 'background', 'rr_src'].includes(name)) attributes[name] = value.startsWith('#') ? value : resolve(value);
+      if (name === '_cssText' || name === 'style') attributes[name] = rewriteCssUrls(value, resolveNode);
+      else if (name === 'srcset') attributes[name] = rewriteSrcset(value, resolveNode);
+      else if (['src', 'href', 'poster', 'xlink:href', 'background', 'rr_src'].includes(name)) attributes[name] = value.startsWith('#') ? value : resolveNode(value);
     }
   }
   function tree(node: serializedNodeWithId): void {
     if (node.type === 2) {
-      attributes(node.attributes);
-      if (node.tagName === 'style') for (const child of node.childNodes) if (child.type === 3) child.textContent = rewriteCssUrls(child.textContent, resolve);
+      attributes(node.attributes,node.id);
+      if (node.tagName === 'style') for (const child of node.childNodes) if (child.type === 3) child.textContent = rewriteCssUrls(child.textContent, url=>resolve(url,frameForNode?frameForNode(node.id):'top'));
       if (node.tagName === 'iframe') { delete node.attributes.src; delete node.attributes.rr_src; }
     }
     if ('childNodes' in node) node.childNodes.forEach(tree);
@@ -27,12 +29,23 @@ export function rewriteReplayEvent(original: eventWithTime, resolve: (url: strin
   if (event.type === 2) tree(event.data.node);
   if (event.type === 4) event.data.href = 'about:blank';
   if (event.type === 3) {
-    if (event.data.source === 0) { event.data.adds.forEach(addition => tree(addition.node)); event.data.attributes.forEach(change => attributes(change.attributes)); }
+    if (event.data.source === 0) { event.data.adds.forEach(addition => tree(addition.node)); event.data.attributes.forEach(change => attributes(change.attributes,change.id)); }
     if (event.data.source === 8) event.data.adds?.forEach(addition => { addition.rule = rewriteCssUrls(addition.rule, resolve); });
     if (event.data.source === 13 && event.data.set?.value != null) event.data.set.value = rewriteCssUrls(event.data.set.value, resolve);
     if (event.data.source === 15) event.data.styles?.forEach(style => style.rules.forEach(rule => { rule.rule = rewriteCssUrls(rule.rule, resolve); }));
   }
   return event;
+}
+
+/** Advance original per-node frame scopes alongside the source event stream;
+ * callers bind the URL lookup to that logical frame, never to the live profile. */
+export function rewriteReplayRecords(records:RecordingEnvelope[],resolve:(url:string,frameId?:string)=>string):RecordingEnvelope[]{
+  const frames=new Map<number,string>();
+  return records.map(record=>{
+    if(record.event.type===2)frames.clear();
+    for(const metadata of record.metadata)frames.set(metadata.nodeId,metadata.frameId);
+    return{...record,event:rewriteReplayEvent(record.event,resolve,id=>frames.get(id))};
+  });
 }
 
 /** Protocol adapter contains no navigation/fetch. Caller must bind the archive

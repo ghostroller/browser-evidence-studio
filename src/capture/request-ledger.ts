@@ -6,6 +6,7 @@ export interface CapturedRequest {
   mime: string;
   hop: number;
   frameId?: string;
+  loaderId?: string;
   startedAt: string;
   streaming?: boolean;
 }
@@ -26,7 +27,7 @@ export class RequestLedger {
   private sequence = 0;
   constructor(private readonly sessionId: string, private readonly targetId: string, private readonly capacity = 4096) {}
 
-  begin(input: { requestId: string; url: string; frameId?: string; redirect: boolean }): {
+  begin(input: { requestId: string; url: string; frameId?: string; loaderId?: string; redirect: boolean }): {
     current: CapturedRequest; previous?: CapturedRequest; evicted?: CapturedRequest;
   } {
     const previous = this.active.get(input.requestId);
@@ -37,7 +38,7 @@ export class RequestLedger {
     const current: CapturedRequest = {
       requestId: input.requestId,
       key: `${this.sessionId}/${this.targetId}/${input.requestId}/${occurrence}/${hop}`,
-      occurrence, hop, url: input.url, mime: '', frameId: input.frameId, startedAt: new Date().toISOString(),
+      occurrence, hop, url: input.url, mime: '', frameId: input.frameId, loaderId: input.loaderId, startedAt: new Date().toISOString(),
     };
     let evicted: CapturedRequest | undefined;
     if (!previous && this.active.size >= this.capacity) {
