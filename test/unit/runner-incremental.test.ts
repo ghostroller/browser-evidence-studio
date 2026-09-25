@@ -9,6 +9,7 @@ import { GateTransport, type ProtocolTransport } from '@/runner/gate';
 import { PersistentDatasetService } from '@/runner/datasets';
 import { fingerprintInput, fingerprintWorkflow } from '@/runner/fingerprint';
 import type { DatasetIdentity, ExecutionBinding } from '@/contracts/execution';
+import { assertWorkflowOutputBudget } from '@/runner/context';
 
 const hooks: RunnerHooks = { checkpoint: async key => ({ id: key }), emitData: async () => {}, attachArtifact: async name => ({ id: name }), assertion: async () => {}, requestHuman: async () => {}, progress: async () => {} };
 const preamble = `import { parentPort,workerData } from 'node:worker_threads';
@@ -105,3 +106,16 @@ test('binding mismatch prevents worker startup and late changes to source do not
   assert.equal(result.validation.versionVerdict, 'fail');
   assert.ok(result.snapshot?.contentHash);
 }));
+
+test('oversized entry output is refused before worker message serialization and defensively at the host without discarding durable data', async () => {
+  assert.throws(() => assertWorkflowOutputBudget({ data: 'x'.repeat(65536) }), /64 KiB/);
+  await fixture(`
+    await call('emitData','orders',[{id:'retained'}],{origin:'browser',sourceRefs:['source']});
+    parentPort.postMessage({type:'complete',output:'x'.repeat(70000),nodeVersion:process.versions.node});
+  `, async (options, service) => {
+    const result = await (await startWorkflow(options)).done;
+    assert.equal(result.status, 'failed'); assert.match(result.error ?? '', /64 KiB/);
+    assert.equal(result.output, undefined); assert.equal(result.datasetSummaries?.[0].committedRecords, 1);
+    assert.equal((await service.records(result.datasetSummaries![0], 'legacy-emitData', { limit: 5, maxBytes: 4096 })).items.length, 1);
+  });
+});
