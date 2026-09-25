@@ -6,6 +6,7 @@ import type { BoundedPage, ReadBudget } from '../contracts/recording';
 import type { JsonValue } from '../contracts/workflow';
 import { atomicFile, atomicJson, exists, safeFile } from '../evidence/files';
 import { claimWriterLock, type WriterLockHandle } from '../evidence/writer-lock';
+import type { StepEvent } from './steps';
 
 export class DatasetError extends Error {
   constructor(readonly code: string, message: string, readonly statusCode = 409) { super(message); this.name = 'DatasetError'; }
@@ -55,6 +56,7 @@ interface StoredBatch { schemaVersion: 1; sequence: number; batch: DatasetBatch;
 interface DatasetIndex { directory: string; identity: DatasetIdentity; committedBatches: number; committedRecords: number; completion?: DatasetCompletion }
 export interface RecordQuery extends ReadBudget { fields?: string[]; entity?: { field: string; equals: JsonValue } }
 export interface DatasetRecord { batchId: string; recordIndex: number; value: JsonValue; missingFields?: string[] }
+export interface BatchMetadata { receipt: BatchReceipt; provenance: DatasetBatch['provenance']; reusedFrom?: DatasetBatch['reusedFrom']; contentVerified: true; returnedBytes: number }
 
 /** One execution writer; batches are immutable authoritative files, indexes are reconstructed. */
 export class PersistentDatasetService implements DatasetService {
@@ -247,6 +249,38 @@ export class PersistentDatasetService implements DatasetService {
       });
       return bounded(selected, query, hash(canonicalJson({ identity, batchId, fields: query.fields ?? null, entity: query.entity ?? null })));
     });
+  }
+  batchMetadata(identity: DatasetIdentity, batchId: string, budget: ReadBudget): Promise<BatchMetadata> {
+    return this.operation(async () => {
+      cursorRange(budget, 'batch-metadata', 0);
+      if (budget.cursor) throw new DatasetError('INVALID_CURSOR', 'Batch metadata is one identified bounded result', 400);
+      const index = await this.index(identity);
+      const stored = await this.readStored(index.directory, batchFile(batchId));
+      const value: BatchMetadata = { receipt: stored.receipt, provenance: stored.batch.provenance, ...(stored.batch.reusedFrom ? { reusedFrom: stored.batch.reusedFrom } : {}), contentVerified: true, returnedBytes: 0 };
+      for (let pass = 0; pass < 4; pass++) value.returnedBytes = Buffer.byteLength(JSON.stringify(value));
+      if (value.returnedBytes > budget.maxBytes) throw new DatasetError('ITEM_TOO_LARGE', 'Batch metadata exceeds the explicit read budget', 413);
+      return value;
+    });
+  }
+  saveStep(event: StepEvent): Promise<void> {
+    const serialized = canonicalJson(event);
+    if (Buffer.byteLength(serialized) > 64 * 1024) return Promise.reject(new DatasetError('STEP_TOO_LARGE', 'Step event exceeds 64 KiB; return dataset references instead of records', 413));
+    return this.operation(async () => {
+      this.writable();
+      const frozen = JSON.parse(serialized) as StepEvent;
+      if (frozen.identity.executionId !== this.binding.executionId || !['running', 'succeeded', 'partial', 'failed', 'blocked', 'cancelled', 'awaiting-human'].includes(frozen.state)) throw new DatasetError('INVALID_STEP', 'Step event does not match this execution', 400);
+      executionId(frozen.identity.attemptId); executionId(frozen.identity.stepId);
+      const dir = await directory(this.root, ['executions', this.binding.executionId, 'attempts', frozen.identity.attemptId], true);
+      let count = 0;
+      for await (const file of await opendir(dir)) if (/^step-\d{4}\.json$/.test(file.name)) count++;
+      if (count >= 128) throw new DatasetError('STEP_EVENT_LIMIT', 'Step exceeds 128 lifecycle events', 413);
+      if (count > 0) {
+        const previous = JSON.parse(await readFile(await safeFile(dir, `step-${String(count).padStart(4, '0')}.json`), 'utf8')) as StepEvent;
+        if (canonicalJson(previous.identity) !== canonicalJson(frozen.identity)) throw new DatasetError('ATTEMPT_CONFLICT', 'Step attempt identity cannot change');
+        if (!['running', 'awaiting-human'].includes(previous.state)) throw new DatasetError('STEP_FINISHED', 'Step attempt already has a durable terminal result');
+      }
+      await atomicFile(path.join(dir, `step-${String(count + 1).padStart(4, '0')}.json`), Buffer.from(serialized));
+    }, Buffer.byteLength(serialized));
   }
   /** Explicit recovery only: validate immutable originals and rebuild the small metadata files.
    * It never runs as a side effect of summary, receipt pagination, or a body-by-ID read. */
