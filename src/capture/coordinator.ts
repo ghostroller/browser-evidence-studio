@@ -1,5 +1,6 @@
 import type { Page, CDPSession } from 'puppeteer-core';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { EvidenceStore } from '@/evidence/store';
 import recorder from '../../node_modules/rrweb/dist/rrweb.umd.cjs?raw';
 import { RequestLedger, type CapturedRequest } from './request-ledger';
@@ -10,7 +11,7 @@ import { installSourceRecorder } from './source-recorder';
 import { RecordingIndexWriter } from '@/replay/archive';
 import type { RecordingEnvelope } from './recording-types';
 import type { ReplayPosition } from '@/contracts/recording';
-import { CaptureBudget, type CaptureChannel } from './budget';
+import { CaptureBudget, DeferredBodyReads, type CaptureChannel } from './budget';
 import { ResourceCapture, isArchivableResource, privateResourceUrl, RESOURCE_MAX_BYTES } from '@/resources/archive';
 import { responsePrivacy } from './privacy';
 
@@ -43,6 +44,8 @@ export class CaptureCoordinator {
   private readonly losses = new Map<CaptureChannel,{from:ReplayPosition;to:ReplayPosition;count:number}>();
   private unknownStructuralLoss = false;
   private archivedDocument?:string;
+  private readonly bodyReads=new DeferredBodyReads();
+  private pendingMainBaseline=false;
   private readonly fullSnapshots = new Map<number,number>();
   private pauseAt?:string;
   private frameId?:string;
@@ -55,7 +58,22 @@ export class CaptureCoordinator {
   documentDestroyed(){this.documentGone=true;this.inspectionEnabled=false;}
   private fail(reason:string){if(this.degraded)return;this.degraded=true;this.onDegraded(reason);}
   get recordingPosition(){return this.lastPosition && {...this.lastPosition};}
-  get queueMetrics(){return this.budget.snapshot();}
+  get queueMetrics(){return{...this.budget.snapshot(),bodyDescriptors:this.bodyReads.metrics()};}
+  private bodyTask(work:()=>Promise<unknown>,descriptorBytes:number,channel:'resource'|'network'='resource'){
+    if(this.stopped)return false;
+    const accepted=this.bodyReads.add(async()=>{
+      const release=this.budget.reserve('resource',BODY_LIMIT*4+4096);
+      if(!release)throw new Error('Reserved body working set is unavailable');
+      try{await work();}catch(error){this.fail(String(error));await this.event('gap',{category:'resource',reason:'body-read-or-persistence-failed',error:String(error),from:this.lastPosition});throw error;}finally{release();}
+    },descriptorBytes);
+    if(!accepted){this.drops++;this.droppedChannels.set(channel,(this.droppedChannels.get(channel)||0)+1);this.fail('Pending response descriptors reached their bounded budget');}
+    return accepted;
+  }
+  private async currentSourcePosition(){
+    const deadline=Date.now()+5000;
+    while(this.pendingMainBaseline){if(Date.now()>=deadline)throw new Error('Current document source baseline was not committed before resource capture');await delay(10);}
+    await this.recording.flush();return this.lastPosition;
+  }
   private task(work: ()=>Promise<unknown>,estimatedBytes=4096,channel:CaptureChannel='network') {
     if(this.stopped) return false;
     const release=this.budget.reserve(channel,estimatedBytes);
@@ -82,7 +100,7 @@ export class CaptureCoordinator {
     cdp.on('Runtime.executionContextCreated',({context}:any)=>{ if(context.name===this.world) this.contexts.set(context.id,context.auxData?.frameId); });
     cdp.on('Runtime.executionContextDestroyed',({executionContextId}:any)=>{this.contexts.delete(executionContextId);this.fullSnapshots.delete(executionContextId);});
     cdp.on('Runtime.executionContextsCleared',()=>{this.contexts.clear();this.fullSnapshots.clear();});
-    cdp.on('Page.frameNavigated',({frame}:any)=>{ if(!frame.parentId){ this.frameId=frame.id; if(this.trackNavigationGeneration)this.identity.navigationGeneration++; this.inspectionEnabled=false; } if(!this.paused) this.task(()=>this.event('navigation',{frameId:frame.id,url:frame.url,loaderId:frame.loaderId,parentId:frame.parentId})); });
+    cdp.on('Page.frameNavigated',({frame}:any)=>{ if(!frame.parentId){ this.frameId=frame.id;this.pendingMainBaseline=true; if(this.trackNavigationGeneration)this.identity.navigationGeneration++; this.inspectionEnabled=false; } if(!this.paused) this.task(()=>this.event('navigation',{frameId:frame.id,url:frame.url,loaderId:frame.loaderId,parentId:frame.parentId})); });
     cdp.on('Runtime.exceptionThrown',(event:any)=>{if(!this.paused) this.task(()=>this.event('page-error',event));});
     cdp.on('Runtime.consoleAPICalled',(event:any)=>{if(!this.paused)this.task(()=>this.event('console',{type:event.type,args:event.args.map((x:any)=>({type:x.type,value:x.value,description:x.description?.slice(0,4000)}))}));});
     cdp.on('Runtime.bindingCalled',(event:any)=>{
@@ -96,8 +114,8 @@ export class CaptureCoordinator {
           const losses=[...this.losses].map(([category,range])=>({id:randomUUID(),from:range.from,to:range.to,category:category==='network'?'resource':category,reason:'capture-channel-budget',count:range.count}));this.losses.clear();
           if(this.unknownStructuralLoss){losses.push({id:randomUUID(),from:this.lastPosition??data.position,to:data.position,category:'structure',reason:'oversized-recorder-event-unknown-boundary',count:1});this.unknownStructuralLoss=false;}
           const record:RecordingEnvelope={...data,receivedAt:new Date().toISOString(),gaps:[...losses,...(data.errors??[]).map((reason:string)=>({id:randomUUID(),from:data.position,category:'metadata',reason}))]};
-          await this.recording.append(record);this.lastPosition=record.position;
-          if(data.event?.type===2){this.fullSnapshots.set(event.executionContextId,(this.fullSnapshots.get(event.executionContextId)||0)+1);await this.event('rrweb-full-snapshot',{frameId,isTop:data.isTop===true,contextId:event.executionContextId,timestamp:data.event.timestamp,position:record.position});if(this.archivedDocument!==record.position.documentId){this.archivedDocument=record.position.documentId;this.task(()=>this.captureLoadedResources(),RESOURCE_MAX_BYTES*4+4096,'resource');}}}
+          await this.recording.append(record);this.lastPosition=record.position;if(data.event?.type===2)this.pendingMainBaseline=false;
+          if(data.event?.type===2){this.fullSnapshots.set(event.executionContextId,(this.fullSnapshots.get(event.executionContextId)||0)+1);await this.event('rrweb-full-snapshot',{frameId,isTop:data.isTop===true,contextId:event.executionContextId,timestamp:data.event.timestamp,position:record.position});if(this.archivedDocument!==record.position.documentId){this.archivedDocument=record.position.documentId;this.bodyTask(()=>this.captureLoadedResources(),256,'resource');}}}
         else { await this.event(data.kind,{...data,frameId,actor:'unknown',source:'isolated-world-observer'}); if(data.kind==='element-selected') this.onSelection({...data,frameId,pageId:this.identity.pageId,generation:this.identity.navigationGeneration}); }
       },payloadBytes*3,channel);
       if(!accepted&&data.position){const previous=this.losses.get(channel);this.losses.set(channel,{from:previous?.from??data.position,to:data.position,count:(previous?.count??0)+1});}
@@ -126,12 +144,11 @@ export class CaptureCoordinator {
       if(!r)await this.event('gap',{reason:'response-without-observed-request',requestId:e.requestId,url:e.response.url});
       if(r?.streaming){const artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime,captureStatus:'unknown',reason:'SSE payload completeness unsupported; connection may remain open',source:{requestKey:r.key,url:r.url}});await this.event('network-stream',{requestKey:r.key,url:r.url,completeness:'unsupported'},[artifact.id]);}
     });});
-    cdp.on('Network.loadingFinished',(e:any)=>{if(this.paused||this.stopped)return;const r=this.requests.finish(e.requestId);this.task(async()=>{
+    cdp.on('Network.loadingFinished',(e:any)=>{if(this.paused||this.stopped)return;const r=this.requests.finish(e.requestId);this.bodyTask(async()=>{
       if(!r){await this.event('gap',{reason:'completion-without-observed-request',requestId:e.requestId});return;}
       if(r.streaming){await this.event('network-stream-ended',{requestKey:r.key,encodedDataLength:e.encodedDataLength,completeness:'unsupported'});return;}
       let artifact;
-      await this.recording.flush();
-      const resource=isArchivableResource(r.mime),position=this.lastPosition;
+      const resource=isArchivableResource(r.mime),position=await this.currentSourcePosition();
       const resourceInput=position?{position,frameId:!r.frameId||r.frameId===this.frameId?'top':r.frameId,requestId:r.key,url:r.url,mediaType:r.mime,source:{encodedDataLength:e.encodedDataLength}}:undefined;
       if(!resource&&!/json|text|html|xml|javascript|svg|x-www-form-urlencoded/i.test(r.mime)) artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime||'application/octet-stream',captureStatus:'excluded',reason:'Binary response metadata only',source:{requestKey:r.key,url:r.url}});
       else if(privateResourceUrl(r.url)){
@@ -148,7 +165,7 @@ export class CaptureCoordinator {
       }
       catch(error){if(resource&&resourceInput)await this.resources.capture({...resourceInput,status:'failed',reason:'observed-response-body-unavailable'});artifact=await this.store.putArtifact({kind:'response-body',mediaType:r.mime,captureStatus:'read-failed',reason:String(error),source:{requestKey:r.key,url:r.url}});}
       await this.event('network-body',{requestKey:r.key,url:r.url,encodedDataLength:e.encodedDataLength},[artifact.id]);
-    },BODY_LIMIT*4+4096,isArchivableResource(r?.mime||'')?'resource':'network');});
+    },Buffer.byteLength(JSON.stringify({event:e,request:r}))+256,isArchivableResource(r?.mime||'')?'resource':'network');});
     cdp.on('Network.loadingFailed',(e:any)=>{if(this.paused||this.stopped)return;const r=this.requests.finish(e.requestId);this.task(async()=>{const artifact=r?await this.store.putArtifact({kind:'response-body',mediaType:r.mime||'application/octet-stream',captureStatus:'missing',reason:e.errorText||'Network request failed',source:{requestKey:r.key,url:r.url}}):undefined;await this.event('network-failed',{...e,requestKey:r?.key},artifact?[artifact.id]:undefined);});});
     cdp.on('Network.webSocketCreated',(e:any)=>{if(!this.paused)this.task(()=>this.event('gap',{reason:'WebSocket payload completeness unsupported',...e}));});
     cdp.on('Disconnected',()=>{if(!this.stopped){this.fail('Capture CDP disconnected');const unfinished=this.requests.reset();this.task(async()=>{await this.event('gap',{reason:'capture CDP disconnected'});await this.unfinished(unfinished,'capture-disconnected-in-flight');});}});
@@ -167,11 +184,10 @@ export class CaptureCoordinator {
     const injection=await cdp.send('Runtime.evaluate',{expression:script,contextId:executionContextId});
     if(injection.exceptionDetails){this.fail('rrweb observer injection failed');throw new Error('rrweb observer injection failed: '+(injection.exceptionDetails.exception?.description||injection.exceptionDetails.text));}
     await this.event('capture-ready',{capabilities:{mainDocument:true,rrweb:true,recordingFormat:2,sourceAdapter:RRWEB_ADAPTER_VERSION,networkBodies:true,crossOriginFrames:'unsupported',openShadowRoots:'captured-unverified',canvas:'unsupported',media:'unsupported',nodeHttp:'unobserved'},targetId:this.identity.targetId});
-    this.task(()=>this.captureLoadedResources(),RESOURCE_MAX_BYTES*4+4096,'resource');
+    this.bodyTask(()=>this.captureLoadedResources(),256,'resource');
   }
   private async captureLoadedResources(){
-    await this.recording.flush();
-    const position=this.lastPosition;if(!position)return;
+    const position=await this.currentSourcePosition();if(!position)return;
     const {frameTree}=await this.cdp.send('Page.getResourceTree');
     let count=0;
     const visit=async(tree:typeof frameTree):Promise<void>=>{
@@ -212,7 +228,7 @@ export class CaptureCoordinator {
     const complete=outcomes.length>0&&outcomes.every(outcome=>outcome.requested&&outcome.observed);
     await this.event(complete?'rrweb-resumed':'gap',{reason:complete?reason:'fresh-rrweb-snapshot-not-observed',requestedBecause:reason,startedAt,endedAt:new Date().toISOString(),outcomes});if(!complete)this.fail('Fresh rrweb snapshot was not observed after resume');
   }
-  async flush(){while(this.pending.size)await Promise.allSettled([...this.pending]);await this.recording.flush();await this.resources.flush();if(this.drops){const dropped=this.drops;this.drops=0;await this.event('gap',{reason:'capture-backpressure',dropped,channels:Object.fromEntries(this.droppedChannels),from:this.lastPosition,queueMetrics:this.budget.snapshot()});this.droppedChannels.clear();}await this.store.flush();}
+  async flush(){while(this.pending.size)await Promise.allSettled([...this.pending]);await this.bodyReads.flush();await this.recording.flush();await this.resources.flush();if(this.drops){const dropped=this.drops;this.drops=0;await this.event('gap',{reason:'capture-backpressure',dropped,channels:Object.fromEntries(this.droppedChannels),from:this.lastPosition,queueMetrics:this.queueMetrics});this.droppedChannels.clear();}await this.store.flush();}
   stop(){
     // Page destruction and a user seal can race. Share one teardown attempt;
     // a failed attempt is released so an explicit retry can finish durability.
@@ -235,6 +251,9 @@ export class CaptureCoordinator {
     }
     const wasPaused=this.paused;this.stopped=true;this.inspectionEnabled=false;
     this.unfinishedOnStop??=this.requests.reset();
+    // Accepted body descriptors still need the capture CDP connection. Stop
+    // accepting new events first, drain durable reads, then detach the observer.
+    await this.flush();
     if(this.cdp&&!this.cdp.detached)await this.cdp.detach().catch(error=>{if(!this.page.isClosed()&&!this.documentGone)throw error;});
     await this.flush();if(this.unknownStructuralLoss){await this.event('gap',{category:'structure',reason:'oversized-final-recorder-event-unknown-boundary',from:this.lastPosition,to:'unknown',finalEmissionLost:true});await this.store.flush();throw new Error('Final source event exceeded its budget; capture remains incomplete');}if(wasPaused&&!this.pausedStopRecorded){await this.event('gap',{reason:'recording-paused',startedAt:this.pauseAt,endedAt:new Date().toISOString(),endedBy:'capture-stop'});this.pausedStopRecorded=true;}
     while(this.unfinishedOnStop.length){await this.unfinished([this.unfinishedOnStop[0]!],'capture-stopped-in-flight');this.unfinishedOnStop.shift();}
@@ -245,7 +264,7 @@ export class CaptureCoordinator {
 function observe(binding:string) {
   const w=window as any; if(w.__besInstalled)return; w.__besInstalled=true;
   const emit=(data:Record<string,unknown>)=>{try{w[binding](JSON.stringify({...data,isTop:window===window.top}));}catch{}};
-  const describe=(el:Element)=>({tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),name:el.getAttribute('aria-label'),text:(el.textContent||'').trim().slice(0,400),selectors:[el.id?'#'+CSS.escape(el.id):null,el.getAttribute('data-testid')?'[data-testid='+JSON.stringify(el.getAttribute('data-testid'))+']':null].filter(Boolean),rect:el.getBoundingClientRect().toJSON(),url:location.href});
+  const describe=(el:Element)=>{const privateText=!!el.closest('.rr-mask,.rr-block')||/^(input|textarea|select|option)$/i.test(el.localName);return{tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),name:privateText?'[redacted]':el.getAttribute('aria-label'),text:privateText?'[redacted]':(el.textContent||'').trim().slice(0,400),selectors:privateText?[]:[el.id?'#'+CSS.escape(el.id):null,el.getAttribute('data-testid')?'[data-testid='+JSON.stringify(el.getAttribute('data-testid'))+']':null].filter(Boolean),rect:el.getBoundingClientRect().toJSON(),url:location.href};};
   const listeners=new AbortController(),options={capture:true,signal:listeners.signal};
   let highlighted:HTMLElement|undefined;
   document.addEventListener('pointermove',e=>{if(!w.__besInspect)return; if(highlighted)highlighted.style.removeProperty('outline');highlighted=e.target as HTMLElement; highlighted.style.outline='2px solid #19bda0';},options);

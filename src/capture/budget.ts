@@ -25,3 +25,29 @@ export class CaptureBudget {
   }
   snapshot(): Partial<Record<CaptureChannel, ChannelMetrics>> { return Object.fromEntries([...this.channels].map(([key, value]) => [key, { ...value }])); }
 }
+
+/** Holds only bounded request descriptors while exactly one large response is
+ * read/decoded/persisted. The working-set reservation is separate from this
+ * descriptor budget and is retained until that read has fully settled. */
+export class DeferredBodyReads {
+  private waiting:Array<{work:()=>Promise<void>;bytes:number}>=[];
+  private running?:Promise<void>;
+  private bytes=0;
+  private peakBytes=0;
+  private peakTasks=0;
+  private rejected=0;
+  private error?:unknown;
+  constructor(private readonly maxBytes=1024*1024,private readonly maxTasks=256){}
+  add(work:()=>Promise<void>,descriptorBytes:number):boolean{
+    if(!Number.isSafeInteger(descriptorBytes)||descriptorBytes<0)throw new Error('Invalid body descriptor size');
+    if(this.bytes+descriptorBytes>this.maxBytes||this.waiting.length+(this.running?1:0)>=this.maxTasks){this.rejected++;return false;}
+    this.bytes+=descriptorBytes;this.waiting.push({work,bytes:descriptorBytes});this.peakBytes=Math.max(this.peakBytes,this.bytes);this.peakTasks=Math.max(this.peakTasks,this.waiting.length+(this.running?1:0));this.drain();return true;
+  }
+  private drain(){
+    if(this.running)return;
+    const next=this.waiting.shift();if(!next)return;
+    this.running=Promise.resolve().then(next.work).catch(error=>{this.error??=error;}).finally(()=>{this.bytes-=next.bytes;this.running=undefined;this.drain();});
+  }
+  async flush(){while(this.running)await this.running;if(this.error)throw this.error;}
+  metrics(){return{queuedBytes:this.bytes,queuedTasks:this.waiting.length,activeReads:this.running?1:0,peakDescriptorBytes:this.peakBytes,peakTasks:this.peakTasks,rejected:this.rejected};}
+}
