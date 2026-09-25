@@ -55,3 +55,21 @@ Studio.navigate 调用专用 navigateObserved。先安装 Puppeteer load watcher
 未完成 execution 的摘要/列表从 C 的 durable dataset identities + summary 小索引读取，最多 128 个目录/数据集；拒绝 symlink/异常目录。不扫描 batch 正文，不领取 writer lease，不改 host-state 或原件。已完成执行仍保留其固定终态目录。已有 exact batch/body 接口可读取中断前已提交数据。
 
 实际 Node 子进程调用 ProjectExecutions.begin + C begin/append，输出耐久回执边界后由测试 SIGKILL，保持 host-state.datasets=[] 和旧 writer.lock。新的 ProjectExecutions 只读重开显示 interrupted、一个 unfinished dataset、1 batch/2 records，并按真实 datasetRecords 读取；原 host-state 与 lock 字节保持一致。首次测试误写不存在 appendBatch（C真实方法是append），失败原件和日志保留；修正真实调用后 `npm.cmd test -- test/unit/execution-crash-catalog.test.ts test/unit/project-executions.test.ts` **2 文件/3 项通过，4.15 s**（crash-catalog-tests-2.log），typecheck通过。此处验证已确认耐久batch后崩溃；C未确认commit的pending损坏仍须其明确rebuild，不自动扫正文恢复。
+
+## 用户复盘暂停检查点（2026-09-26）
+
+按根明确暂停调度，停止扩展新包/测试。暂停前源码 HEAD `8c8d6f9`，working tree clean；仅本段交接另作提交。原树、分支、node_modules、失败日志/合成证据全部保留。E没有启动 Electron/物理输入/长测，Node v24.21.0/npm11.19.0。
+
+E已交付提交：`e686e5f`（授权/材料）、`c205d6f`（生产门面/隔离回放）、`900f1f0`（审查返修）、`d08c71f`（真实多节点checkpoint采样）、`ce13c20`（导航同文档readiness）、`83aa396`（崩溃后已提交dataset发现）。根已报告前五个依次集成为 `e48dcdd/5a9f216/a84e287/1954adf/b77a017`；`83aa396`等待根审查/集成。不要重复pick E树中的共享依赖。
+
+最近批准依赖映射：`de82e5c→b4e8861`、`38a7740→2d77895`、`f3adf7f→8c8d6f9` 已接入，之后尚未运行模块/build；未开始 ReplayHost frame接入的新修改。此前 `b99a1ac→b0faf73`、`26a3a69→499f77d`。
+
+根告知最新真实验证：G首轮系统在 `b77a017` 通过，原件 `output/desktop-1790374154201`、PID43312；good pass、wrong-value fail、evidence-partial源核验pass且step partial，两条durable样本和真实授权撤销403。此为根实际验证范围；E未重复运行，不能推导所有UI、回放、完整权限或长测通过。
+
+接续优先事项：
+1. 核对本树HEAD/clean/Node，接根最新审查状态；让根集成/审查83aa396。该包已实测子进程在回执后强杀；未确认commit的C pending索引仍需明确rebuild，正常读取不扫描全部body。
+2. ReplayHost 使用已接 A rewriteReplayRecords 按 frame+URL resolve（当前仍top+URL）；resolve缺失/非captured不能映射about:blank后宣称resources ready，需有界诊断。waitReplayPresentation递归同源frame/open shadow资产；Escape select失败仅明确stale/closed可取消，其余须保留错误。随后根跑原生回放/选择测试。
+3. A responseObservedAt包58d18d2等待根批准SHA（本树未接）；E JSON scope已经只用该原始观测时刻，旧缺字段保守不足。不得退回createdAt。
+4. 真实API剩余权限缺口：state暴露过多数据/connection；jobs读和取消需核对任务范围；registerWorkflow等配置写为UI-only；capabilities仍旧single-use描述。须先与根对齐schema和测试fixture，不能用默认绕过；根独写test/unit/api-boundary.test.ts和validation-start-api.test.ts。
+5. T13固定revision/index/diff/cursor/budget授权机器handoff及repo入口skill待实现。skill-creator已读并告知，不全局安装；现skills/browser-evidence-studio还是旧协议。运行资源可用Vite raw import打入.vite，无cwd依赖；若拷贝资源由根统一Forge白名单。导出不含token/profile/cookie，不接受任意输出路径。
+6. 最终desktop专项test/desktop/refactor-agent.ts、实际UI/handoff/保存失败/完整权限、独立业务、打包和30分钟长测仍由根串行安排。模块通过不等同整体验收。
