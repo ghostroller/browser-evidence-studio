@@ -247,10 +247,21 @@ export class EvidenceStore {
     return this.enqueue(Buffer.byteLength(JSON.stringify(snapshot)), async () => { this.writable(); return this.event(snapshot); });
   }
   putArtifact(input: ArtifactInput): Promise<Artifact> {
+    return this.writeArtifact(input);
+  }
+  /** A trusted collector measured the entire observed response but retained
+   * only its bounded prefix. Never use declared Content-Length as this value. */
+  putArtifactPrefix(input: ArtifactInput, observedOriginalBytes: number): Promise<Artifact> {
+    const retainedBytes = typeof input.data === 'string' ? Buffer.byteLength(input.data) : input.data?.byteLength;
+    if (!Number.isSafeInteger(observedOriginalBytes) || retainedBytes === undefined || observedOriginalBytes <= retainedBytes || input.limitBytes === undefined || retainedBytes > input.limitBytes) return Promise.reject(new EvidenceError('INVALID_OBSERVED_PREFIX', 'A prefix requires measured original bytes larger than its bounded retained content.'));
+    return this.writeArtifact(input, observedOriginalBytes);
+  }
+  private writeArtifact(input: ArtifactInput, observedOriginalBytes?: number): Promise<Artifact> {
     const { data, ...attributes } = input;
     const snapshot = clone(attributes);
     if (input.limitBytes !== undefined && (!Number.isSafeInteger(input.limitBytes) || input.limitBytes < 0)) return Promise.reject(new EvidenceError('INVALID_LIMIT', 'Artifact limitBytes must be a nonnegative integer.'));
-    const { content, originalBytes, truncated } = captureContent(data, snapshot);
+    const captured = captureContent(data, snapshot);
+    const { content } = captured, originalBytes = observedOriginalBytes ?? captured.originalBytes, truncated = observedOriginalBytes !== undefined || captured.truncated;
     if (content === undefined && (snapshot.captureStatus === 'complete' || snapshot.captureStatus === 'empty') || content !== undefined && ['missing', 'excluded', 'not-applicable'].includes(snapshot.captureStatus ?? '') || snapshot.captureStatus === 'empty' && originalBytes) {
       return Promise.reject(new EvidenceError('INVALID_CAPTURE_STATUS', 'Capture status contradicts the supplied artifact bytes.'));
     }

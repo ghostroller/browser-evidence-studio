@@ -13,8 +13,8 @@ import type { RecordingEnvelope } from './recording-types';
 import type { ReplayPosition } from '@/contracts/recording';
 import { CaptureBudget, DeferredBodyReads, type CaptureChannel } from './budget';
 import { ResourceCapture, isArchivableResource, privateResourceUrl, RESOURCE_MAX_BYTES } from '@/resources/archive';
-import { responsePrivacy } from './privacy';
 import { captureMetadata, credentialUrl } from './url-privacy';
+import { prepareResponseBody, RESPONSE_CDP_BUFFER_BYTES, RESPONSE_WORKING_BYTES } from './response-body';
 import type { ArtifactInput } from '@/evidence/contracts';
 
 export interface PageIdentity { pageId:string; targetId:string; webContentsId:number; navigationGeneration:number; openerPageId?:string; }
@@ -64,7 +64,7 @@ export class CaptureCoordinator {
   private bodyTask(work:()=>Promise<unknown>,descriptorBytes:number,channel:'resource'|'network'='resource'){
     if(this.stopped)return false;
     const accepted=this.bodyReads.add(async()=>{
-      const release=this.budget.reserve('resource',BODY_LIMIT*4+4096);
+      const release=this.budget.reserve('resource',RESPONSE_WORKING_BYTES);
       if(!release)throw new Error('Reserved body working set is unavailable');
       try{await work();}catch(error){this.fail(String(error));await this.event('gap',{category:'resource',reason:'body-read-or-persistence-failed',error:String(error),from:this.lastPosition});throw error;}finally{release();}
     },descriptorBytes);
@@ -96,7 +96,7 @@ export class CaptureCoordinator {
     for(const request of requests){const artifact=await this.artifact({kind:'response-body',mediaType:request.mime||'application/octet-stream',captureStatus:request.streaming?'unknown':'missing',reason,source:{requestKey:request.key,url:request.url,frameId:request.frameId}});await this.event('gap',{reason,requestKey:request.key,url:request.url,startedAt:request.startedAt,endedAt:new Date().toISOString(),streaming:!!request.streaming},[artifact.id]);}
   }
   private event(type:string,data:unknown, artifactRefs?:string[],navigationGeneration=this.identity.navigationGeneration) { return this.store.appendEvent({type,source:'cdp',pageId:this.identity.pageId,navigationGeneration,data:captureMetadata(data),artifactRefs}); }
-  private artifact(input:ArtifactInput){const{data,...metadata}=input;return this.store.putArtifact({...captureMetadata(metadata),data});}
+  private artifact(input:ArtifactInput,observedOriginalBytes?:number){const{data,...metadata}=input;const safe={...captureMetadata(metadata),data};return observedOriginalBytes===undefined?this.store.putArtifact(safe):this.store.putArtifactPrefix(safe,observedOriginalBytes);}
   async start() {
     this.cdp=await this.page.createCDPSession();
     const cdp=this.cdp as any;
@@ -157,25 +157,32 @@ export class CaptureCoordinator {
       else if(privateResourceUrl(r.url)){
         if(resource&&resourceInput)await this.resources.capture({...resourceInput,status:'redacted',reason:'credential-bearing-resource-url'});
         artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:'excluded',reason:'credential-bearing-response-url',source:{requestKey:r.key,url:'[redacted]'}});
-      } else try {
-        if(responseRead.invalidated)throw new Error(responseRead.invalidated);
-        const body=await cdp.send('Network.getResponseBody',{requestId:e.requestId});
-        if(responseRead.invalidated)throw new Error(responseRead.invalidated);
-        if(body.body.length>(body.base64Encoded?Math.ceil(BODY_LIMIT/3)*4:BODY_LIMIT))throw new Error('response-decoded-byte-budget');
-        const bytes=Buffer.from(body.body,body.base64Encoded?'base64':'utf8');
-        if(bytes.length>BODY_LIMIT)throw new Error('response-decoded-byte-budget');
-        if(resource&&resourceInput)await this.resources.capture({...resourceInput,data:bytes});
+      } else {
+        let safe: ReturnType<typeof prepareResponseBody>;
+        try {
+          if(responseRead.invalidated)throw new Error(responseRead.invalidated);
+          const body=await cdp.send('Network.getResponseBody',{requestId:e.requestId});
+          if(responseRead.invalidated)throw new Error(responseRead.invalidated);
+          safe=prepareResponseBody(body,r.mime);
+        } catch(error) {
+          const reason=responseRead.invalidated??'observed-response-body-unavailable',cause=captureMetadata({message:String(error)}).message.slice(0,4096);
+          if(resource&&resourceInput)await this.resources.capture({...resourceInput,status:'failed',reason});
+          artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:responseRead.invalidated?'missing':'read-failed',reason,metadata:{cause},source:{requestKey:r.key,url:r.url}});
+          await this.event('network-body',{requestKey:r.key,url:r.url,encodedDataLength:e.encodedDataLength},[artifact.id]);return;
+        }
+        // Persistence errors must reach the capture task's durable gap/failure
+        // path, rather than becoming a successful body-read fallback artifact.
+        if(resource&&resourceInput)await this.resources.capture({...resourceInput,...(safe.redacted?{status:'redacted' as const,reason:safe.excludedReason??'response-privacy-policy'}:safe.observedBytes?{status:'missing' as const,reason:'resource-byte-budget'}:{data:safe.data})});
         if(resource&&!/text|svg/i.test(r.mime))artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:'excluded',reason:'Binary bytes captured in offline resource archive',source:{requestKey:r.key,url:r.url}});
-        else {const safe=responsePrivacy(bytes,r.mime);artifact=await this.artifact({kind:'response-body',mediaType:r.mime,data:safe.data,limitBytes:BODY_LIMIT,...(safe.excludedReason?{captureStatus:'excluded' as const,reason:safe.excludedReason}:{}),metadata:{privacyRedacted:safe.redacted,representation:safe.redacted?'privacy-redacted-response':'observed-response'},source:{requestKey:r.key,url:r.url,frameId:r.frameId}});}
+        else {artifact=await this.artifact({kind:'response-body',mediaType:r.mime,data:safe.data,limitBytes:BODY_LIMIT,...(safe.excludedReason?{captureStatus:'excluded' as const,reason:safe.excludedReason}:{}),metadata:{privacyRedacted:safe.redacted,representation:safe.redacted?'privacy-redacted-response':'observed-response',...(safe.observedBytes?{originalByteBasis:'entire-observed-CDP-response-UTF8'}:{})},source:{requestKey:r.key,url:r.url,frameId:r.frameId}},safe.observedBytes);}
       }
-      catch{const reason=responseRead.invalidated??'observed-response-body-unavailable';if(resource&&resourceInput)await this.resources.capture({...resourceInput,status:'failed',reason});artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:responseRead.invalidated?'missing':'read-failed',reason,source:{requestKey:r.key,url:r.url}});}
       await this.event('network-body',{requestKey:r.key,url:r.url,encodedDataLength:e.encodedDataLength},[artifact.id]);
     }finally{responseRead.release();}},Buffer.byteLength(JSON.stringify({event:e,request:r}))+256,isArchivableResource(r?.mime||'')?'resource':'network');if(!accepted)responseRead.release();});
     cdp.on('Network.loadingFailed',(e:any)=>{if(this.paused||this.stopped)return;const r=this.requests.finish(e.requestId);this.task(async()=>{const artifact=r?await this.artifact({kind:'response-body',mediaType:r.mime||'application/octet-stream',captureStatus:'missing',reason:e.errorText||'Network request failed',source:{requestKey:r.key,url:r.url}}):undefined;await this.event('network-failed',{...e,requestKey:r?.key},artifact?[artifact.id]:undefined);});});
     cdp.on('Network.webSocketCreated',(e:any)=>{if(!this.paused)this.task(()=>this.event('gap',{reason:'WebSocket payload completeness unsupported',...e}));});
     cdp.on('Disconnected',()=>{if(!this.stopped){this.fail('Capture CDP disconnected');const unfinished=this.requests.reset();this.task(async()=>{await this.event('gap',{reason:'capture CDP disconnected'});await this.unfinished(unfinished,'capture-disconnected-in-flight');});}});
     await cdp.send('Runtime.enable'); await cdp.send('Page.enable');
-    await cdp.send('Network.enable',{maxTotalBufferSize:64*1024*1024,maxResourceBufferSize:RESOURCE_MAX_BYTES,maxPostDataSize:BODY_LIMIT});
+    await cdp.send('Network.enable',{maxTotalBufferSize:64*1024*1024,maxResourceBufferSize:RESPONSE_CDP_BUFFER_BYTES,maxPostDataSize:BODY_LIMIT});
     await cdp.send('Runtime.addBinding',{name:this.binding,executionContextName:this.world});
     // rrweb itself creates transient helper iframes. Recording every new frame
     // recursively would instrument those helpers and create an iframe loop.
