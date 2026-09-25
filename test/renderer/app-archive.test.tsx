@@ -39,6 +39,31 @@ const state = {
   runs: [runA, runB].map(id => ({ id, projectId: 'project-1', kind: 'demonstrate', status: 'sealed' })),
 };
 
+test('urgent stop remains available during an unrelated pending request and targets the active run', async () => {
+  stubLayout();
+  const pendingSave = deferred<unknown>();
+  const active = { id: runA, projectId: 'project-1', profileId: 'profile-1', execution: 'ready', controller: 'human', leaseEpoch: 1, pages: [] };
+  const call = vi.fn(async (method: string) => {
+    if (method === 'state') return { ...state, active };
+    if (method === 'history') return { checkpoints: { items: [] } };
+    if (method === 'presentation') return undefined;
+    if (method === 'saveProfile') return pendingSave.promise;
+    if (method === 'stopRunner') return { stopped: true };
+    throw new Error(`Unexpected method ${method}`);
+  });
+  window.studio = { call, bounds: vi.fn() };
+  render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
+  fireEvent.mouseDown(screen.getByRole('tab', { name: '执行' }), { button: 0, ctrlKey: false });
+  await waitFor(() => expect((screen.getByRole('button', { name: '保存当前登录环境' }) as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(screen.getByRole('button', { name: '保存当前登录环境' }));
+  await waitFor(() => expect(call).toHaveBeenCalledWith('saveProfile', {}));
+  const stop = screen.getByRole('button', { name: '停止并接管' }) as HTMLButtonElement;
+  expect(stop.disabled).toBe(false);
+  fireEvent.click(stop);
+  await waitFor(() => expect(call).toHaveBeenCalledWith('stopRunner', { runId: runA, validationId: undefined }));
+  await act(async () => pendingSave.resolve({}));
+});
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();

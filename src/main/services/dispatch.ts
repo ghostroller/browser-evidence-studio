@@ -48,7 +48,10 @@ export function makeDispatch(studio:Studio){
       case 'pages':ensure(studio.active?.id===body.runId,'Run is not active',409);return {items:studio.state().active!.pages};
       case 'snapshot':if(source==='api')ensure(studio.active?.id===body.runId,'Run is not active',409);return studio.snapshot(body);
       case 'navigate':return studio.navigate(body.url);case 'action':return studio.action(body);
-      case 'selectPage':{const r=studio.required(),p=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;ensure(p,'Unknown page');ensure(!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Cannot change execution target while running',409);ensure(!r.pendingOperation,'Operation connection is still starting',409);const operation=r.operation;if(operation){await operation.gate.quiesce();await operation.browser.disconnect();if(r.operation===operation)r.operation=undefined;}ensure(studio.active===r&&r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Page selection was cancelled',409);r.selectedPageId=p.pageId;r.leaseEpoch++;studio.window.show(p.view);return studio.state();}
+      case 'selectPage':return studio.selectPage(body.pageId);
+      case 'navigateHistory':ensure(source==='ui','Session navigation requires the trusted UI',403);ensure(['back','forward','reload'].includes(body.direction),'Unknown navigation direction');return studio.navigateHistory(body.direction);
+      case 'closePage':ensure(source==='ui','Closing live pages requires the trusted UI',403);return studio.closePage(body.pageId);
+      case 'closeSession':ensure(source==='ui','Closing the browser session requires the trusted UI',403);return studio.closeSession();
       case 'checkpoint':return studio.checkpoint(body,{signal:context.signal});
       case 'cancelCheckpoint':ensure(source==='ui','Checkpoint API cancellation uses its job identity',403);return studio.cancelCheckpoint(body);
       case 'inspect':ensure(studio.required().controller==='human'&&!['running'].includes(studio.required().execution),'Inspection requires human control',409);await studio.current().capture.inspect(!!body.enabled);return {enabled:!!body.enabled};
@@ -63,7 +66,7 @@ export function makeDispatch(studio:Studio){
       case 'validate':case 'startValidation':return studio.validate(body,{signal:context.signal,requireGrant:source==='api'&&grantStart});case 'validation':return studio.validation(source==='api'?body.validationId:body.id||body.validationId);case 'validations':return {items:studio.state().validations.filter(v=>!body.runId||v.runId===body.runId)};case 'review':ensure(source==='ui','Human reviews must be submitted in the trusted client',403);return studio.review(body);
       case 'reviews':return studio.reviews(source==='api'?body.validationId:body.id||body.validationId,body);
       case 'requestHuman':return studio.startHandoff(body);case 'replyHuman':case 'releaseHuman':ensure(source==='ui','Only the trusted client can return human control',403);return studio.releaseHuman(body.handoffId||body.id);case 'cancelHandoff':return studio.cancelHandoff(body.handoffId||body.id);case 'handoffs':{const active=studio.active;return {items:active&&active.id===body.runId&&active.handoff?[active.handoff]:[]};}
-      case 'stopRunner':return studio.stopRunner();case 'cancelJob':ensure(['startValidation','requestHuman','action'].includes(body.operation),'This short atomic operation cannot be cancelled after commit',409);return studio.stopRunner();
+      case 'stopRunner':if(source==='ui'){const state=studio.state();if(body.validationId)ensure(state.validationStarting?.validationId===body.validationId,'Validation stop target is stale',409);else if(body.runId)ensure(studio.active?.id===body.runId,'Stop target is stale',409);}return studio.stopRunner();case 'cancelJob':ensure(['startValidation','requestHuman','action'].includes(body.operation),'This short atomic operation cannot be cancelled after commit',409);return studio.stopRunner();
       default:ensure(false,'Unknown operation: '+method,404);
     }};
     // Read-only state and handoff replies must remain responsive during long operations.

@@ -17,13 +17,13 @@ export async function runReviewUiScenarios(studio: Studio): Promise<void> {
   const foreignProject = studio.projects.find(candidate => candidate.id !== project.id)!;
   const foreignProfile = studio.profiles.find(candidate => candidate.projectId === foreignProject.id)!;
   const key = record.result.validation.requirements[0].checkpointKey;
-  if (studio.active) await studio.seal();
+  if (studio.active) await studio.seal();await studio.closeSession();
   await studio.startRun({ projectId: project.id, profileId: profile.id, url: 'about:blank', kind: 'demonstrate' });
   const ownRunId = studio.required().id;
-  await studio.checkpoint({ key, title: '当前项目合成示范', description: '同项目对照说明' }); await studio.seal();
+  await studio.checkpoint({ key, title: '当前项目合成示范', description: '同项目对照说明' }); await studio.seal();await studio.closeSession();
   await studio.startRun({ projectId: foreignProject.id, profileId: foreignProfile.id, url: 'about:blank', kind: 'demonstrate' });
   const foreignRunId = studio.required().id;
-  await studio.checkpoint({ key, title: '其他项目合成示范', description: '不应出现的跨项目对照' }); await studio.seal();
+  await studio.checkpoint({ key, title: '其他项目合成示范', description: '不应出现的跨项目对照' }); await studio.seal();await studio.closeSession();
   for (let index = 0; index < 21; index++) await studio.review({ id: record.id, verdict: 'reject', reason: `合成历史判定 ${index}`, scope: key });
 
   const ui = studio.window.window.webContents;
@@ -123,7 +123,7 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
     }
     const diagnostics = await evaluate<unknown>(`({ error:document.querySelector('.banner.error')?.textContent || '', status:document.querySelector('.statusbar')?.textContent || '', buttons:Array.from(document.querySelectorAll('button')).slice(0,35).map(button=>({text:button.textContent.trim(),disabled:button.disabled})) })`).catch(() => 'renderer unavailable');
     await writeFile(path.join(studio.root, 'ui-failure.png'), (await ui.capturePage()).toPNG()).catch(() => undefined);
-    throw new Error(`UI wait failed: ${name}; last=${JSON.stringify(last)}; diagnostics=${JSON.stringify(diagnostics)}`);
+    throw new Error(`UI wait failed: ${name}; last=${JSON.stringify(last)}; diagnostics=${JSON.stringify(diagnostics)}; native=${JSON.stringify(studio.window.presentationStatus())}`);
   }
   async function click(text: string, scope = 'document') {
     // The renderer polls main state every 2 s. A main-side transition may have

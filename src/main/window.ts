@@ -59,6 +59,12 @@ export class StudioWindow {
     return {...this.startupEvents,destroyed,documentReady:this.uiDocumentReady,needsBounds:this.uiNeedsBounds,
       loading:!destroyed && this.window.webContents.isLoadingMainFrame()};
   }
+  /** Read-only diagnostics: explain native visibility without overriding any lock. */
+  presentationStatus() {
+    return { browserVisible:this.browserVisible, needsBounds:this.uiNeedsBounds, occlusion:[...this.occlusion],
+      rect:{...this.rect}, locked:this.locked, activeWebContentsId:this.active && this.contents(this.active)?.id,
+      views:this.views.map(view=>({webContentsId:this.contents(view)?.id,visible:view.getVisible(),bounds:view.getBounds()})) };
+  }
   async load() {
     await this.window.loadURL(this.uiUrl);
     if(this.window.isDestroyed() || this.window.webContents.isDestroyed())throw new Error('Trusted UI was destroyed before its layout became ready');

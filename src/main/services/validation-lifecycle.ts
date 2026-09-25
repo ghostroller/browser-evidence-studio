@@ -1,4 +1,5 @@
 import { readFile, stat } from 'node:fs/promises';
+import type { ExecutionMode } from '@/contracts/execution';
 import path from 'node:path';
 import { EvidenceStore } from '@/evidence/store';
 import { EvidenceReader } from '@/evidence/reader';
@@ -14,7 +15,7 @@ export interface ValidationLifecycleContext {
   validationId: string; runId: string; projectId: string; profileId: string; directory: string; reportId?: string;
 }
 export type ValidationLifecycleObserver = (stage: ValidationLifecycleStage, context: ValidationLifecycleContext) => void | Promise<void>;
-export interface ValidationIdentity { id: string; runId: string; projectId: string; profileId: string; directory: string; }
+export interface ValidationIdentity { id: string; runId: string; projectId: string; profileId: string; directory: string; executionMode?:ExecutionMode; }
 export interface ValidationRecoveryDiagnostic { runId?: string; validationId?: string; code: string; message: string; }
 export interface ValidationRecord extends ValidationIdentity {
   startedAt: string;
@@ -153,6 +154,7 @@ export async function recoverValidationCatalog(root: string, runs: Record<string
         const hint = previous.find(item => item.id === id && item.runId === run.id && item.projectId === manifest.projectId);
         const record: ValidationRecord = { id, runId: run.id, projectId: text(manifest.projectId, '', 200), profileId: text(manifest.profileId, '', 200),
           directory: text(startData?.directory, text(hint?.directory, text(project.scriptDirectory))), startedAt: validTime(startData?.startedAt) ? startData.startedAt : validTime(events[0].occurredAt) ? events[0].occurredAt : text(manifest.createdAt),
+          executionMode:manifest.executionMode==='current-page-test'||manifest.executionMode==='from-start-validation'?manifest.executionMode:undefined,
           status: 'interrupted', recovery: { state: 'interrupted', reason: 'Execution ended without a committed terminal report.', startEventId: start?.id } };
         records.push(record);
         try {

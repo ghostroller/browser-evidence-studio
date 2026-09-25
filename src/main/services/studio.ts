@@ -433,8 +433,19 @@ export class Studio {
   }
   async validate(body:any,options:{signal?:AbortSignal;requireGrant?:boolean}={}){
     options.signal?.throwIfAborted();this.assertValidationIdle();
+    const reusePreparedValidation=body.executionMode===undefined;
+    const executionMode=body.executionMode??'from-start-validation';
+    ensure(['current-page-test','from-start-validation'].includes(executionMode),'Unknown execution mode');
+    ensure(!options.requireGrant||executionMode==='from-start-validation','This one-time grant authorizes from-start validation only',409);
+    if(body.startUrl!==undefined)ensure(typeof body.startUrl==='string'&&(/^https?:\/\//.test(body.startUrl)||body.startUrl==='about:blank'),'Invalid validation start URL');
+    ensure(!options.requireGrant||body.startUrl===undefined||body.startUrl===this.current().page.url(),'Start URL differs from the authorized page',409);
+    body={...body,executionMode,reusePreparedValidation};
+    if(executionMode==='current-page-test'){
+      const live=this.live(),page=this.current();
+      ensure(body.projectId===live.projectId&&body.profileId===live.profileId&&body.pageId===page.pageId&&body.generation===page.navigationGeneration,'Current-page test requires the exact live page and document generation',409);
+    }
     const original=this.active;
-    let finish!:()=>void;const launch:ValidationLaunch={abort:new AbortController(),done:new Promise<void>(resolve=>{finish=resolve;}),finish:()=>finish(),validationId:randomUUID(),validationRunId:original?.store.manifest.kind==='validate'&&original.execution==='ready'?original.id:randomUUID(),claimed:false};
+    let finish!:()=>void;const launch:ValidationLaunch={abort:new AbortController(),done:new Promise<void>(resolve=>{finish=resolve;}),finish:()=>finish(),validationId:randomUUID(),validationRunId:reusePreparedValidation&&original?.store.manifest.kind==='validate'&&original.execution==='ready'?original.id:randomUUID(),claimed:false};
     this.validationLaunch=launch;
     const abort=()=>{launch.abort.abort(options.signal?.reason??new Error('Validation startup cancelled'));void launch.handle?.cancel('Validation startup cancelled');};
     options.signal?.addEventListener('abort',abort,{once:true});if(options.signal?.aborted)abort();
@@ -447,7 +458,7 @@ export class Studio {
         launch.grant=this.validationGrants.consume(body.startGrantId,binding);
       }
       launch.abort.signal.throwIfAborted();launch.claimed=true;
-      if(original){original.locked=true;this.window.lock(true);}
+      if(this.browser){this.browser.runtime.locked=true;this.window.lock(true);}
       if(launch.grant)await original!.store.appendEvent({type:'validation-start-grant-consumed',source:'api',data:{...launch.grant,validationId:launch.validationId,validationRunId:launch.validationRunId}});
       if(launch.grant)this.assertGrantSource(launch.grant);
       launch.abort.signal.throwIfAborted();return await this.launchValidation(body,launch);
@@ -465,20 +476,25 @@ export class Studio {
     launch.abort.signal.throwIfAborted();
     if(launch.grant)this.assertGrantSource(launch.grant);
     const old=this.active,projectId=old?.projectId??body.projectId,profileId=old?.profileId??body.profileId;
+    const currentPageTest=body.executionMode==='current-page-test';
+    const retained=currentPageTest?this.current():undefined;
+    if(retained)ensure(retained.pageId===body.pageId&&retained.navigationGeneration===body.generation,'Current-page target changed during validation startup',409);
     const project=this.projects.find(p=>p.id===projectId);ensure(project,'Select a registered project before validation',404);
     ensure(this.profiles.some(profile=>profile.id===profileId&&profile.projectId===project.id),'Select a profile belonging to the validation project',409);
     // Directory registration is a trusted UI project setting, never a path accepted from an HTTP execution request.
     const directory=project.scriptDirectory;ensure(directory,'Register the workflow directory in the project first');
-    if(!old||old.store.manifest.kind!=='validate'||old.execution!=='ready'){
-      const selected=old?.pages.get(old.selectedPageId),url=selected?this.pageContents(selected)?.getURL():'about:blank';
+    if(!body.reusePreparedValidation||!old||old.store.manifest.kind!=='validate'||old.execution!=='ready'){
+      const selected=old?.pages.get(old.selectedPageId)??(this.browser?this.current():undefined),url=selected?this.pageContents(selected)?.getURL():'about:blank';
       if(old)await this.seal(launch);launch.abort.signal.throwIfAborted();
-      await this.startRun({projectId:project.id,profileId,url:url||'about:blank',kind:'validate'},launch,{freshPage:true});
+      await this.startRun({projectId:project.id,profileId,url:body.startUrl??url??'about:blank',kind:'validate'},launch,{freshPage:!currentPageTest});
     }
     launch.abort.signal.throwIfAborted();const r=this.required(),p=this.current();launch.target??={pageId:p.pageId,targetId:p.targetId,generation:p.navigationGeneration};await this.control('agent',launch);launch.abort.signal.throwIfAborted();
+    if(retained)ensure(p===retained&&p.pageId===body.pageId&&p.navigationGeneration===body.generation,'Current-page target changed before execution',409);
+    await r.store.updateManifest({executionMode:body.executionMode,executionStart:{pageId:p.pageId,generation:p.navigationGeneration,url:p.page.url(),profileReused:true}});
     const targetLease=r.leaseEpoch;
     const verifyTarget=()=>{launch.abort.signal.throwIfAborted();ensure(this.active===r&&r.selectedPageId===launch.target!.pageId&&p.targetId===launch.target!.targetId&&p.navigationGeneration===launch.target!.generation&&r.leaseEpoch===targetLease&&r.controller==='agent'&&!r.stopping,'Validation startup lost its authorized target or lease',409);};
     verifyTarget();r.execution='running';
-    const id=launch.validationId,record:ValidationRecord={id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory,status:'starting',startedAt:now()};this.validations.unshift(record);
+    const id=launch.validationId,record:ValidationRecord={id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory,executionMode:body.executionMode,status:'starting',startedAt:now()};this.validations.unshift(record);
     const context:ValidationLifecycleContext={validationId:id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory};
     let finishStartup!:()=>void;const startup={abort:launch.abort,gate:undefined as GateTransport|undefined,done:new Promise<void>(resolve=>{finishStartup=resolve;}),finish:()=>finishStartup()};this.workflowStarting=startup;
     try{const gate=new GateTransport(await SocketTransport.connect(this.endpoint,startup.abort.signal),{onConflict:conflict=>{void r.store.appendEvent({type:'control-conflict',source:'runner',data:{validationId:id,pageId:p.pageId,...conflict}}).catch(error=>console.error('Could not persist runner control conflict',error));},onClosed:details=>{void r.store.appendEvent({type:'operation-transport-closed',source:'runner',data:{validationId:id,pageId:p.pageId,...details}}).catch(error=>console.error('Could not persist runner transport closure',error));}});startup.gate=gate;startup.abort.signal.throwIfAborted();ensure(this.active===r&&r.controller==='agent'&&!r.locked,'Workflow startup lost control',409);this.workflow=await startWorkflow({directory,input:body.input??{},targetId:p.targetId,transport:gate,dependencyLockPath:path.join(app.getAppPath(),'package-lock.json'),startupSignal:startup.abort.signal,
