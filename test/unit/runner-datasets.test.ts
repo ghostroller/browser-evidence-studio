@@ -109,6 +109,24 @@ test('step attempt lifecycle is durable and cannot be relabeled or given a secon
   } finally { await service.close(); }
 }));
 
+test('gapped step lifecycle and a copied batch from another dataset are rejected without overwriting originals', async () => fixture(async root => {
+  const service = await PersistentDatasetService.open(root, binding);
+  try {
+    const stepIdentity = { executionId: binding.executionId, stepId: 'orders', attemptId: 'gapped-attempt' };
+    const event = { identity: stepIdentity, occurredAt: new Date().toISOString(), state: 'running' as const };
+    await service.saveStep(event);
+    const dir = path.join(root, 'executions', binding.executionId, 'attempts', stepIdentity.attemptId);
+    const third = path.join(dir, 'step-0003.json'); await writeFile(third, 'untouched existing original');
+    await assert.rejects(service.saveStep(event), /sequence is incomplete/);
+    assert.equal(await readFile(third, 'utf8'), 'untouched existing original');
+    await service.begin(identity); const receipt = await service.append(batch());
+    const other = { ...identity, datasetId: 'other' }; await service.begin(other);
+    const copied = path.join(root, 'executions', binding.executionId, 'datasets', identity.attemptId, 'other', path.basename(receipt.artifactId));
+    await writeFile(copied, await readFile(path.join(root, receipt.artifactId)));
+    await assert.rejects(service.batchMetadata(other, 'page-1', budget), /Receipt location/);
+  } finally { await service.close(); }
+}));
+
 test('exclusive writer, immutable version binding and traversal/junction rejection protect execution data', async () => fixture(async root => {
   const service = await PersistentDatasetService.open(root, binding);
   await assert.rejects(PersistentDatasetService.open(root, binding), /writer guard|writer process/i);
