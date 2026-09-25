@@ -42,10 +42,11 @@ export class StepTimeoutError extends Error { constructor() { super('Step timeou
 export class StepPersistenceError extends Error { constructor(cause: unknown) { super('Step result or business output could not be saved', { cause }); this.name = 'StepPersistenceError'; } }
 
 /** Portable ordinary-JS helper. It schedules no workflow, navigates no page and invents no dependencies. */
-export function createStepRunner(options: StepRunnerOptions): { run<T>(step: StepOptions<T>): Promise<StepResult<T>> } {
+export function createStepRunner(options: StepRunnerOptions): { run<T>(step: StepOptions<T>): Promise<StepResult<T>>; pending(): number } {
   const resources = new Map<string, Promise<unknown>>();
   const unsafeResources = new Map<string, Error>();
   let fatal: unknown;
+  let pendingSteps = 0;
   const save = async (event: StepEvent): Promise<void> => {
     try { await options.save(event); } catch (error) { fatal = new StepPersistenceError(error); throw fatal; }
   };
@@ -142,12 +143,14 @@ export function createStepRunner(options: StepRunnerOptions): { run<T>(step: Ste
     }
     throw new Error('Unreachable attempt boundary');
   }
-  return { run: <T>(step: StepOptions<T>): Promise<StepResult<T>> => {
+  return { pending: () => pendingSteps, run: <T>(step: StepOptions<T>): Promise<StepResult<T>> => {
     if (!step.stepId || step.stepId.length > 128 || (step.timeoutMs !== undefined && (!Number.isFinite(step.timeoutMs) || step.timeoutMs < 1))) return Promise.reject(new Error('Invalid step identity or timeout'));
     if (step.retry && (!['read-only', 'idempotent'].includes(step.retry.policy) || !Number.isSafeInteger(step.retry.maxAttempts) || step.retry.maxAttempts < 1 || step.retry.maxAttempts > 5 || !Number.isFinite(step.retry.backoffMs) || step.retry.backoffMs < 0 || step.retry.backoffMs > 30_000 || !Number.isFinite(step.retry.totalBudgetMs) || step.retry.totalBudgetMs < 1 || step.retry.totalBudgetMs > 30 * 60_000)) return Promise.reject(new Error('Retry requires explicit idempotence, at most 5 attempts, bounded backoff and total budget'));
     const resourceKey = step.resourceKey ?? 'shared-page';
+    if (pendingSteps >= 256 || (!resources.has(resourceKey) && resources.size >= 64)) return Promise.reject(new Error('Step queue exceeds 256 pending steps or 64 owned resources; await step results'));
+    pendingSteps++;
     const previous = resources.get(resourceKey) ?? Promise.resolve();
-    const pending = previous.then(() => execute(step, resourceKey));
+    const pending = previous.then(() => execute(step, resourceKey)).finally(() => { pendingSteps--; });
     const settled = pending.then(() => undefined, () => undefined);
     resources.set(resourceKey, settled);
     void settled.finally(() => { if (resources.get(resourceKey) === settled) resources.delete(resourceKey); });
