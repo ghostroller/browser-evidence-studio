@@ -1,0 +1,282 @@
+import { createHash } from 'node:crypto';
+import { lstat, mkdir, opendir, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import type { BatchReceipt, DatasetBatch, DatasetCompletion, DatasetIdentity, DatasetService, ExecutionBinding } from '../contracts/execution';
+import type { BoundedPage, ReadBudget } from '../contracts/recording';
+import type { JsonValue } from '../contracts/workflow';
+import { atomicFile, atomicJson, exists, safeFile } from '../evidence/files';
+import { claimWriterLock, type WriterLockHandle } from '../evidence/writer-lock';
+
+export class DatasetError extends Error {
+  constructor(readonly code: string, message: string, readonly statusCode = 409) { super(message); this.name = 'DatasetError'; }
+}
+const MAX_BATCH_BYTES = 1024 * 1024;
+const MAX_BATCHES = 100_000;
+const hash = (value: string) => createHash('sha256').update(value).digest('hex');
+export function executionId(value: string): string {
+  if (typeof value !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(value) || value.endsWith('.') || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(value)) throw new DatasetError('INVALID_ID', 'Execution identifiers must be safe single path segments', 400);
+  return value;
+}
+
+/** JSON only; reject lossy values before hashing or accepting a commit. */
+export function canonicalJson(value: unknown): string {
+  const active = new Set<object>();
+  const visit = (item: unknown, depth: number): string => {
+    if (depth > 64) throw new DatasetError('INVALID_JSON', 'JSON nesting exceeds 64', 400);
+    if (item === null || typeof item === 'boolean' || typeof item === 'string') return JSON.stringify(item);
+    if (typeof item === 'number' && Number.isFinite(item)) return JSON.stringify(item);
+    if (!item || typeof item !== 'object' || active.has(item)) throw new DatasetError('INVALID_JSON', 'Data must contain finite, acyclic JSON values', 400);
+    if (!Array.isArray(item) && Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null) throw new DatasetError('INVALID_JSON', 'Data must contain plain JSON objects', 400);
+    active.add(item);
+    const result = Array.isArray(item)
+      ? `[${Array.from(item, child => visit(child, depth + 1)).join(',')}]`
+      : `{${Object.keys(item).sort().map(key => `${JSON.stringify(key)}:${visit((item as Record<string, unknown>)[key], depth + 1)}`).join(',')}}`;
+    active.delete(item);
+    return result;
+  };
+  return visit(value, 0);
+}
+
+async function directory(root: string, parts: string[], create: boolean): Promise<string> {
+  let current = path.resolve(root);
+  // Reject links in every ancestor, including an imported BES_DATA root.
+  const parsed = path.parse(current);
+  const components = current.slice(parsed.root.length).split(path.sep).filter(Boolean);
+  current = parsed.root;
+  for (const segment of [...components, ...parts.map(executionId)]) {
+    current = path.join(current, segment);
+    if (create) { try { await mkdir(current); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; } }
+    const info = await lstat(current);
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new DatasetError('INVALID_PATH', 'Dataset paths must use real directories', 400);
+  }
+  return current;
+}
+interface StoredBatch { schemaVersion: 1; sequence: number; batch: DatasetBatch; receipt: BatchReceipt }
+interface DatasetIndex { directory: string; identity: DatasetIdentity; receipts: BatchReceipt[]; completion?: DatasetCompletion }
+export interface RecordQuery extends ReadBudget { fields?: string[]; entity?: { field: string; equals: JsonValue } }
+export interface DatasetRecord { batchId: string; recordIndex: number; value: JsonValue; missingFields?: string[] }
+
+/** One execution writer; batches are immutable authoritative files, indexes are reconstructed. */
+export class PersistentDatasetService implements DatasetService {
+  private readonly indexes = new Map<string, DatasetIndex>();
+  private tail: Promise<unknown> = Promise.resolve();
+  private closed = false;
+  private queued = 0;
+  private queuedBytes = 0;
+  private receiptCount = 0;
+  private constructor(readonly root: string, readonly binding: ExecutionBinding, private readonly lock?: WriterLockHandle) {}
+
+  static async open(root: string, binding: ExecutionBinding): Promise<PersistentDatasetService> {
+    validateBinding(binding);
+    const executionDir = await directory(root, ['executions', binding.executionId], true);
+    const lock = await claimWriterLock(executionDir);
+    try {
+      const file = path.join(executionDir, 'binding.json');
+      if (await exists(file)) {
+        const current: unknown = JSON.parse(await readFile(await safeFile(executionDir, 'binding.json'), 'utf8'));
+        if (canonicalJson(current) !== canonicalJson(binding)) throw new DatasetError('BINDING_CONFLICT', 'Execution already belongs to a different immutable binding');
+      } else await atomicJson(file, binding);
+      return new PersistentDatasetService(path.resolve(root), structuredClone(binding), lock);
+    } catch (error) { await lock.release(); throw error; }
+  }
+  /** Read-only history does not claim a writer lease. Active execution reads should reuse its service. */
+  static async openReader(root: string, id: string): Promise<PersistentDatasetService> {
+    const dir = await directory(root, ['executions', executionId(id)], false);
+    const binding = JSON.parse(await readFile(await safeFile(dir, 'binding.json'), 'utf8')) as ExecutionBinding;
+    validateBinding(binding);
+    if (binding.executionId !== id) throw new DatasetError('BINDING_CONFLICT', 'Stored execution identity differs');
+    return new PersistentDatasetService(path.resolve(root), binding);
+  }
+  private writable(): void { if (!this.lock) throw new DatasetError('READ_ONLY', 'History reader cannot mutate datasets'); }
+  private operation<T>(action: () => Promise<T>, bytes = 0): Promise<T> {
+    if (this.closed) return Promise.reject(new DatasetError('CLOSED', 'Dataset writer is closed'));
+    if (this.queued >= 64 || this.queuedBytes + bytes > 16 * 1024 * 1024) return Promise.reject(new DatasetError('QUEUE_LIMIT', 'Dataset queue exceeds 64 operations / 16 MiB; await batch receipts', 429));
+    this.queued++; this.queuedBytes += bytes;
+    const pending = this.tail.then(action).finally(() => { this.queued--; this.queuedBytes -= bytes; });
+    this.tail = pending.catch(() => undefined);
+    return pending;
+  }
+  async close(): Promise<void> { if (this.closed) return; this.closed = true; await this.tail; await this.lock?.release(); }
+  private check(identity: DatasetIdentity): void {
+    executionId(identity.executionId); executionId(identity.attemptId); executionId(identity.datasetId);
+    if (identity.executionId !== this.binding.executionId) throw new DatasetError('WRONG_EXECUTION', 'Dataset belongs to another execution');
+  }
+  private async index(identity: DatasetIdentity, create = false): Promise<DatasetIndex> {
+    this.check(identity);
+    const key = canonicalJson(identity);
+    const cached = this.lock ? this.indexes.get(key) : undefined;
+    if (cached) return cached;
+    if (this.indexes.size >= 128) throw new DatasetError('INDEX_LIMIT', 'Execution exceeds 128 active dataset indexes', 413);
+    const dir = await directory(this.root, ['executions', identity.executionId, 'datasets', identity.attemptId, identity.datasetId], create);
+    const manifest = path.join(dir, 'dataset.json');
+    if (await exists(manifest)) {
+      const saved: unknown = JSON.parse(await readFile(await safeFile(dir, 'dataset.json'), 'utf8'));
+      if (canonicalJson(saved) !== canonicalJson({ schemaVersion: 1, ...identity })) throw new DatasetError('IDENTITY_CONFLICT', 'Stored dataset identity differs');
+    } else {
+      if (!create) throw new DatasetError('NOT_BEGUN', 'Dataset has not begun', 404);
+      await atomicJson(manifest, { schemaVersion: 1, ...identity });
+    }
+    const ordered: { sequence: number; receipt: BatchReceipt }[] = [];
+    for await (const file of await opendir(dir)) {
+      if (!/^batch-[a-f0-9]{64}\.json$/.test(file.name)) continue;
+      if (ordered.length >= MAX_BATCHES || this.receiptCount + ordered.length >= MAX_BATCHES) throw new DatasetError('INDEX_LIMIT', 'Execution exceeds 100,000 batch metadata limit', 413);
+      const stored = await this.readStored(dir, file.name);
+      if (canonicalJson(pickIdentity(stored.batch)) !== canonicalJson(identity)) throw new DatasetError('CORRUPT_BATCH', 'Batch has the wrong dataset identity');
+      ordered.push({ sequence: stored.sequence, receipt: stored.receipt });
+    }
+    ordered.sort((a, b) => a.sequence - b.sequence);
+    if (ordered.some((item, index) => item.sequence !== index + 1)) throw new DatasetError('CORRUPT_SEQUENCE', 'Durable batch sequence is missing or duplicated');
+    const receipts = ordered.map(item => item.receipt);
+    const result: DatasetIndex = { directory: dir, identity: structuredClone(identity), receipts };
+    if (await exists(path.join(dir, 'completion.json'))) {
+      result.completion = JSON.parse(await readFile(await safeFile(dir, 'completion.json'), 'utf8')) as DatasetCompletion;
+      this.validateCompletion(result, result.completion);
+    }
+    if (this.lock) { this.indexes.set(key, result); this.receiptCount += receipts.length; }
+    return result;
+  }
+  private async readStored(dir: string, name: string): Promise<StoredBatch> {
+    const file = await safeFile(dir, name);
+    if ((await lstat(file)).size > MAX_BATCH_BYTES + 8192) throw new DatasetError('CORRUPT_BATCH', 'Stored batch exceeds read limit', 413);
+    const stored = JSON.parse(await readFile(file, 'utf8')) as StoredBatch;
+    validateBatch(stored.batch);
+    const receipt = stored.receipt;
+    if (stored.schemaVersion !== 1 || !Number.isSafeInteger(stored.sequence) || stored.sequence < 1 || !receipt || receipt.contentHash !== hash(canonicalJson(stored.batch)) || receipt.recordCount !== stored.batch.records.length || receipt.batchId !== stored.batch.batchId || name !== batchFile(stored.batch.batchId) || canonicalJson(pickIdentity(receipt)) !== canonicalJson(pickIdentity(stored.batch))) throw new DatasetError('CORRUPT_BATCH', 'Batch content or receipt hash does not match');
+    const expectedArtifact = `executions/${stored.batch.executionId}/datasets/${stored.batch.attemptId}/${stored.batch.datasetId}/${name}`;
+    if (receipt.artifactId !== expectedArtifact || receipt.replayed !== false || typeof receipt.durableAt !== 'string' || !Number.isFinite(Date.parse(receipt.durableAt)) || new Date(receipt.durableAt).toISOString() !== receipt.durableAt) throw new DatasetError('CORRUPT_RECEIPT', 'Receipt location, durable timestamp or original commit marker is invalid');
+    return stored;
+  }
+  begin(identity: DatasetIdentity): Promise<void> { return this.operation(async () => { this.writable(); await this.index(identity, true); }); }
+  append(batch: DatasetBatch, signal?: AbortSignal): Promise<BatchReceipt> {
+    // Snapshot synchronously: caller mutation during an await cannot alter the hash or bytes.
+    validateBatch(batch);
+    const serialized = canonicalJson(batch);
+    return this.operation(async () => {
+      this.writable();
+      const frozen = JSON.parse(serialized) as DatasetBatch;
+      signal?.throwIfAborted();
+      const index = await this.index(pickIdentity(frozen));
+      const contentHash = hash(canonicalJson(frozen));
+      const previous = index.receipts.find(receipt => receipt.batchId === frozen.batchId);
+      if (previous) {
+        if (previous.contentHash !== contentHash) throw new DatasetError('BATCH_CONFLICT', 'The batch ID was already committed with different records, provenance or reuse');
+        return { ...previous, replayed: true };
+      }
+      if (index.completion) throw new DatasetError('FINISHED', 'Cannot append to a finished dataset; create a new attempt');
+      if (this.receiptCount >= MAX_BATCHES) throw new DatasetError('INDEX_LIMIT', 'Execution has reached its 100,000 batch metadata limit', 413);
+      if (frozen.reusedFrom) await this.validateReuse(frozen);
+      signal?.throwIfAborted();
+      const receipt: BatchReceipt = { ...pickIdentity(frozen), batchId: frozen.batchId, contentHash, recordCount: frozen.records.length,
+        artifactId: `executions/${frozen.executionId}/datasets/${frozen.attemptId}/${frozen.datasetId}/${batchFile(frozen.batchId)}`, durableAt: new Date().toISOString(), replayed: false };
+      await atomicFile(path.join(index.directory, batchFile(frozen.batchId)), Buffer.from(canonicalJson({ schemaVersion: 1, sequence: index.receipts.length + 1, batch: frozen, receipt } satisfies StoredBatch)));
+      index.receipts.push(receipt);
+      this.receiptCount++;
+      // Cancellation cannot undo durable data. The caller can replay the same batch ID to recover its receipt.
+      signal?.throwIfAborted();
+      return structuredClone(receipt);
+    }, Buffer.byteLength(serialized));
+  }
+  private async validateReuse(batch: DatasetBatch): Promise<void> {
+    const ref = batch.reusedFrom!;
+    if (ref.executionId !== batch.executionId) throw new DatasetError('REUSE_SCOPE', 'Cross-execution reuse requires a separate verified import');
+    if (ref.attemptId === batch.attemptId) throw new DatasetError('REUSE_ATTEMPT', 'Reuse must reference a prior attempt');
+    const source = await this.index(pickIdentity(ref));
+    const stored = await this.readStored(source.directory, batchFile(ref.batchId));
+    if (canonicalJson(stored.batch.records) !== canonicalJson(batch.records) || canonicalJson(stored.batch.provenance) !== canonicalJson(batch.provenance)) throw new DatasetError('REUSE_CONTENT', 'Reused records and original provenance must match their source batch');
+  }
+  private validateCompletion(index: DatasetIndex, completion: DatasetCompletion): void {
+    if (canonicalJson(pickIdentity(completion)) !== canonicalJson(index.identity) || !['complete', 'partial', 'failed', 'cancelled'].includes(completion.status) || completion.committedBatches !== index.receipts.length || completion.committedRecords !== index.receipts.reduce((n, receipt) => n + receipt.recordCount, 0)) throw new DatasetError('COMPLETION_MISMATCH', 'Completion must account for every durable batch and record');
+    canonicalJson(completion);
+    if (completion.status === 'complete' && completion.pagination && !completion.pagination.complete) throw new DatasetError('COMPLETION_MISMATCH', 'Incomplete pagination cannot declare a complete dataset');
+  }
+  finish(completion: DatasetCompletion): Promise<void> {
+    const frozen = JSON.parse(canonicalJson(completion)) as DatasetCompletion;
+    return this.operation(async () => {
+      this.writable();
+      const index = await this.index(pickIdentity(frozen));
+      this.validateCompletion(index, frozen);
+      if (index.completion) {
+        if (canonicalJson(index.completion) !== canonicalJson(frozen)) throw new DatasetError('COMPLETION_CONFLICT', 'Dataset completion is immutable; create a new attempt');
+        return;
+      }
+      await atomicJson(path.join(index.directory, 'completion.json'), frozen);
+      index.completion = frozen;
+    });
+  }
+  batches(identity: DatasetIdentity, budget: ReadBudget): Promise<BoundedPage<BatchReceipt>> {
+    return this.operation(async () => {
+      const index = await this.index(identity);
+      return bounded(index.receipts, budget, hash(canonicalJson(identity)));
+    });
+  }
+  summary(identity: DatasetIdentity): Promise<{ identity: DatasetIdentity; status: DatasetCompletion['status'] | 'unfinished'; committedBatches: number; committedRecords: number; completion?: DatasetCompletion }> {
+    return this.operation(async () => {
+      const index = await this.index(identity);
+      return { identity: structuredClone(index.identity), status: index.completion?.status ?? 'unfinished', committedBatches: index.receipts.length,
+        committedRecords: index.receipts.reduce((n, receipt) => n + receipt.recordCount, 0), ...(index.completion ? { completion: structuredClone(index.completion) } : {}) };
+    });
+  }
+  /** Explicit bounded body query; receipt listing never includes business records. */
+  records(identity: DatasetIdentity, batchId: string, query: RecordQuery): Promise<BoundedPage<DatasetRecord>> {
+    return this.operation(async () => {
+      const index = await this.index(identity);
+      const { batch } = await this.readStored(index.directory, batchFile(executionId(batchId)));
+      if (query.fields && (query.fields.length > 64 || !query.fields.every(field => typeof field === 'string' && field.length > 0 && field.length <= 128))) throw new DatasetError('INVALID_PROJECTION', 'Projection accepts up to 64 top-level fields', 400);
+      const selected = batch.records.flatMap((value, recordIndex): DatasetRecord[] => {
+        if (query.entity && (!value || typeof value !== 'object' || Array.isArray(value) || !Object.hasOwn(value, query.entity.field) || canonicalJson(value[query.entity.field]) !== canonicalJson(query.entity.equals))) return [];
+        if (!query.fields) return [{ batchId, recordIndex, value }];
+        const projected: Record<string, JsonValue> = {}, missingFields: string[] = [];
+        for (const field of query.fields) {
+          if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, field)) Object.defineProperty(projected, field, { value: value[field], enumerable: true });
+          else missingFields.push(field);
+        }
+        return [{ batchId, recordIndex, value: projected, ...(missingFields.length ? { missingFields } : {}) }];
+      });
+      return bounded(selected, query, hash(canonicalJson({ identity, batchId, fields: query.fields ?? null, entity: query.entity ?? null })));
+    });
+  }
+}
+
+function pickIdentity(value: DatasetIdentity): DatasetIdentity { return { executionId: value.executionId, attemptId: value.attemptId, datasetId: value.datasetId }; }
+const batchFile = (id: string) => `batch-${hash(executionId(id))}.json`;
+function validateBinding(binding: ExecutionBinding): void {
+  if (!binding || binding.schemaVersion !== 1 || !['current-page-test', 'from-start-validation'].includes(binding.mode)) throw new DatasetError('INVALID_BINDING', 'Invalid execution binding', 400);
+  executionId(binding.executionId); executionId(binding.projectId); executionId(binding.materialRevisionId);
+  for (const field of ['materialContentHash', 'codeFingerprint', 'inputFingerprint', 'environmentRef'] as const) if (typeof binding[field] !== 'string' || !binding[field].trim() || binding[field].length > 4096) throw new DatasetError('INVALID_BINDING', `Missing execution ${field}`, 400);
+  canonicalJson(binding);
+}
+function validateBatch(batch: DatasetBatch): void {
+  if (!batch) throw new DatasetError('INVALID_BATCH', 'Missing batch', 400);
+  for (const value of [batch.executionId, batch.attemptId, batch.datasetId, batch.batchId]) executionId(value);
+  if (!Array.isArray(batch.records) || !batch.provenance || !['browser', 'node', 'derived'].includes(batch.provenance.origin) || !Array.isArray(batch.provenance.sourceRefs) || !batch.provenance.sourceRefs.every(ref => typeof ref === 'string' && ref.length > 0 && ref.length <= 2048)) throw new DatasetError('INVALID_BATCH', 'Batch records and provenance are required', 400);
+  if (batch.reusedFrom) {
+    for (const value of [batch.reusedFrom.executionId, batch.reusedFrom.attemptId, batch.reusedFrom.datasetId, batch.reusedFrom.batchId]) executionId(value);
+    if (!Array.isArray(batch.reusedFrom.validityEvidenceRefs) || !batch.reusedFrom.validityEvidenceRefs.length || !batch.reusedFrom.validityEvidenceRefs.every(ref => typeof ref === 'string' && ref.trim())) throw new DatasetError('INVALID_REUSE', 'Reuse requires explicit validity evidence references', 400);
+  }
+  if (Buffer.byteLength(canonicalJson(batch)) > MAX_BATCH_BYTES) throw new DatasetError('BATCH_TOO_LARGE', 'Split batch into at most 1 MiB of records and provenance', 413);
+}
+function bounded<T>(source: T[], budget: ReadBudget, query: string): BoundedPage<T> {
+  if (!Number.isSafeInteger(budget.limit) || budget.limit < 1 || budget.limit > 1000 || !Number.isSafeInteger(budget.maxBytes) || budget.maxBytes < 128 || budget.maxBytes > 1024 * 1024) throw new DatasetError('INVALID_BUDGET', 'Read budget needs limit 1–1000 and maxBytes 128–1048576', 400);
+  let start = 0, end = source.length;
+  if (budget.cursor) {
+    try {
+      const parsed = JSON.parse(Buffer.from(budget.cursor, 'base64url').toString('utf8')) as { version: number; query: string; offset: number; end: number };
+      if (parsed.version !== 1 || parsed.query !== query || !Number.isSafeInteger(parsed.offset) || !Number.isSafeInteger(parsed.end) || parsed.offset < 0 || parsed.end > source.length || parsed.offset > parsed.end) throw new Error();
+      start = parsed.offset; end = parsed.end;
+    } catch { throw new DatasetError('INVALID_CURSOR', 'Cursor does not match this dataset query', 400); }
+  }
+  const items: T[] = [];
+  const make = (): BoundedPage<T> => {
+    const offset = start + items.length, outputTruncated = offset < end;
+    const nextCursor = outputTruncated ? Buffer.from(JSON.stringify({ version: 1, query, offset, end })).toString('base64url') : undefined;
+    const result: BoundedPage<T> = { items, ...(nextCursor ? { nextCursor } : {}), returnedBytes: 0, outputTruncated };
+    for (let pass = 0; pass < 4; pass++) result.returnedBytes = Buffer.byteLength(JSON.stringify(result));
+    return result;
+  };
+  for (let offset = start; offset < end && items.length < budget.limit; offset++) {
+    items.push(structuredClone(source[offset]));
+    if (make().returnedBytes > budget.maxBytes) { items.pop(); break; }
+  }
+  if (start < end && !items.length) throw new DatasetError('ITEM_TOO_LARGE', 'One item exceeds maxBytes; use projection or a larger explicit budget', 413);
+  return make();
+}
