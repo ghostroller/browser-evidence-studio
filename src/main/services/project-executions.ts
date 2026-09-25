@@ -20,6 +20,7 @@ import { checkpointSourceProofs, checkpointSourceTargets } from './checkpoint-so
 import { SourceModel } from '@/replay/source-model';
 import type { CaptureCoordinator } from '@/capture/coordinator';
 import type { CheckpointHostScope } from '@/runner/manager';
+import { datasetCatalog } from './dataset-catalog';
 
 const hash=(value:unknown)=>createHash('sha256').update(canonicalJson(value)).digest('hex');
 interface HostExecution {
@@ -106,7 +107,11 @@ export class ProjectExecutions {
     const directory=await this.directory(id),value=await this.json<HostExecution>(directory,'host-state.json');
     ensure(value.binding.projectId===projectId&&value.binding.executionId===id,'Execution belongs to another project',403);
     const binding=await this.json<ExecutionBinding>(directory,'binding.json');ensure(canonicalJson(value.binding)===canonicalJson(binding),'Execution projection binding mismatch',409);
-    if(!value.finishedAt&&!this.active.has(id))value.status='interrupted';return value;
+    if(!value.finishedAt){
+      if(!this.active.has(id))value.status='interrupted';
+      value.datasets=await datasetCatalog(directory,id,await this.dataReader(id));
+    }
+    return value;
   }
   async summary(projectId:string,id:string){return summary(await this.state(projectId,id));}
   async items(projectId:string,id:string,collection:'steps'|'datasets',budget:ReadBudget){ensure(collection==='steps'||collection==='datasets','Unknown execution collection');const value=await this.state(projectId,id);return boundedItems<StepSummary|DatasetSummary>(value[collection],`${id}/${collection}`,budget);}
