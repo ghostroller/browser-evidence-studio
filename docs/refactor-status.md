@@ -2,7 +2,7 @@
 
 更新：2026-09-26。总规范是 refactor/01-modification-plan.md；本表区分已验证原型与生产集成，不以提交数量计完成。
 
-**用户暂停（2026-09-26）**：用户要求“先停下做一次进度总结”。根已通过原生工具 interrupt A/D/E，三者状态均为 `interrupted`，不再派发或继续实现；B/C/F 先前已交付模块。下表的 implementing 表示未完成范围，暂停期间不运行。根已保存当前提交与未提交现场，恢复必须由用户接续指令触发。
+**当前已恢复（2026-09-26）**：用户在暂停总结后明确“好的，继续”。暂停历史与未提交现场见文末；恢复时旧子 Agent 已不在原生列表，核对原树后启动 A/D/E 接续上下文，最新 ID 见恢复记录。B/C/F 模块已集成，完整重构仍在实施和验证中。
 
 | T | 依赖 | owner | 状态 | 实际范围 / 接续 |
 |---|---|---|---|---|
@@ -87,3 +87,9 @@
 - E HEAD `2bafbb7bc0bcd6a8795b73543587af18e1cc71d0`。未提交 `src/main/services/{dispatch,studio}.ts`，未跟踪 `src/main/services/{project-dispatch,project-materials,task-authorization}.ts`；这些权限/材料/执行门面未完成、未审查、未集成。保留原树接续。
 - B HEAD `e65b774e53ba7c0b28a185cc03719cde90ca1a71`、C HEAD `19a6a321b2367493143d0094b1c761fac9c57e04`、F HEAD `d69a14a5c995f13472df4d6707ce4cebb2c6680c`，均 clean。所有原树、分支、测试录制及失败日志保留，没有 push、删除或改写历史材料。
 - 用户要求恢复后：先读本记录并核对 agents/process/status，按原 ID 接续 A/D/E；先串行运行 A 第三次录制/离线专项，再审查其未提交隐私包，E/D 继续真实门面/UI；随后 F 显示值与复用有效性、最终整机/打包/独立业务/30 分钟长测。未完成项是实施与验证接续，当前没有需要用户解决的权限/登录外部阻塞。
+
+### 暂停后恢复（用户明确继续）
+
+- 根 `collaboration.list_agents` 仅返回 `/root`；旧 A/D/E 上下文已不在当前列表，没有重复启动仍在运行的任务。所有工作树 branch/HEAD/status 与暂停记录一致，主树 `ed3615bdf644f7a600b99cf71d9cf815e2c9a27d` clean，Node v24.21.0/npm 11.19.0，未发现 Electron 进程。未重建工作树或重装现有依赖，A/E dirty 原样留存。
+- 替代关系：`/root/refactor_a → /root/refactor_a_resume`（实际 spawn `gpt-6-astra/xhigh/fork none`），`/root/refactor_d → /root/refactor_d_resume`（`gpt-6-sol/high/fork none`），`/root/refactor_e → /root/refactor_e_resume`（`gpt-6-astra/xhigh/fork none`）。原生工具均接受配置，未暴露额外 session ID/模型回显；原 worktree/base/所有权不变。后续恢复优先新 ID。三流禁止自行开 Electron；共享配置/契约/入口仍根独写。
+- 根第三次真实 `node test/desktop/launch.js --refactor-recording`：record **通过** PID 42660，offline **失败** PID 32900，8.12 s。`output/desktop-1790370699081`、run `89de7c9f-cb69-4675-9509-97fc51c568ec`、`output/refactor-integration-20260926/A-desktop-attempt-3.log` 全部保留。CSS/image/font 字节已捕获，历史位置已封存；offline 初始化 executeJavaScript 泛化错误，seeks/blocked 为空，不能声明离线已过。根发现 CSP 文本插入 JS 单引号字符串可能未转义，交 A 加阶段/console 诊断及修复，禁止放宽 CSP/sandbox。第三次已退出，桌面锁空闲。
