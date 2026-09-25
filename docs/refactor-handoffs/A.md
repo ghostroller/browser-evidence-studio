@@ -84,3 +84,7 @@ root真实attempt2：`output/desktop-1790368992121` 的run `2044933f-4cae-413d-9
 源页明确节点只读一次innerText、geometry/computedStyle/checkVisibility和中心hit-test，不对全树逐节点求innerText；先让选择任务前的mutation observer微任务交付，再于同一JS任务内读取并通过rrweb custom event`bes-source-presentation`与SourceMetadata一起入原件。`sampledAt`等于该真实源事件位置。遮罩节点/含私密子树/表单值直接redacted，超过8192字符返回missing，SVG等没有原生innerText的节点unsupported；同源frame的祖先可见性未取样时visibility=unknown并保留basis。无sample旧位置返回明确missing，不从textContent、live或replay补造显示值。
 
 inspect点击也复用明确节点采样，选择事件含`sample`（失败则`sampleError`）；host等索引耐久后回调。open-shadow点击使用composedPath，描述摘要也遵守私密祖先/子树。`npm.cmd test -- test/unit/refactor-recording.test.ts`14项通过5.46s（`presentation-tests.log`），typecheck通过（`presentation-typecheck-final.log`）。JSDOM测试给明确节点设置innerText getter，只证明调用/序列/磁盘源回读与隐私，不当作真实布局证明。desktop fixture已接生产API：初始/更新文本位置使用sample ref，另验证`shown<span hidden>hidden-source-text</span>`的真实innerText为shown而原始结构文本保留隐藏文本；该真实场景尚待根串行运行。
+
+根第6次真实record/offline双进程通过：主树`output/desktop-1790372576006`，PID32660→28956，7.9s；真实shown/隐藏文本区别已实际执行。它仍不代表30分钟长测、frame资源映射或所有边界通过；前5次失败原件/报告保留。
+
+采样审查返修：入口追加可选`signal?:AbortSignal`，进入及每个await后检查；Archive读取也传signal。CDP没有安全的单请求Runtime取消，不调用全局terminateExecution；迟到的真实采样原件可继续保存，但中止请求绝不返回成功。异常保存安全className/description，inspect失败也含有界安全原因。附加presentation计入源8MiB metadata cap，超限保留gap并拒绝成功；source自定义sample走host metadata通道，不借structure预算。typecheck+15项测试通过（`presentation-review-typecheck-attempt2.log`、`presentation-review-tests.log`，4.49s），新增近cap属性与sample叠加失败负例。desktop增加预取消断言，尚未重跑。
