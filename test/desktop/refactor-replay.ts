@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { BrowserWindow, session } from 'electron';
-import type { eventWithTime } from '@rrweb/types';
+import { app, BrowserWindow, session } from 'electron';
+import type { eventWithTime, serializedNodeWithId } from '@rrweb/types';
 import type { Replayer, record } from 'rrweb';
 import rrwebSource from '../../node_modules/rrweb/dist/rrweb.umd.cjs?raw';
 import { instrumentRrweb216ForSourcePrototype, prototypeLocators, reconstructPrototypeSource, type PrototypeSourceEvent, type PrototypeSourceMetadata, type PrototypeSourceNode } from '@/capture/source-prototype';
@@ -12,7 +12,7 @@ import type { Studio } from '@/main/services/studio';
 interface PrototypeBrowser extends Window {
   rrweb: { record: typeof record; Replayer: typeof Replayer };
   __besS0SourceHook: (node: Node, mirror: { getId(node: Node): number }) => void;
-  __besS0: { records: PrototypeSourceEvent[]; stop: () => void; errors: string[] };
+  __besS0: { records: PrototypeSourceEvent[]; stop: () => void; errors: string[]; privacyFindings: { sourceSeq: number; path: string }[] };
   __besS0Replay: Replayer;
 }
 
@@ -22,6 +22,7 @@ function installPrototypeRecorder(): void {
   const w = window as unknown as PrototypeBrowser;
   const pending = new Map<number, PrototypeSourceMetadata>();
   const records: PrototypeSourceEvent[] = [], errors: string[] = [];
+  const privacyFindings: { sourceSeq: number; path: string }[] = [];
   w.__besS0SourceHook = (node, mirror) => {
     if (node.nodeType !== 1) return;
     const element = node as Element, nodeId = mirror.getId(node);
@@ -42,6 +43,35 @@ function installPrototypeRecorder(): void {
   };
   const stop = w.rrweb.record({
     maskAllInputs: true, inlineStylesheet: false, recordCanvas: false,
+    plugins: [{ name: 'bes-s0-all-form-values', options: {}, eventProcessor: original => {
+      // rrweb 2.1.6 intentionally leaves checkbox/radio values unmasked even
+      // with maskAllInputs. Apply an explicit stronger CAPTURE-TIME policy;
+      // never edit a previously emitted event or rrweb's live Mirror metadata.
+      const event = JSON.parse(JSON.stringify(original)) as eventWithTime;
+      function note(value: unknown, fieldPath: string) {
+        if (typeof value === 'string' && value.includes('synthetic-private')) privacyFindings.push({ sourceSeq: records.length, path: fieldPath });
+      }
+      function redactNode(node: serializedNodeWithId, fieldPath: string) {
+        if (node.type === 2 && ['input', 'textarea', 'select', 'option'].includes(node.tagName) && Object.hasOwn(node.attributes, 'value')) {
+          note(node.attributes.value, `${fieldPath}.attributes.value`);
+          node.attributes.value = '[redacted]';
+        }
+        if ('childNodes' in node) node.childNodes.forEach((child, index) => redactNode(child, `${fieldPath}.childNodes[${index}]`));
+      }
+      if (event.type === 2) redactNode(event.data.node, 'event.data.node');
+      if (event.type === 3 && event.data.source === 0) {
+        event.data.adds.forEach((entry, index) => redactNode(entry.node, `event.data.adds[${index}].node`));
+        event.data.attributes.forEach((entry, index) => {
+          const node = w.rrweb.record.mirror.getNode(entry.id);
+          if (node instanceof Element && ['input', 'textarea', 'select', 'option'].includes(node.localName) && entry.attributes.value != null) {
+            note(entry.attributes.value, `event.data.attributes[${index}].attributes.value`);
+            entry.attributes.value = '[redacted]';
+          }
+        });
+      }
+      if (event.type === 3 && event.data.source === 5) { note(event.data.text, 'event.data.text'); event.data.text = '[redacted]'; }
+      return event;
+    } }],
     hooks: { input: event => {
       const node = w.rrweb.record.mirror.getNode(event.id);
       if (node) w.__besS0SourceHook(node, w.rrweb.record.mirror);
@@ -54,7 +84,7 @@ function installPrototypeRecorder(): void {
     errorHandler: error => { errors.push(String(error)); return false; },
   });
   if (!stop) throw new Error('rrweb recorder did not start');
-  w.__besS0 = { records, stop, errors };
+  w.__besS0 = { records, stop, errors, privacyFindings };
 }
 
 function findSourceNode(root: PrototypeSourceNode, id: number): PrototypeSourceNode | undefined {
@@ -108,10 +138,10 @@ export async function runRefactorReplayPrototype(studio: Studio): Promise<Record
       else callback({});
     });
   }
-  const report: Record<string, unknown> = { schemaVersion: 1, passed: false, startedAt: new Date().toISOString(), versions: { electron: process.versions.electron, chromium: process.versions.chrome, rrweb: '2.1.6' }, rrwebBundleSha256: createHash('sha256').update(rrwebSource).digest('hex'), scope: 'S0 bounded synthetic single-document spike; production recorder unchanged', limitations: ['Cross-origin plugin IDs are not transformed by rrweb 2.1.6; no cross-frame metadata mapping claimed.', 'Frame/shadow paths, resource archival, long-history memory, eventSeq-exact same-millisecond seek, and cancellation generations remain A work.', 'Input values are redacted; selected/checked attributes and properties remain distinct.', 'No real account or live-site locator reliability claimed.'] };
+  const report: Record<string, unknown> = { schemaVersion: 1, passed: false, startedAt: new Date().toISOString(), versions: { electron: process.versions.electron, chromium: process.versions.chrome, rrweb: '2.1.6' }, rrwebBundleSha256: createHash('sha256').update(rrwebSource).digest('hex'), scope: 'S0 bounded synthetic single-document spike; production recorder unchanged', environment: { visible: false, backgroundThrottling: false }, limitations: ['Cross-origin plugin IDs are not transformed by rrweb 2.1.6; no cross-frame metadata mapping claimed.', 'Frame/shadow paths, resource archival, long-history memory, eventSeq-exact same-millisecond seek, and cancellation generations remain A work.', 'Input values are redacted; selected/checked attributes and properties remain distinct.', 'No real account or live-site locator reliability claimed.', 'Six seeks on a tiny fixture and process memory snapshots are a short probe, not a long-run growth or resource-budget test.'] };
   try {
-    const source = new BrowserWindow({ show: false, webPreferences: { session: sourcePartition, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true } });
-    const replay = new BrowserWindow({ show: false, webPreferences: { session: replayPartition, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true } });
+    const source = new BrowserWindow({ show: false, webPreferences: { session: sourcePartition, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false } });
+    const replay = new BrowserWindow({ show: false, webPreferences: { session: replayPartition, sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, backgroundThrottling: false } });
     windows.push(source, replay);
     await Promise.all([source.loadURL('about:blank'), replay.loadURL('about:blank')]);
     const fixtureHtml = '<!doctype html><html><head><base href="https://source.invalid/catalog/"></head><body><main id="fixture"><a data-key="primary" href="/orders/42" data-state="old">Order 42</a><input data-key="choice" type="checkbox" checked="" value="synthetic-private-value"><input data-key="text" value="synthetic-private-text"><button data-key="danger" onclick="window.__websiteActionRan = true">Action</button><script data-key="original-script">window.__websiteScriptRan = true;</script><img src="https://source.invalid/missing.png"><ul data-key="list"><li data-key="first">First</li></ul></main></body></html>';
@@ -119,7 +149,9 @@ export async function runRefactorReplayPrototype(studio: Studio): Promise<Record
     // Defining the hook before instrumented rrweb starts is required. Function
     // installation itself only defines functions; record starts at its end.
     await source.webContents.executeJavaScript(instrumentRrweb216ForSourcePrototype(rrwebSource));
+    const recorderStarted = performance.now();
     await source.webContents.executeJavaScript(`(${installPrototypeRecorder.toString()})()`);
+    report.recorderInitializationMs = performance.now() - recorderStarted;
     async function boundary(label: string) {
       return source.webContents.executeJavaScript(`(() => {const s=window.__besS0;const last=s.records.at(-1);return {label:${JSON.stringify(label)},seq:last.seq,timestamp:last.event.timestamp,originalHtml:document.documentElement.outerHTML,primaryId:window.rrweb.record.mirror.getId(document.querySelector('[data-key="primary"]')),choiceId:window.rrweb.record.mirror.getId(document.querySelector('[data-key="choice"]')),lateId:document.querySelector('[data-key="late"]')?window.rrweb.record.mirror.getId(document.querySelector('[data-key="late"]')):null};})()`);
     }
@@ -127,7 +159,7 @@ export async function runRefactorReplayPrototype(studio: Studio): Promise<Record
     // Keep the three measured states on distinct real clock ticks. The 2.1.6
     // public player seeks by time, so this spike cannot claim same-ms seq seeks.
     await source.webContents.executeJavaScript(`new Promise(resolve=>{function check(){if(Date.now()>${initial.timestamp})resolve(true);else setTimeout(check,0);}check();})`);
-    const added = await source.webContents.executeJavaScript(`(async () => {const before=window.__besS0.records.length;const a=document.querySelector('[data-key="primary"]');a.setAttribute('href','../orders/43');a.setAttribute('data-empty','');a.removeAttribute('data-state');const late=document.createElement('a');late.setAttribute('data-key','late');late.setAttribute('href','/orders/late');late.textContent='Late node';document.querySelector('[data-key="list"]').append(late);document.querySelector('[data-key="choice"]').checked=true;document.querySelector('[data-key="choice"]').dispatchEvent(new Event('input',{bubbles:true}));await new Promise((resolve,reject)=>{const deadline=performance.now()+3000;function check(){if(window.__besS0.records.length>before&&window.__besS0.records.some(r=>r.event.type===3&&r.event.data.source===0&&r.event.data.adds.some(a=>a.node.attributes?.['data-key']==='late')))resolve();else if(performance.now()>deadline)reject(new Error('No actual rrweb late-node mutation'));else requestAnimationFrame(check);}check();});return true;})()`);
+    const added = await source.webContents.executeJavaScript(`(async () => {const before=window.__besS0.records.length;const a=document.querySelector('[data-key="primary"]');a.setAttribute('href','../orders/43');a.setAttribute('data-empty','');a.removeAttribute('data-state');const late=document.createElement('a');late.setAttribute('data-key','late');late.setAttribute('href','/orders/late');late.textContent='Late node';document.querySelector('[data-key="list"]').append(late);document.querySelector('[data-key="choice"]').checked=true;document.querySelector('[data-key="choice"]').dispatchEvent(new Event('input',{bubbles:true}));await new Promise((resolve,reject)=>{const deadline=performance.now()+3000;function check(){if(window.__besS0.records.length>before&&window.__besS0.records.some(r=>r.event.type===3&&r.event.data.source===0&&r.event.data.adds.some(a=>a.node.attributes?.['data-key']==='late')))resolve();else if(performance.now()>deadline)reject(new Error('No actual rrweb late-node mutation'));else setTimeout(check,10);}check();});return true;})()`);
     assert.equal(added, true);
     const changed = await boundary('changed');
     // A real full snapshot supplies a new reconstruction baseline; nothing is
@@ -136,18 +168,33 @@ export async function runRefactorReplayPrototype(studio: Studio): Promise<Record
     await source.webContents.executeJavaScript('window.rrweb.record.takeFullSnapshot();true');
     const checkout = await boundary('checkout');
     await source.webContents.executeJavaScript('window.__besS0.stop();true');
-    const recording = await source.webContents.executeJavaScript('({records:window.__besS0.records,errors:window.__besS0.errors})') as { records: PrototypeSourceEvent[]; errors: string[] };
+    const recording = await source.webContents.executeJavaScript('({records:window.__besS0.records,errors:window.__besS0.errors,privacyFindings:window.__besS0.privacyFindings})') as Pick<PrototypeBrowser['__besS0'], 'records' | 'errors' | 'privacyFindings'>;
+    // Persist this synthetic evidence even when the privacy assertion rejects
+    // it. The failure report records only field paths, never secret values.
+    await writeFile(path.join(studio.root, 's0-replay-source-recording.json'), JSON.stringify(recording, null, 2));
+    report.sourceRecording = 's0-replay-source-recording.json';
+    report.inputPrivacyPolicy = { name: 'bes-s0-all-form-values', prePolicyUnmaskedFixturePaths: recording.privacyFindings, scope: 'capture-time privacy plugin; checkbox/text fixture tested; production recorder policy unchanged' };
     assert.deepEqual(recording.errors, []);
     assert.ok(recording.records.some(entry => entry.event.type === 2));
     assert.ok(recording.records.length < 100, 'Bounded prototype accidentally recorded an expanding tree');
     assert.ok(!JSON.stringify(recording).includes('synthetic-private'), 'Metadata must not bypass input masking');
+    assert.ok(recording.privacyFindings.some(finding => finding.path.endsWith('.attributes.value')), 'The fixture must expose stock rrweb checkbox snapshot masking behavior');
+    assert.ok(recording.privacyFindings.some(finding => finding.path === 'event.data.text'), 'The fixture must expose stock rrweb checkbox input masking behavior');
     report.eventCount = recording.records.length;
-    report.sourceRecording = 's0-replay-source-recording.json';
-    await writeFile(path.join(studio.root, 's0-replay-source-recording.json'), JSON.stringify(recording, null, 2));
+    report.sourceEventBytes = Buffer.byteLength(JSON.stringify(recording.records.map(entry => entry.event)));
+    report.sourceMetadataBytes = Buffer.byteLength(JSON.stringify(recording.records.map(entry => entry.metadata)));
+    report.recordingBytes = Buffer.byteLength(JSON.stringify(recording));
+    report.recordedDurationMs = recording.records.at(-1)!.event.timestamp - recording.records[0].event.timestamp;
     await replay.webContents.executeJavaScript('document.head.innerHTML=\'<meta http-equiv="Content-Security-Policy" content="default-src &apos;none&apos;; style-src &apos;unsafe-inline&apos;; img-src data:; font-src data:; frame-src &apos;self&apos; about:; form-action &apos;none&apos;">\';document.body.innerHTML=\'<div id="replay-root"></div>\';true');
     await replay.webContents.executeJavaScript(rrwebSource);
     await replay.webContents.executeJavaScript(`window.__besS0Replay=new window.rrweb.Replayer(${JSON.stringify(recording.records.map(entry => entry.event))},{root:document.querySelector('#replay-root'),mouseTail:false,UNSAFE_replayCanvas:false,showWarning:true});true`);
     const seeks: Record<string, unknown>[] = [];
+    const seekLatenciesMs: number[] = [];
+    function memorySnapshot() {
+      const sourcePid = source.webContents.getOSProcessId(), replayPid = replay.webContents.getOSProcessId();
+      return { capturedAt: new Date().toISOString(), mainBytes: process.memoryUsage(), renderersKiB: app.getAppMetrics().filter(metric => metric.pid === sourcePid || metric.pid === replayPid).map(metric => ({ context: metric.pid === sourcePid ? 'source' : 'replay', pid: metric.pid, memory: metric.memory })), units: 'mainBytes in bytes; Electron ProcessMetric memory in KiB' };
+    }
+    report.memoryBeforeSeeks = memorySnapshot();
     for (const at of [initial, changed, checkout, initial, changed, checkout]) {
       const model = reconstructPrototypeSource(recording.records, at.seq);
       const sourcePrimary = findSourceNode(model, at.primaryId)!;
@@ -155,23 +202,40 @@ export async function runRefactorReplayPrototype(studio: Studio): Promise<Record
       const locator = prototypeLocators(sourcePrimary);
       // rrweb synchronously applies events whose timestamp is strictly before
       // baselineTime. The half-ms offset includes this integer timestamp only.
-      const selection = await replay.webContents.executeJavaScript(`(() => {const player=window.__besS0Replay;player.pause(${at.timestamp - recording.records[0].event.timestamp + 0.5});const frame=document.querySelector('#replay-root iframe');const node=frame.contentDocument.querySelector('[data-key="primary"]');const late=frame.contentDocument.querySelector('[data-key="late"]');const mirror=player.getMirror();return {nodeId:mirror.getId(node),roundTrip:mirror.getNode(mirror.getId(node))===node,href:node?.getAttribute('href'),lateId:late?mirror.getId(late):null,iframeCount:document.querySelectorAll('#replay-root iframe').length,sandbox:frame.getAttribute('sandbox'),scriptRan:frame.contentWindow.__websiteScriptRan===true};})()`);
+      const seekStarted = performance.now();
+      const selection = await replay.webContents.executeJavaScript(`(() => {const player=window.__besS0Replay;player.pause(${at.timestamp - recording.records[0].event.timestamp + 0.5});const frame=document.querySelector('#replay-root iframe');const node=frame.contentDocument.querySelector('[data-key="primary"]');const late=frame.contentDocument.querySelector('[data-key="late"]');const mirror=player.getMirror();return {nodeId:mirror.getId(node),roundTrip:mirror.getNode(mirror.getId(node))===node,href:node?.getAttribute('href'),lateId:late?mirror.getId(late):null,scriptTag:frame.contentDocument.querySelector('[data-key="original-script"]')?.tagName,iframeCount:document.querySelectorAll('#replay-root iframe').length,sandbox:frame.getAttribute('sandbox'),scriptRan:frame.contentWindow.__websiteScriptRan===true};})()`);
+      const seekMs = performance.now() - seekStarted;
+      seekLatenciesMs.push(seekMs);
       assert.equal(selection.nodeId, at.primaryId, `${at.label}: replay selection must resolve the original rrweb ID`);
       assert.equal(selection.roundTrip, true);
       assert.equal(selection.lateId, at.lateId, `${at.label}: late-node binding must follow seek state`);
       assert.equal(selection.sandbox, 'allow-same-origin');
       assert.equal(selection.iframeCount, 1);
       assert.equal(selection.scriptRan, false);
+      assert.equal(selection.scriptTag, 'NOSCRIPT', 'The original script tag really is transformed by this replayer');
       assert.notEqual(selection.href, sourcePrimary.attributes!.href, 'Fixture must exercise real URL transformation');
       const comparison = await replay.webContents.executeJavaScript(`(${compareOriginalDocuments.toString()})(${JSON.stringify({ model, originalHtml: at.originalHtml, nodeId: at.primaryId, ...locator })})`);
       for (const value of [comparison.model, comparison.independentOriginal]) { assert.equal(value.cssCount, 1); assert.equal(value.xpathCount, 1); assert.equal(value.cssKey, 'primary'); assert.equal(value.xpathKey, 'primary'); }
       assert.equal(comparison.model.cssTarget, true); assert.equal(comparison.model.xpathTarget, true);
+      let lateComparison: Record<string, unknown> | undefined;
+      if (at.lateId !== null) {
+        const lateModelNode = findSourceNode(model, selection.lateId)!;
+        assert.equal(lateModelNode.attributes!['data-key'], 'late');
+        const lateLocator = prototypeLocators(lateModelNode);
+        const result = await replay.webContents.executeJavaScript(`(${compareOriginalDocuments.toString()})(${JSON.stringify({ model, originalHtml: at.originalHtml, nodeId: selection.lateId, ...lateLocator })})`);
+        for (const value of [result.model, result.independentOriginal]) { assert.equal(value.cssCount, 1); assert.equal(value.xpathCount, 1); assert.equal(value.cssKey, 'late'); assert.equal(value.xpathKey, 'late'); }
+        assert.equal(result.model.cssTarget, true); assert.equal(result.model.xpathTarget, true);
+        lateComparison = { locator: lateLocator, ...result };
+      }
       const choice = findSourceNode(model, at.choiceId)!;
       assert.equal(choice.attributes!.checked, '');
       assert.equal(choice.properties!.checked, at.label !== 'initial', 'Original checked attribute is independent from runtime property');
       if (at.label !== 'initial') { assert.equal(sourcePrimary.attributes!['data-empty'], ''); assert.equal(Object.hasOwn(sourcePrimary.attributes!, 'data-state'), false); }
-      seeks.push({ label: at.label, sourceSeq: at.seq, sourceTimeMs: at.timestamp, selection, originalHref: sourcePrimary.attributes!.href, locator, comparison, checkedAttribute: choice.attributes!.checked, checkedProperty: choice.properties!.checked });
+      seeks.push({ label: at.label, sourceSeq: at.seq, sourceTimeMs: at.timestamp, seekMs, selection, originalHref: sourcePrimary.attributes!.href, locator, comparison, lateComparison, checkedAttribute: choice.attributes!.checked, checkedProperty: choice.properties!.checked });
     }
+    const sortedSeekMs = [...seekLatenciesMs].sort((a, b) => a - b);
+    report.seekLatency = { samplesMs: seekLatenciesMs, p50Ms: sortedSeekMs[Math.ceil(sortedSeekMs.length * 0.5) - 1], p95Ms: sortedSeekMs[Math.ceil(sortedSeekMs.length * 0.95) - 1], scope: 'main-process wall time around actual pause/rebuild + Mirror inspection IPC; six samples, nearest-rank percentiles; excludes source reconstruction/comparison' };
+    report.memoryAfterSeeks = memorySnapshot();
     // A missing metadata chunk must stop source locator reconstruction visibly.
     const withoutMetadata = recording.records.map(entry => ({ ...entry, metadata: [] }));
     assert.throws(() => reconstructPrototypeSource(withoutMetadata, changed.seq), /Metadata gap/);
