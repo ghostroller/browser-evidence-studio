@@ -74,7 +74,12 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
             if (selected?.metadata) {
               const ref: HistoricalElementRef = { kind: 'dom-node', position, nodeId: selected.id, frameId: selected.metadata.frameId, mirrorScopeId: selected.metadata.mirrorScopeId };
               const observed=model.node(ref).text;
-              if (observed.status === 'present' && observed.value === text) { positions.push({ label, position, originalHtml: await current.page.content() }); return; }
+              if (observed.status === 'present' && observed.value === text) {
+                const sample=await current.capture.samplePresentation(ref);
+                assert.equal(sample.presentation.status,'present','Explicit source text observation must be available');
+                if(sample.presentation.status==='present'){assert.equal(sample.presentation.value.text,text);assert.deepEqual(sample.presentation.value.sampledAt,sample.ref.position);assert.ok(sample.presentation.value.basis.includes('source-innerText'));}
+                positions.push({ label, position:sample.ref.position, originalHtml: await current.page.content() }); return;
+              }
             }
           } catch (error) { if (Date.now() - started > 10000) throw error; }
         }
@@ -83,6 +88,15 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
       }
     }
     await boundary('initial', 'initial');
+    await current.page.evaluate(()=>{const node=document.createElement('div');node.id='display-check';node.innerHTML='shown<span hidden>hidden-source-text</span>';document.body.appendChild(node);});
+    await delay(20);await current.capture.flush();
+    const displayPosition=current.capture.recordingPosition!,displayWindow=await new ArchiveReplayService(run.store.runDir).window(displayPosition),displayModel=new SourceModel(displayWindow.records);
+    const displayNode=[...displayModel.nodes.values()].find(node=>node.metadata?.attributes.id?.status==='present'&&node.metadata.attributes.id.value==='display-check');assert.ok(displayNode?.metadata);
+    const displayRef:HistoricalElementRef={kind:'dom-node',position:displayPosition,nodeId:displayNode.id,frameId:displayNode.metadata.frameId,mirrorScopeId:displayNode.metadata.mirrorScopeId};
+    assert.deepEqual(displayModel.node(displayRef).text,{status:'present',value:'shownhidden-source-text'});
+    const displaySample=await current.capture.samplePresentation(displayRef);assert.equal(displaySample.presentation.status,'present');
+    if(displaySample.presentation.status==='present'){assert.equal(displaySample.presentation.value.text,'shown');assert.equal(displaySample.presentation.value.visibility,'visible');}
+    report.sourcePresentation=displaySample;
     await current.page.evaluate(async () => {
       const selected = document.querySelector('#selected')!; selected.textContent = 'updated'; selected.setAttribute('href', '../orders/43'); selected.setAttribute('data-empty', '');
       const input = document.querySelector('#choice') as HTMLInputElement; input.checked = false; input.dispatchEvent(new Event('input', { bubbles: true }));

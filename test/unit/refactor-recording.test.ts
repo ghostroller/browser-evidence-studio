@@ -10,7 +10,7 @@ import { ArchiveReplayService, ReplayViewSession } from '@/replay/service';
 import { sourceLocators } from '@/replay/locators';
 import { instrumentRecorder } from '@/capture/rrweb-adapter';
 import { installSourceRecorder } from '@/capture/source-recorder';
-import type { RecordingEnvelope } from '@/capture/recording-types';
+import type { PresentationSample, RecordingEnvelope } from '@/capture/recording-types';
 import type { HistoricalElementRef, ReplayPosition } from '@/contracts/recording';
 import { CaptureBudget, DeferredBodyReads } from '@/capture/budget';
 import { ResourceArchive, ResourceCapture, RESOURCE_MAX_BYTES } from '@/resources/archive';
@@ -47,6 +47,24 @@ function target(records: RecordingEnvelope[], key = 'a'): HistoricalElementRef {
   return { kind: 'dom-node', position: last.position, nodeId: node.id, frameId: node.metadata!.frameId, mirrorScopeId: node.metadata!.mirrorScopeId };
 }
 describe('format-2 production recorder and bounded archive', () => {
+  it('samples only an explicit source node at its own rrweb boundary and leaves unsampled history missing',async()=>{
+    const {dom,records}=await source('<a id="sample">source structure text</a><p id="untouched">other node</p><input value="private-input"><div class="rr-mask" id="masked">private-mask</div>');
+    const ref=target(records),before=new SourceModel(records.slice(records.findIndex(record=>record.event.type===2)));
+    expect(before.node(ref).presentation).toEqual({status:'missing',reason:'no-source-presentation-observation'});
+    let reads=0;const element=dom.window.document.querySelector('a')!;
+    Object.defineProperty(element,'innerText',{get(){reads++;return 'source displayed value';}});
+    Object.defineProperty(dom.window.document.querySelector('p'),'innerText',{get(){throw new Error('Must not recursively sample unrelated nodes');}});
+    const sampler=(dom.window as unknown as {__besSamplePresentation(ref:HistoricalElementRef):Promise<PresentationSample>}).__besSamplePresentation;
+    const sampled=await sampler(ref);expect(reads).toBe(1);expect(sampled.ref.position.eventSeq).toBeGreaterThan(ref.position.eventSeq);
+    expect(sampled.presentation).toMatchObject({status:'present',value:{text:'source displayed value',sampledAt:sampled.ref.position}});
+    const last=records.at(-1)!;expect(last.event).toMatchObject({type:5,data:{tag:'bes-source-presentation'}});expect(last.position).toEqual(sampled.ref.position);
+    const evidence=await store(),writer=new RecordingIndexWriter(evidence);
+    for(const record of records)await writer.append(record);await evidence.flush();
+    expect((await new ArchiveReplayService(evidence.runDir).node(sampled.ref,{maxBytes:65536,limit:1})).presentation).toEqual(sampled.presentation);
+    await expect(sampler({...ref,mirrorScopeId:'different-scope'})).rejects.toThrow('current source mirror');
+    const input=target(records,'input');const privateSample=await sampler(input);expect(privateSample.presentation.status).toBe('redacted');
+    expect(JSON.stringify(records)).not.toContain('private-input');expect(JSON.stringify(records)).not.toContain('private-mask');
+  });
   it('excludes malformed JSON before saving bytes and retains safe diagnostic identity',()=>{
     const malformed=responsePrivacy(Buffer.from('{"token":"malformed-private"'),'application/json');
     expect(malformed.data).toBeUndefined();expect(malformed).toMatchObject({redacted:true,excludedReason:'response-json-privacy-unverifiable',privacyError:{name:'SyntaxError'}});

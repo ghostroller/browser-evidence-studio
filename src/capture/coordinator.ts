@@ -9,8 +9,9 @@ import { captureRequestBody, redactHeaders as redact, requestMetadata, REQUEST_B
 import { instrumentRecorder, RRWEB_ADAPTER_VERSION } from './rrweb-adapter';
 import { installSourceRecorder } from './source-recorder';
 import { RecordingIndexWriter } from '@/replay/archive';
-import type { RecordingEnvelope } from './recording-types';
-import type { ReplayPosition } from '@/contracts/recording';
+import { sameStream, type PresentationSample, type RecordingEnvelope } from './recording-types';
+import { parseReplayPosition, sameReplayPosition, type HistoricalElementRef, type ReplayPosition } from '@/contracts/recording';
+import { ArchiveReplayService } from '@/replay/service';
 import { CaptureBudget, DeferredBodyReads, type CaptureChannel } from './budget';
 import { ResourceCapture, isArchivableResource, privateResourceUrl, RESOURCE_MAX_BYTES } from '@/resources/archive';
 import { captureError, captureMetadata, credentialUrl } from './url-privacy';
@@ -119,7 +120,7 @@ export class CaptureCoordinator {
           const record:RecordingEnvelope={...data,receivedAt:new Date().toISOString(),gaps:[...losses,...(data.errors??[]).map((reason:string)=>({id:randomUUID(),from:data.position,category:'metadata',reason}))]};
           await this.recording.append(record);this.lastPosition=record.position;if(data.event?.type===2)this.pendingMainBaseline=false;
           if(data.event?.type===2){this.fullSnapshots.set(event.executionContextId,(this.fullSnapshots.get(event.executionContextId)||0)+1);await this.event('rrweb-full-snapshot',{frameId,isTop:data.isTop===true,contextId:event.executionContextId,timestamp:data.event.timestamp,position:record.position});if(this.archivedDocument!==record.position.documentId){this.archivedDocument=record.position.documentId;this.bodyTask(()=>this.captureLoadedResources(),256,'resource');}}}
-        else { await this.event(data.kind,{...data,frameId,actor:'unknown',source:'isolated-world-observer'}); if(data.kind==='element-selected') this.onSelection({...data,frameId,pageId:this.identity.pageId,generation:this.identity.navigationGeneration}); }
+        else { await this.event(data.kind,{...data,frameId,actor:'unknown',source:'isolated-world-observer'}); if(data.kind==='element-selected') {await this.recording.flush();this.onSelection(captureMetadata({...data,frameId,pageId:this.identity.pageId,generation:this.identity.navigationGeneration}));} }
       },payloadBytes*3,channel);
       if(!accepted&&data.position){const previous=this.losses.get(channel);this.losses.set(channel,{from:previous?.from??data.position,to:data.position,count:(previous?.count??0)+1});}
     });
@@ -225,6 +226,28 @@ export class CaptureCoordinator {
     if(generation!==this.identity.navigationGeneration)throw new Error('Inspection target navigated while changing mode');
     this.inspectionEnabled=enabled;
   }
+  /** Existing authorized capture facade only: sample an explicitly identified
+   * live source node, then return its NEW durable historical observation. */
+  async samplePresentation(ref:HistoricalElementRef):Promise<PresentationSample>{
+    parseReplayPosition(ref.position);
+    if(ref.kind!=='dom-node'||!Number.isSafeInteger(ref.nodeId)||ref.nodeId<0||typeof ref.frameId!=='string'||typeof ref.mirrorScopeId!=='string')throw new Error('Invalid presentation target');
+    if(this.stopped||this.paused||!this.lastPosition||!sameStream(ref.position,this.lastPosition))throw new Error('Presentation target is not in the active recording document');
+    const service=new ArchiveReplayService(this.store.runDir);
+    // Establish that the supplied historical identity existed in its own source
+    // structure before resolving that same mirror identity on the live page.
+    await service.node(ref,{maxBytes:1024*1024,limit:1});
+    const contexts=await this.readyObservers();
+    if(contexts.ready.length!==1)throw new Error('Exactly one active source observer is required for presentation sampling');
+    const result=await this.cdp.send('Runtime.evaluate',{expression:`window.__besSamplePresentation(${JSON.stringify(ref)})`,contextId:contexts.ready[0].contextId,awaitPromise:true,returnByValue:true});
+    if(result.exceptionDetails)throw new Error('Source presentation sampling failed: '+captureError(new Error(result.exceptionDetails.text)).message);
+    const observed=result.result.value as PresentationSample|undefined;
+    if(!observed?.ref||!sameStream(observed.ref.position,ref.position)||observed.ref.nodeId!==ref.nodeId||observed.ref.frameId!==ref.frameId||observed.ref.mirrorScopeId!==ref.mirrorScopeId||observed.ref.position.eventSeq<=ref.position.eventSeq)throw new Error('Source presentation returned another target identity');
+    parseReplayPosition(observed.ref.position);
+    await this.flush();
+    const archived=await service.node(observed.ref,{maxBytes:1024*1024,limit:1});
+    if(!archived.metadataComplete||!archived.presentation||JSON.stringify(archived.presentation)!==JSON.stringify(observed.presentation)||archived.presentation.status==='present'&&!sameReplayPosition(archived.presentation.value.sampledAt,observed.ref.position))throw new Error('Source presentation did not reach a complete durable source boundary');
+    return{ref:observed.ref,presentation:archived.presentation};
+  }
   private readyObservers(){return readyMainObserverContexts(this.contexts,this.frameId,contextId=>(this.cdp as any).send('Runtime.evaluate',{expression:'Boolean(window.__besRecorderReady === true && window.rrweb?.record?.takeFullSnapshot)',contextId,returnByValue:true}));}
   async pause(value:boolean) {
     if(this.stopped)throw new Error('Capture has stopped');
@@ -276,11 +299,12 @@ export class CaptureCoordinator {
 function observe(binding:string,urlPrivacy:(value:string,base?:string)=>boolean) {
   const w=window as any; if(w.__besInstalled)return; w.__besInstalled=true;
   const emit=(data:Record<string,unknown>)=>{try{w[binding](JSON.stringify({...data,isTop:window===window.top}));}catch{}};
-  const describe=(el:Element)=>{const privateText=!!el.closest('.rr-mask,.rr-block')||/^(input|textarea|select|option)$/i.test(el.localName);return{tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),name:privateText?'[redacted]':el.getAttribute('aria-label'),text:privateText?'[redacted]':(el.textContent||'').trim().slice(0,400),selectors:privateText?[]:[el.id?'#'+CSS.escape(el.id):null,el.getAttribute('data-testid')?'[data-testid='+JSON.stringify(el.getAttribute('data-testid'))+']':null].filter(Boolean),rect:el.getBoundingClientRect().toJSON(),url:urlPrivacy(location.href)?'[redacted credential URL]':location.href};};
+  const privateElement=(el:Element)=>{if(/^(input|textarea|select|option)$/i.test(el.localName)||el.querySelector('.rr-mask,.rr-block,input,textarea,select,option'))return true;let current:Element|null=el;while(current){if(current.matches('.rr-mask,.rr-block'))return true;const root:Node=current.getRootNode();current=current.parentElement??('host' in root?(root as ShadowRoot).host:null);}return false;};
+  const describe=(el:Element)=>{const privateText=privateElement(el);return{tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),name:privateText?'[redacted]':el.getAttribute('aria-label'),text:privateText?'[redacted]':(el.textContent||'').trim().slice(0,400),selectors:privateText?[]:[el.id?'#'+CSS.escape(el.id):null,el.getAttribute('data-testid')?'[data-testid='+JSON.stringify(el.getAttribute('data-testid'))+']':null].filter(Boolean),rect:el.getBoundingClientRect().toJSON(),url:urlPrivacy(location.href)?'[redacted credential URL]':location.href};};
   const listeners=new AbortController(),options={capture:true,signal:listeners.signal};
   let highlighted:HTMLElement|undefined;
   document.addEventListener('pointermove',e=>{if(!w.__besInspect)return; if(highlighted)highlighted.style.removeProperty('outline');highlighted=e.target as HTMLElement; highlighted.style.outline='2px solid #19bda0';},options);
-  document.addEventListener('click',e=>{const el=e.target as Element;if(w.__besInspect){e.preventDefault();e.stopImmediatePropagation();if(highlighted)highlighted.style.removeProperty('outline');emit({kind:'element-selected',element:describe(el)});}else emit({kind:'action',action:'click',element:describe(el),isTrusted:e.isTrusted});},options);
+  document.addEventListener('click',e=>{const el=(e.composedPath().find(node=>node instanceof Element)??e.target) as Element;if(w.__besInspect){e.preventDefault();e.stopImmediatePropagation();if(highlighted)highlighted.style.removeProperty('outline');void w.__besSampleSelectedNode(el).then((sample:PresentationSample)=>emit({kind:'element-selected',element:describe(el),sample}),()=>emit({kind:'element-selected',element:describe(el),sampleError:'source-presentation-unavailable'}));}else emit({kind:'action',action:'click',element:describe(el),isTrusted:e.isTrusted});},options);
   document.addEventListener('input',e=>{const el=e.target as HTMLInputElement;emit({kind:'action',action:'input',element:describe(el),inputSummary:{masked:true,length:el.value?.length},isTrusted:e.isTrusted});},options);
   w.__besStop=()=>{w.__besInspect=false;w.__besRecorderReady=false;listeners.abort();if(highlighted)highlighted.style.removeProperty('outline');w.__besStopSource?.();w.__besInstalled=false;};
 }
