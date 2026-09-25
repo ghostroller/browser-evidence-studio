@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Replayer } from 'rrweb';
 import { StatusBadge } from './status-badge';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -43,32 +42,6 @@ export function JsonView({ value }: { value: any }) {
       <p className="hint">表格单元格为预览；完整 JSON 展示本次已读取的内容，未包含尚未读取的材料。</p>
     </>}
   </div>;
-}
-
-export function Replay({ events, warning }: { events: any[]; warning?: string }) {
-  const root = useRef<HTMLDivElement>(null);
-  const player = useRef<any>(null);
-  const [playing, setPlaying] = useState(false);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    if (!root.current || events.length < 2) return;
-    try { player.current = new Replayer(events, { root: root.current, showWarning: false, mouseTail: false, UNSAFE_replayCanvas: false }); }
-    catch (failure) { setError(String(failure)); }
-    return () => { player.current?.destroy?.(); player.current = null; };
-  }, [events]);
-  return <>
-    <div className="replay-toolbar">
-      <Button size="sm" disabled={events.length < 2} onClick={() => { player.current?.play(); setPlaying(true); }}>播放</Button>
-      <Button variant="outline" size="sm" onClick={() => { player.current?.pause(); setPlaying(false); }}>暂停</Button>
-      <StatusBadge value={playing ? 'running' : 'paused'} />
-      <span className="muted">{events.length} 条 rrweb 事件；回放不能证明业务结果</span>
-    </div>
-    {warning && <p className="notice">{warning}</p>}
-    {error && <p className="error-inline">{error}</p>}
-    {events.length < 2
-      ? <div className="empty">当前范围没有可播放的完整 rrweb 起始快照。</div>
-      : <div className="replay-stage" ref={root} />}
-  </>;
 }
 
 export function RunRecoveryView({ runId, active, onRecovered, onOpen }: {
