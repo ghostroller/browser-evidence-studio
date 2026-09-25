@@ -30,7 +30,7 @@ if(!app.requestSingleInstanceLock())app.quit();
 else app.whenReady().then(async()=>{
   await mkdir(dataRoot,{recursive:true});lifecycle=await LifecycleLog.start(dataRoot);
   const testPhase=process.env.BES_TEST?process.env.BES_TEST_PHASE||'main':undefined;
-  const recoveryObserver=testPhase==='recovery-crash'?(await import('../../test/desktop/recovery-scenarios')).recoveryObserver(dataRoot,async(stage)=>{await lifecycle?.record('recovery-test-cut',{stage});}):undefined;
+  const recoveryObserver=testPhase==='recovery-crash'?(await import('../../test/desktop/recovery-scenarios')).recoveryObserver(dataRoot,async(stage)=>{await lifecycle?.record('recovery-test-cut',{stage});},()=>{ensure(studio,'Synthetic recovery requires initialized Studio');return studio;}):undefined;
   const window=new StudioWindow();studio=new Studio(dataRoot,window,await endpoint(),recoveryObserver);
   await lifecycle.record('workspace-opening');await studio.init();await lifecycle.record('workspace-opened');
   const dispatch=makeDispatch(studio);api=await startApi({root:dataRoot,dispatch});studio.connection={address:api.address,file:api.connectionFile};

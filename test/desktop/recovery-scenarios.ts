@@ -14,10 +14,22 @@ import { startFixture } from '../fixtures/site';
 const stages = ['registered-before-worker', 'running', 'waiting-human', 'report-before-terminal', 'terminal-before-catalog'];
 
 /** Available only through the app's synthetic desktop phase, never through public IPC/HTTP. */
-export function recoveryObserver(root: string, onCut: (stage: string) => Promise<void>) {
+export function recoveryObserver(root: string, onCut: (stage: string) => Promise<void>, getStudio: () => Studio) {
   const wanted = process.env.BES_RECOVERY_STAGE;
   assert.ok(stages.includes(wanted || ''), 'The crash stage must be a declared synthetic boundary');
   return async (stage: string, context: { validationId: string; runId: string; projectId: string; profileId: string; reportId?: string }) => {
+    // A from-start validation has a new recording. Acknowledge evidence in that
+    // actual crash target before Worker creation; never relabel preparation data.
+    if(stage==='registered-before-worker'){
+      const studio=getStudio(),run=studio.required(),page=studio.current();
+      assert.equal(run.id,context.runId);assert.equal(run.projectId,context.projectId);assert.equal(run.profileId,context.profileId);assert.equal(run.locked,false);
+      const checkpoint=await studio.checkpoint({key:'acknowledged-before-crash',title:'执行 run 强杀前已确认保存'},{fromRunner:true,pageId:page.pageId});
+      assert.equal(checkpoint.metadata?.captureOutcome,'completed');assert.equal(checkpoint.metadata?.captureStatus,'complete');assert.equal(checkpoint.captureConsistency,'consistent');
+      const artifacts=await Promise.all(checkpoint.artifactRefs.map(id=>studio.reader(run.id).artifactFile(id)));
+      await run.store.flush();
+      await atomicJson(path.join(root,'recovery-seed.json'),{processId:process.pid,projectId:context.projectId,profileId:context.profileId,runId:context.runId,checkpointId:checkpoint.id,
+        artifacts:artifacts.map(({artifact})=>({id:artifact.id,sha256:artifact.sha256,bytes:artifact.capturedBytes}))});
+    }
     if (stage !== wanted) return;
     const report = context.reportId ? await new EvidenceReader(path.join(root, 'runs', context.runId)).artifactMetadata(context.reportId) : undefined;
     await atomicJson(path.join(root, 'recovery-cut.json'), { ...context, report: report ? { id: report.id, sha256: report.sha256, bytes: report.capturedBytes } : undefined, stage, processId: process.pid, at: new Date().toISOString() });
@@ -37,7 +49,7 @@ export async function runRecoveryCrash(studio: Studio): Promise<void> {
   const checkpoint = await studio.checkpoint({ key: 'acknowledged-before-crash', title: '强杀前已确认保存' });
   assert.equal(checkpoint.metadata?.captureStatus, 'complete');
   const artifacts = await Promise.all(checkpoint.artifactRefs.map(id => studio.reader(run.id).artifactMetadata(id)));
-  await atomicJson(path.join(studio.root, 'recovery-seed.json'), { processId: process.pid, projectId: project.id,
+  await atomicJson(path.join(studio.root, 'recovery-preparation.json'), { processId: process.pid, projectId: project.id,
     profileId: profile.id, runId: run.id, checkpointId: checkpoint.id,
     artifacts: artifacts.map(artifact => ({ id: artifact.id, sha256: artifact.sha256, bytes: artifact.capturedBytes })) });
   const started = await studio.validate({ projectId: project.id, profileId: profile.id,
@@ -64,6 +76,12 @@ async function originalHashes(runDir: string) {
 export async function verifyRecovery(studio: Studio, repeat: boolean) {
   const seed = JSON.parse(await readFile(path.join(studio.root, 'recovery-seed.json'), 'utf8'));
   const cut = JSON.parse(await readFile(path.join(studio.root, 'recovery-cut.json'), 'utf8'));
+  const preparation=JSON.parse(await readFile(path.join(studio.root,'recovery-preparation.json'),'utf8'));
+  assert.equal(preparation.processId,seed.processId);assert.equal(preparation.projectId,seed.projectId);assert.equal(preparation.profileId,seed.profileId);
+  assert.notEqual(preparation.runId,seed.runId,'From-start creates a distinct execution run');
+  const preparationReader=studio.reader(preparation.runId),preparedCheckpoints=await preparationReader.checkpoints({limit:100,maxBytes:32768});
+  assert.ok(preparedCheckpoints.items.some((checkpoint:any)=>checkpoint.id===preparation.checkpointId));
+  for(const artifact of preparation.artifacts){const verified=await preparationReader.artifactFile(artifact.id);assert.equal(verified.artifact.sha256,artifact.sha256);assert.equal(verified.artifact.capturedBytes,artifact.bytes);}
   assert.notEqual(process.pid, seed.processId);
   assert.equal(cut.processId, seed.processId); assert.equal(cut.runId, seed.runId);
   assert.equal(studio.active, undefined, 'Restart cannot restore a former control lease, worker or human window');
@@ -93,7 +111,7 @@ export async function verifyRecovery(studio: Studio, repeat: boolean) {
     if (hasCommittedResult) assert.equal(record.artifactId, cut.reportId);
   }
   const snapshot = { validationId: record.id, status: record.status, result: record.result ?? null,
-    artifactId: record.artifactId ?? null, retainedReport: retainedReport ?? null, originals: await originalHashes(reader.runDir) };
+    artifactId: record.artifactId ?? null, retainedReport: retainedReport ?? null, originals: await originalHashes(reader.runDir), preparationOriginals:await originalHashes(preparationReader.runDir) };
   if (repeat) {
     const previous = JSON.parse(await readFile(path.join(studio.root, 'recovery-observed.json'), 'utf8'));
     assert.deepEqual(snapshot, previous, 'Repeated startup must not duplicate validation records or append another recovery gap');

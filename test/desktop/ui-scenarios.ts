@@ -17,7 +17,7 @@ export async function runReviewUiScenarios(studio: Studio): Promise<void> {
   const foreignProject = studio.projects.find(candidate => candidate.id !== project.id)!;
   const foreignProfile = studio.profiles.find(candidate => candidate.projectId === foreignProject.id)!;
   const key = record.result.validation.requirements[0].checkpointKey;
-  if (studio.active) await studio.seal();await studio.closeSession();
+  if (studio.active) await studio.seal();if(studio.state().session)await studio.closeSession();
   await studio.startRun({ projectId: project.id, profileId: profile.id, url: 'about:blank', kind: 'demonstrate' });
   const ownRunId = studio.required().id;
   await studio.checkpoint({ key, title: '当前项目合成示范', description: '同项目对照说明' }); await studio.seal();await studio.closeSession();

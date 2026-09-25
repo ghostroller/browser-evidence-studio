@@ -95,7 +95,8 @@ export async function runSessionScenarios(studio:Studio,origin:string){
     }finally{page.page.off('dialog',observedDialog);page.view.webContents.removeListener('will-prevent-unload',observedPrevented);}
     await page.page.evaluate(()=>{window.onbeforeunload=null;});
     report.checks.push('page/session beforeunload rejection is bounded and retains usable live page');
-    await studio.closePage(page.pageId);assert.equal(page.view.webContents.isDestroyed(),true);assert.equal(studio.state().session?.pages.length,0);
+    const closingContents=page.view.webContents;
+    await studio.closePage(page.pageId);assert.equal(closingContents.isDestroyed(),true);assert.equal(studio.state().session?.pages.length,0);
     await studio.closeSession();assert.equal(studio.state().session,null);
     await studio.startRun({projectId:project.id,profileId:profile.id,url:origin+'/orders'});
     assert.notEqual(studio.state().session?.sessionId,sessionId);assert.notEqual(studio.current().targetId,before.targetId);

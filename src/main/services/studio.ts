@@ -470,19 +470,18 @@ export class Studio {
   }
   async validate(body:any,options:{signal?:AbortSignal;requireGrant?:boolean}={}){
     options.signal?.throwIfAborted();this.assertValidationIdle();
-    const reusePreparedValidation=body.executionMode===undefined;
     const executionMode=body.executionMode??'from-start-validation';
     ensure(['current-page-test','from-start-validation'].includes(executionMode),'Unknown execution mode');
     ensure(!options.requireGrant||executionMode==='from-start-validation','This one-time grant authorizes from-start validation only',409);
     if(body.startUrl!==undefined)ensure(typeof body.startUrl==='string'&&(/^https?:\/\//.test(body.startUrl)||body.startUrl==='about:blank'),'Invalid validation start URL');
     ensure(!options.requireGrant||body.startUrl===undefined||body.startUrl===this.current().page.url(),'Start URL differs from the authorized page',409);
-    body={...body,executionMode,reusePreparedValidation};
+    body={...body,executionMode};
     if(executionMode==='current-page-test'){
       const live=this.live(),page=this.current();
       ensure(body.projectId===live.projectId&&body.profileId===live.profileId&&body.pageId===page.pageId&&body.generation===page.navigationGeneration,'Current-page test requires the exact live page and document generation',409);
     }
     const original=this.active;
-    let finish!:()=>void;const launch:ValidationLaunch={abort:new AbortController(),done:new Promise<void>(resolve=>{finish=resolve;}),finish:()=>finish(),validationId:randomUUID(),validationRunId:reusePreparedValidation&&original?.store.manifest.kind==='validate'&&original.execution==='ready'?original.id:randomUUID(),claimed:false};
+    let finish!:()=>void;const launch:ValidationLaunch={abort:new AbortController(),done:new Promise<void>(resolve=>{finish=resolve;}),finish:()=>finish(),validationId:randomUUID(),validationRunId:randomUUID(),claimed:false};
     this.validationLaunch=launch;
     const abort=()=>{launch.abort.abort(options.signal?.reason??new Error('Validation startup cancelled'));void launch.handle?.cancel('Validation startup cancelled');};
     options.signal?.addEventListener('abort',abort,{once:true});if(options.signal?.aborted)abort();
@@ -523,8 +522,8 @@ export class Studio {
     ensure(this.profiles.some(profile=>profile.id===profileId&&profile.projectId===project.id),'Select a profile belonging to the validation project',409);
     // Directory registration is a trusted UI project setting, never a path accepted from an HTTP execution request.
     const directory=project.scriptDirectory;ensure(directory,'Register the workflow directory in the project first');
-    if(!body.reusePreparedValidation||!old||old.store.manifest.kind!=='validate'||old.execution!=='ready'){
-      const selected=old?.pages.get(old.selectedPageId)??(this.browser?this.current():undefined),url=selected?this.pageContents(selected)?.getURL():'about:blank';
+    {
+      const live=this.browser?.runtime,selected=old?.pages.get(old.selectedPageId)??live?.pages.get(live.selectedPageId),url=selected?this.pageContents(selected)?.getURL():'about:blank';
       if(old)await this.seal(launch);launch.abort.signal.throwIfAborted();
       await this.startRun({projectId:project.id,profileId,url:body.startUrl??url??'about:blank',kind:'validate'},launch,{freshPage:!currentPageTest});
     }

@@ -80,6 +80,19 @@ test('HTTP action requires the selected page generation and rejects a queued act
   assert.equal(calls[0].method, 'action');
 });
 
+test('a stop from startup still targets the same running validation, but cannot stop a replacement execution', async () => {
+  const { fake, run } = mockStudio();
+  let stopped = 0;
+  const studio = { ...fake, state: () => ({ active: run, validationStarting: null,
+    validations: [{ id: 'validation-1', runId: run.id }] }), stopRunner: async () => { stopped++; } };
+  const dispatch = makeDispatch(studio as unknown as Studio);
+  await dispatch('stopRunner', { validationId: 'validation-1' }, 'ui');
+  assert.equal(stopped, 1);
+  await assert.rejects(dispatch('stopRunner', { validationId: 'validation-previous' }, 'ui'), (error: any) => error.status === 409);
+  await assert.rejects(dispatch('stopRunner', { runId: 'run-previous' }, 'ui'), (error: any) => error.status === 409);
+  assert.equal(stopped, 1);
+});
+
 test('human handoff release and review writes require the trusted UI source', async () => {
   const { dispatch, calls } = mockStudio();
   for (const method of ['replyHuman', 'releaseHuman', 'review']) {
