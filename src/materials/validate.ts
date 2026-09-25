@@ -1,6 +1,6 @@
 import type { MaterialContent, MaterialField, MaterialRequirement, CheckpointCard, MaterialAnnotation } from '@/contracts/materials';
 import type { DataRule } from '@/contracts/workflow';
-import { parseJsonPointer, parseJsonRecordProof, parsePaginationProof } from '@/contracts/workflow';
+import { parseJsonPointer, parseFieldSourceProof, parsePaginationProof } from '@/contracts/workflow';
 import { parseReplayPosition, sameReplayPosition, type HistoricalTarget, type ReplayPosition } from '@/contracts/recording';
 import { MaterialError } from './errors';
 
@@ -133,7 +133,7 @@ export function validateContent(value: unknown): MaterialContent {
       if (item.outputPath !== undefined) proofFields.outputPath = parseJsonPointer(item.outputPath);
       if (item.sourceProof !== undefined) {
         if (item.outputPath === undefined) fail('Source proof requires an explicit outputPath');
-        proofFields.sourceProof = parseJsonRecordProof(item.sourceProof);
+        proofFields.sourceProof = parseFieldSourceProof(item.sourceProof);
       }
     } catch (error) { fail(String(error)); }
     return { id: id(item.id, 'field.id'), dataset: id(item.dataset, 'field.dataset'), name: string(item.name, 'field.name', 256),

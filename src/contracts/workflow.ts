@@ -12,6 +12,17 @@ export interface JsonRecordSourceProof {
   outputEntityPath: string;
   valuePointer: string;
 }
+/** Meaning is pinned by source attributes; an example node/value is not a constant. */
+export interface DomTextSourceProof {
+  kind: 'dom-text';
+  sourceUrl: string;
+  pageParameter?: string;
+  nodeAttribute: { name: string; value: string };
+  /** Nearest source ancestor (including this node), within the same frame/shadow root. */
+  entityAttribute: string;
+  outputEntityPath: string;
+}
+export type FieldSourceProof = JsonRecordSourceProof | DomTextSourceProof;
 export interface NumberedPaginationProof {
   kind: 'numbered-pages';
   sourceUrl: string;
@@ -186,6 +197,19 @@ export function parseJsonRecordProof(value: unknown): JsonRecordSourceProof {
   if (item.kind !== 'json-record') throw new Error('Invalid JSON record proof kind');
   return { kind: 'json-record', sourceUrl: proofUrl(item.sourceUrl), ...(item.pageParameter === undefined ? {} : { pageParameter: pageParameter(item.pageParameter) }),
     rowsPointer: parseJsonPointer(item.rowsPointer), entityPointer: parseJsonPointer(item.entityPointer), outputEntityPath: parseJsonPointer(item.outputEntityPath), valuePointer: parseJsonPointer(item.valuePointer) };
+}
+export function parseFieldSourceProof(value: unknown): FieldSourceProof {
+  if (object(value) && value.kind === 'json-record') return parseJsonRecordProof(value);
+  const item = proofObject(value, ['kind', 'sourceUrl', 'pageParameter', 'nodeAttribute', 'entityAttribute', 'outputEntityPath']);
+  if (item.kind !== 'dom-text') throw new Error('Invalid DOM text proof kind');
+  const attribute = proofObject(item.nodeAttribute, ['name', 'value']);
+  const name = (input: unknown): string => {
+    if (typeof input !== 'string' || !/^[a-zA-Z_][a-zA-Z0-9_.:-]{0,127}$/.test(input) || /password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key/i.test(input)) throw new Error('Invalid non-sensitive source attribute name');
+    return input;
+  };
+  if (typeof attribute.value !== 'string' || !attribute.value || attribute.value.length > 1024 || /[\u0000-\u001f\u007f]/u.test(attribute.value)) throw new Error('Invalid source attribute value');
+  return { kind: 'dom-text', sourceUrl: proofUrl(item.sourceUrl), ...(item.pageParameter === undefined ? {} : { pageParameter: pageParameter(item.pageParameter) }),
+    nodeAttribute: { name: name(attribute.name), value: attribute.value }, entityAttribute: name(item.entityAttribute), outputEntityPath: parseJsonPointer(item.outputEntityPath) };
 }
 export function parsePaginationProof(value: unknown): NumberedPaginationProof {
   const item = proofObject(value, ['kind', 'sourceUrl', 'pageParameter', 'pagePointer', 'rowsPointer', 'entityPointer', 'outputEntityPath', 'termination']);

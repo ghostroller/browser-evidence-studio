@@ -33,6 +33,8 @@ DatasetService 的 append 完成意味着已持久保存；幂等键是 executio
 
 显示值观察的最小端口：`SourceNode.presentation?` 保留明确源页取样的文本、visibility、rect、basis 与精确 `sampledAt`。A 只在明确选择/请求的节点读取一次布局/innerText，通过原录制通道追加事件，不对所有节点增加递归显示值采集；表单/rr-mask/rr-block 延续隐私政策。未取样/旧资料为缺失或 unsupported，不能从结构 textContent、回放像素或当前 live 页补造。F 使用时必须核对同一完整位置、DOM 目标身份、可见性依据、执行来源，不能把 sampledAt 的观察推延至其他事件；此类型尚待 A 生产实现及 F 接入，存在类型不代表完成。
 
+显示值约束补充：`FieldSourceProof` 保留 `json-record`，增加可选 `dom-text`（固定 sourceUrl/pageParameter、nodeAttribute 的 name/value、最近同 frame/shadow 源祖先的 entityAttribute、输出 outputEntityPath）。这只是来源数据匹配规则，不执行选择器或业务步骤；用户样例 target/value 不是验收常量。显示文本与实体属性按字符串精确比较，不隐式转换数值或补全遮罩。`CapturedDomSourceReader(locate)` 只能从宿主持久 sampleRef→target 与 execution/attempt/recording 映射读取 A 原件，检查可靠位置和采样时点；业务脚本不能提交 SourceDocument/observed。根已实现纯证明和读取适配端口，真实 A 源采样/E 引用映射及桌面端到端仍待接入。
+
 ## 落盘与旧材料
 
 根为每个实例的 `BES_DATA`，相对目录冻结如下：
