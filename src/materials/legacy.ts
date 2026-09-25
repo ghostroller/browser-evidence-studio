@@ -5,6 +5,7 @@ import type { BoundedPage, ReadBudget } from '@/contracts/recording';
 import { jsonLines, safeFile } from '@/evidence/files';
 import { MaterialError } from './errors';
 import { id } from './validate';
+import { measured } from './paging';
 
 /** Legacy schema-1 evidence lacks a ReplayPosition; this projection never invents one. */
 export interface LegacyCheckpointProjection {
@@ -13,14 +14,17 @@ export interface LegacyCheckpointProjection {
   title: string;
   description: string;
   requirementIds: string[];
-  capturedAt: string;
+  capturedAt?: string;
+  captureTimeStatus: 'present' | 'missing';
+  truncatedFields: Array<'title' | 'description' | 'requirementIds'>;
   anchorStatus: 'unavailable';
   sourceStatus: 'legacy-schema-1';
 }
 export interface LegacyMaterialPage extends BoundedPage<LegacyCheckpointProjection> {
   recordingId: string;
   invalidRecords: number;
-  sourceStatus: 'complete' | 'missing' | 'read-failed';
+  sourceStatus: 'complete' | 'partial' | 'missing' | 'read-failed';
+  readFailure?: string;
 }
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -44,13 +48,14 @@ export async function projectLegacyRecording(dataRoot: string, projectId: string
   let file: string;
   try { file = await safeFile(run, 'checkpoints.jsonl'); }
   catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { recordingId, items: [], invalidRecords: 0, sourceStatus: 'missing', returnedBytes: 0, outputTruncated: false };
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return measured<LegacyMaterialPage>({ recordingId, items: [], invalidRecords: 0, sourceStatus: 'missing', outputTruncated: false });
     throw error;
   }
   const stat = await fs.stat(file);
   const query = createHash('sha256').update(`${projectId}:${recordingId}:${stat.size}:${stat.mtimeMs}`).digest('hex');
   let offset = 0;
   if (budget.cursor !== undefined) {
+    if (budget.cursor.length > 4096) throw new MaterialError('INVALID_CURSOR', 'Legacy projection cursor is too long.');
     let parsed: unknown;
     try { parsed = JSON.parse(Buffer.from(budget.cursor, 'base64url').toString('utf8')) as unknown; }
     catch { throw new MaterialError('INVALID_CURSOR', 'Legacy projection cursor is malformed.'); }
@@ -60,33 +65,46 @@ export async function projectLegacyRecording(dataRoot: string, projectId: string
     offset = parsed.offset as number;
   }
   const items: LegacyCheckpointProjection[] = [];
-  let invalidRecords = 0, nextOffset = offset, exhausted = true, itemBytes = 0;
+  let invalidRecords = 0, nextOffset = offset, exhausted = true, anyTruncated = false;
   try {
     for await (const line of jsonLines(file, offset)) {
       if (items.length >= budget.limit) { exhausted = false; break; }
       if (line.invalid || !line.value || typeof line.value.id !== 'string') { invalidRecords++; nextOffset = line.offset + line.bytes; continue; }
       const source = line.value;
+      const capturedAt = typeof source.captureEndedAt === 'string' ? source.captureEndedAt : typeof source.savedAt === 'string' ? source.savedAt : undefined;
+      const title = typeof source.title === 'string' ? source.title : '';
+      const description = typeof source.description === 'string' ? source.description : '';
+      const requirementIds = Array.isArray(source.requirementIds) ? source.requirementIds.filter((item): item is string => typeof item === 'string') : [];
+      const truncatedFields: LegacyCheckpointProjection['truncatedFields'] = [];
+      if (title.length > 500) truncatedFields.push('title');
+      if (description.length > 8000) truncatedFields.push('description');
+      if (requirementIds.length > 100 || Array.isArray(source.requirementIds) && requirementIds.length !== source.requirementIds.length) truncatedFields.push('requirementIds');
       const projection: LegacyCheckpointProjection = { id: source.id as string, recordingId,
-        title: typeof source.title === 'string' ? source.title.slice(0, 500) : '',
-        description: typeof source.description === 'string' ? source.description.slice(0, 8000) : '',
-        requirementIds: Array.isArray(source.requirementIds) ? source.requirementIds.filter((item): item is string => typeof item === 'string').slice(0, 100) : [],
-        capturedAt: typeof source.captureEndedAt === 'string' ? source.captureEndedAt : typeof source.savedAt === 'string' ? source.savedAt : '',
-        anchorStatus: 'unavailable', sourceStatus: 'legacy-schema-1' };
-      const bytes = Buffer.byteLength(JSON.stringify(projection), 'utf8');
-      if (itemBytes + bytes > budget.maxBytes - 1024) {
+        title: title.slice(0, 500), description: description.slice(0, 8000), requirementIds: requirementIds.slice(0, 100),
+        ...(capturedAt === undefined ? {} : { capturedAt }), captureTimeStatus: capturedAt === undefined ? 'missing' : 'present',
+        truncatedFields, anchorStatus: 'unavailable', sourceStatus: 'legacy-schema-1' };
+      const after = line.offset + line.bytes;
+      const partial = invalidRecords > 0 || anyTruncated || truncatedFields.length > 0;
+      const preview = measured<LegacyMaterialPage>({ recordingId, items: [...items, projection], invalidRecords,
+        sourceStatus: partial ? 'partial' : 'complete', outputTruncated: after < stat.size || partial,
+        ...(after < stat.size ? { nextCursor: Buffer.from(JSON.stringify({ query, offset: after })).toString('base64url') } : {}) });
+      if (preview.returnedBytes > budget.maxBytes) {
         if (!items.length) throw new MaterialError('READ_BUDGET_EXCEEDED', 'One legacy checkpoint exceeds maxBytes.', 413);
         exhausted = false; break;
       }
-      items.push(projection); itemBytes += bytes; nextOffset = line.offset + line.bytes;
+      items.push(projection); nextOffset = after; anyTruncated ||= truncatedFields.length > 0;
     }
   } catch (error) {
     if (error instanceof MaterialError) throw error;
-    return { recordingId, items, invalidRecords, sourceStatus: 'read-failed', returnedBytes: itemBytes, outputTruncated: true };
+    const page = measured<LegacyMaterialPage>({ recordingId, items, invalidRecords, sourceStatus: 'read-failed',
+      readFailure: error instanceof Error ? error.name.slice(0, 80) : 'unknown-error', outputTruncated: true });
+    if (page.returnedBytes > budget.maxBytes) throw new MaterialError('READ_BUDGET_EXCEEDED', 'Legacy error page exceeds maxBytes.', 413);
+    return page;
   }
-  const outputTruncated = !exhausted || nextOffset < stat.size;
-  const page: LegacyMaterialPage = { recordingId, items, invalidRecords, sourceStatus: 'complete', returnedBytes: 0, outputTruncated,
-    ...(outputTruncated ? { nextCursor: Buffer.from(JSON.stringify({ query, offset: nextOffset })).toString('base64url') } : {}) };
-  page.returnedBytes = Buffer.byteLength(JSON.stringify(page), 'utf8');
+  const hasMore = !exhausted || nextOffset < stat.size;
+  const page = measured<LegacyMaterialPage>({ recordingId, items, invalidRecords,
+    sourceStatus: invalidRecords || anyTruncated ? 'partial' : 'complete', outputTruncated: hasMore || invalidRecords > 0 || anyTruncated,
+    ...(hasMore ? { nextCursor: Buffer.from(JSON.stringify({ query, offset: nextOffset })).toString('base64url') } : {}) });
   if (page.returnedBytes > budget.maxBytes) throw new MaterialError('READ_BUDGET_EXCEEDED', 'Legacy projection page exceeds maxBytes.', 413);
   return page;
 }

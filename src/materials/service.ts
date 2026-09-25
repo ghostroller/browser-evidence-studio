@@ -6,8 +6,9 @@ import type { BoundedPage, HistoricalTarget, ReadBudget, ReplayPosition } from '
 import type { DraftUpdateResult, MaterialAuthor, MaterialContent, MaterialDifference, MaterialService, TaskMaterialDraft, TaskMaterialRevision } from '@/contracts/materials';
 import { atomicJson, safeFile } from '@/evidence/files';
 import { claimWriterLock, WriterLockError } from '@/evidence/writer-lock';
-import { MaterialConflictError, MaterialError } from './errors';
+import { MaterialConflictError, MaterialError, MaterialPartialPublishError } from './errors';
 import { id, validateContent } from './validate';
+import { measured } from './paging';
 
 const MAX_FILE_BYTES = 3 * 1024 * 1024;
 const EMPTY: MaterialContent = { requirements: [], fields: [], checkpoints: [], annotations: [], recordingRefs: [] };
@@ -87,7 +88,8 @@ export class FileMaterialService implements MaterialService {
   private async project(root: string, projectId: string): Promise<ProjectPaths> {
     id(projectId, 'projectId');
     const workspace = await readJson(path.join(root, 'workspace.json'), root);
-    if (!isRecord(workspace) || !Array.isArray(workspace.projects) || !workspace.projects.some(item => isRecord(item) && item.id === projectId)) {
+    if (!isRecord(workspace) || workspace.schemaVersion !== 1 || !Array.isArray(workspace.projects) ||
+      workspace.projects.filter(item => isRecord(item) && item.id === projectId).length !== 1) {
       throw new MaterialError('UNKNOWN_PROJECT', 'Project is not registered in this data root.', 404);
     }
     const projects = await directory(root, 'projects');
@@ -151,7 +153,8 @@ export class FileMaterialService implements MaterialService {
         if (error instanceof MaterialError && error.code === 'NOT_FOUND') throw new MaterialError('INVALID_SOURCE', `Recording ${recordingId} does not exist.`, 422);
         throw error;
       }
-      if (!isRecord(manifest) || manifest.id !== recordingId || manifest.projectId !== projectId || ![1, 2].includes(Number(manifest.schemaVersion))) {
+      if (!isRecord(manifest) || manifest.id !== recordingId || manifest.projectId !== projectId ||
+        manifest.schemaVersion !== 1 && manifest.schemaVersion !== 2) {
         throw new MaterialError('INVALID_SOURCE', `Recording ${recordingId} does not belong to this project or has an unsupported manifest.`, 422);
       }
     }
@@ -209,10 +212,12 @@ export class FileMaterialService implements MaterialService {
       await createJson(path.join(paths.revisions, `${revision.revisionId}.json`), revision);
       // The manifest is already durable. A failed draft advance is reported and
       // cannot make publication appear complete; the manifest remains inspectable.
-      await atomicJson(path.join(paths.drafts, `${draftId}.json`), {
-        ...draft, draftRevision: draft.draftRevision + 1, baseRevisionId: revision.revisionId,
-        updatedAt: new Date().toISOString(), author,
-      } satisfies TaskMaterialDraft);
+      try {
+        await atomicJson(path.join(paths.drafts, `${draftId}.json`), {
+          ...draft, draftRevision: draft.draftRevision + 1, baseRevisionId: revision.revisionId,
+          updatedAt: new Date().toISOString(), author,
+        } satisfies TaskMaterialDraft);
+      } catch (error) { throw new MaterialPartialPublishError(revision.revisionId, revision.contentHash, error); }
       return revision;
     });
   }
@@ -238,6 +243,7 @@ export class FileMaterialService implements MaterialService {
     const query = createHash('sha256').update(`${projectId}:${source.kind}:${source.id}:${identity}:${collection}`).digest('hex');
     let offset = 0;
     if (cursor !== undefined) {
+      if (cursor.length > 4096) throw new MaterialError('INVALID_CURSOR', 'Material cursor is too long.');
       let parsed: unknown;
       try { parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { throw new MaterialError('INVALID_CURSOR', 'Material cursor is malformed.'); }
       if (!isRecord(parsed) || parsed.query !== query || !Number.isSafeInteger(parsed.offset) || Number(parsed.offset) < 0) throw new MaterialError('INVALID_CURSOR', 'Material cursor is stale or belongs to another collection.');
@@ -246,20 +252,21 @@ export class FileMaterialService implements MaterialService {
     const all = material.content[collection];
     if (offset > all.length) throw new MaterialError('INVALID_CURSOR', 'Material cursor is past the end.');
     const items: MaterialContent[K][number][] = [];
-    let itemBytes = 0;
     for (let index = offset; index < all.length && items.length < limit; index++) {
       const next = all[index] as MaterialContent[K][number];
-      const bytes = Buffer.byteLength(JSON.stringify(next), 'utf8');
-      if (itemBytes + bytes > maxBytes - 1024) {
+      const candidate = [...items, next];
+      const after = index + 1;
+      const preview = measured<BoundedPage<MaterialContent[K][number]>>({ items: candidate, outputTruncated: after < all.length,
+        ...(after < all.length ? { nextCursor: Buffer.from(JSON.stringify({ query, offset: after })).toString('base64url') } : {}) });
+      if (preview.returnedBytes > maxBytes) {
         if (!items.length) throw new MaterialError('READ_BUDGET_EXCEEDED', 'One material item exceeds maxBytes; increase the read budget.', 413);
         break;
       }
-      items.push(next); itemBytes += bytes;
+      items.push(next);
     }
     const next = offset + items.length;
-    const page: BoundedPage<MaterialContent[K][number]> = { items, returnedBytes: 0, outputTruncated: next < all.length,
-      ...(next < all.length ? { nextCursor: Buffer.from(JSON.stringify({ query, offset: next })).toString('base64url') } : {}) };
-    page.returnedBytes = Buffer.byteLength(JSON.stringify(page), 'utf8');
+    const page = measured<BoundedPage<MaterialContent[K][number]>>({ items, outputTruncated: next < all.length,
+      ...(next < all.length ? { nextCursor: Buffer.from(JSON.stringify({ query, offset: next })).toString('base64url') } : {}) });
     if (page.returnedBytes > maxBytes) throw new MaterialError('READ_BUDGET_EXCEEDED', 'Material page exceeds maxBytes.', 413);
     return page;
   }
@@ -272,6 +279,7 @@ export class FileMaterialService implements MaterialService {
     const query = createHash('sha256').update(`${projectId}:${before.revisionId}:${before.contentHash}:${after.revisionId}:${after.contentHash}`).digest('hex');
     let offset = 0;
     if (cursor !== undefined) {
+      if (cursor.length > 4096) throw new MaterialError('INVALID_CURSOR', 'Diff cursor is too long.');
       let parsed: unknown;
       try { parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { throw new MaterialError('INVALID_CURSOR', 'Diff cursor is malformed.'); }
       if (!isRecord(parsed) || parsed.query !== query || !Number.isSafeInteger(parsed.offset) || Number(parsed.offset) < 0) throw new MaterialError('INVALID_CURSOR', 'Diff cursor does not match this revision pair.');
@@ -279,19 +287,20 @@ export class FileMaterialService implements MaterialService {
     }
     const all = differences(before.content, after.content);
     if (offset > all.length) throw new MaterialError('INVALID_CURSOR', 'Diff cursor is past the end.');
-    const items: MaterialDifference[] = []; let returnedBytes = 0;
+    const items: MaterialDifference[] = [];
     for (let n = offset; n < all.length && items.length < limit; n++) {
-      const size = Buffer.byteLength(JSON.stringify(all[n]), 'utf8');
-      if (returnedBytes + size > maxBytes - 1024) {
+      const after = n + 1;
+      const preview = measured<BoundedPage<MaterialDifference>>({ items: [...items, all[n]], outputTruncated: after < all.length,
+        ...(after < all.length ? { nextCursor: Buffer.from(JSON.stringify({ query, offset: after })).toString('base64url') } : {}) });
+      if (preview.returnedBytes > maxBytes) {
         if (!items.length) throw new MaterialError('READ_BUDGET_EXCEEDED', 'One difference exceeds maxBytes; increase the read budget.', 413);
         break;
       }
-      items.push(all[n]); returnedBytes += size;
+      items.push(all[n]);
     }
     const next = offset + items.length;
-    const page: BoundedPage<MaterialDifference> = { items, returnedBytes: 0, outputTruncated: next < all.length,
-      ...(next < all.length ? { nextCursor: Buffer.from(JSON.stringify({ query, offset: next })).toString('base64url') } : {}) };
-    page.returnedBytes = Buffer.byteLength(JSON.stringify(page), 'utf8');
+    const page = measured<BoundedPage<MaterialDifference>>({ items, outputTruncated: next < all.length,
+      ...(next < all.length ? { nextCursor: Buffer.from(JSON.stringify({ query, offset: next })).toString('base64url') } : {}) });
     if (page.returnedBytes > maxBytes) throw new MaterialError('READ_BUDGET_EXCEEDED', 'Difference page exceeds maxBytes.', 413);
     return page;
   }
