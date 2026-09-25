@@ -17,6 +17,7 @@ export class CaptureCoordinator {
   private paused = false;
   private stopped = false;
   private stopComplete = false;
+  private stopTask?:Promise<void>;
   private unfinishedOnStop?:CapturedRequest[];
   private pausedStopRecorded = false;
   private documentGone = false;
@@ -137,7 +138,12 @@ export class CaptureCoordinator {
     await this.event(complete?'rrweb-resumed':'gap',{reason:complete?reason:'fresh-rrweb-snapshot-not-observed',requestedBecause:reason,startedAt,endedAt:new Date().toISOString(),outcomes});if(!complete)this.fail('Fresh rrweb snapshot was not observed after resume');
   }
   async flush(){await Promise.allSettled([...this.pending]);if(this.drops){const dropped=this.drops;this.drops=0;await this.event('gap',{reason:'capture-backpressure',dropped});}await this.store.flush();}
-  async stop(){
+  stop(){
+    // Page destruction and a user seal can race. Share one teardown attempt;
+    // a failed attempt is released so an explicit retry can finish durability.
+    return this.stopTask??=this.stopRecorder().finally(()=>{this.stopTask=undefined;});
+  }
+  private async stopRecorder(){
     if(this.stopComplete)return;
     // Detaching CDP alone leaves rrweb and capture-phase inspection listeners
     // running inside the retained document. Remove injection, then stop every
