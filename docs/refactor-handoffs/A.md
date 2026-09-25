@@ -96,3 +96,7 @@ SourceFrameScopes只从已耐久SourceMetadata投影最多256个frame host/root�
 新A内部`rewriteReplayRecords(records, (url, frameId?)=>replacement)`随原始metadata推进节点scope，HTML属性/inline CSS按当时logical frame查资源，未知scope不落top；E可替换逐record rewriteReplayEvent使用。单个rewriteReplayEvent保留兼容入口，并支持第三个nodeId→frameId解析器。外部CSS依赖仍由OfflineResourceService沿该resource.frameId解析。分段定位器前缀按frame/shadow交错顺序生成，缺失host metadata明确报错。
 
 模块测试使用真实rrweb+同源JSDOM iframe，核对host/root/epoch身份和逐frame URL重写；`npm.cmd test -- test/unit/refactor-recording.test.ts test/unit/capture.test.ts`2文件23项通过5.04s；typecheck通过（`frame-scope-typecheck-final.log`、`frame-scope-tests.log`）。desktop fixture新增子frame CSS/图片的真实CDP→logical manifest断言、断网子frame样式/图片断言，以及活源站上逐候选执行frame/open-shadow/SVG CSS/XPath。新增真实断言仍待根运行，不凭JSDOM/类型检查宣称Chromium frame映射已通过。
+
+根第7次`output/desktop-1790373434512` record失败：正常about:blank→目标导航期间，旧缓存任务按独立navigationGeneration判错为fatal。返修改用observer context同步固定的CDP main frame/loader与触发full snapshot的源position；旧任务在排队、resource tree/content读取后失效时记录`resource-cache-probe-skipped`并退出。当前loader读取失败仍保留错误，落盘失败仍致采集失败。旧context的迟到原件继续保存，但不能更新当前源位置或解除新document的baseline等待。删除start末尾无身份的重复probe。response任务也在完成回调核对request loader，不把旧request资源归新stream。
+
+新增协调器级交错测试：真实EvidenceStore/RecordingIndexWriter配合可控CDP响应，暂停旧resource tree读取，切到新loader并延后独立generation更新，再释放旧任务；仅新document资源入archive，旧任务有诊断、无伪造fatal。`npm.cmd test -- test/unit/capture-navigation.test.ts test/unit/refactor-recording.test.ts`2文件17项通过5.98s（`navigation-tests.log`）；typecheck通过（`navigation-typecheck-final.log`）。第7次失败材料保留，真实重跑仍由根串行执行。
