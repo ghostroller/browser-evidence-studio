@@ -243,8 +243,9 @@ export class Studio {
     const r=this.live(),p=r.pages.get(pageId);ensure(p,'Unknown page',404);
     ensure(r.controller==='human'&&!r.locked&&!r.ending&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Stop the runner before closing its page',409);
     r.locked=true;r.leaseEpoch++;this.window.lock(true);
-    try{await this.closePageContents(p);await Promise.all([...(r.pageClosures??[])]);return this.browserState();}
+    try{await this.closePageContents(p);await Promise.all([...(r.pageClosures??[])]);}
     finally{if(this.browser?.runtime===r&&!r.stopping&&!r.ending){r.locked=false;this.window.lock(r.controller!=='human');}this.onChanged();}
+    return this.browserState();
   }
   private async closePageContents(p:ManagedPage){
     const contents=this.pageContents(p);if(!contents){this.window.remove(p.view);return;}
