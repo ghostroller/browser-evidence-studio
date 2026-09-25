@@ -66,3 +66,5 @@ root真实attempt2：`output/desktop-1790368992121` 的run `2044933f-4cae-413d-9
 隐私续包：`src/capture/url-privacy.ts`导出`credentialUrl`和`captureMetadata<T>(input:T):T`，供E在Studio新增元数据写路径复用；复制后只改凭据URL字符串并加capturePrivacy说明，不处理artifact二进制data、更不重写旧原件。生产raw CDP/event/artifact metadata、rrweb与源属性、HTML属性/文本、JSON根值/嵌套值统一URL策略。含凭据URL的CSS/SVG文本资源明确redacted且不保存原字节；普通URL原始拼写不变。rr-mask元数据属性及跨open-shadow祖先同样受遮罩。延迟response读取在loadingFinished同步取得身份租约，排队前/读取后均复核，ID复用和capture reset不能把新请求body记到旧request key；stop先排空已接收body再reset。
 
 实际`npm.cmd run typecheck`和`npm.cmd test -- test/unit/refactor-recording.test.ts test/unit/request-body.test.ts`通过，2文件18项，5.14s；日志`output/refactor-a-resume/privacy-typecheck.log`和`privacy-tests.log`。桌面privacy fixture已加跨raw/CDP/journal/artifact原件断言但尚未运行。第4次根record仍通过，offline进入seek后CSS颜色为默认蓝色；资源加载/诊断返修接续中，不宣称离线验收通过。
+
+第4次资源诊断返修：offline先等link load/sheet，再请求font并等image.decode；此前fonts.ready可能在样式表引入字体前已resolve。颜色断言不改，并新增各资源失败断言。每次seek在断言前写result、stylesheet状态和当时URL映射；protocol回调记录有界id/代际/status/错误，不吞404根因。console使用Electron当前event对象。仅typecheck通过（`offline-assets-typecheck.log`），根真实第5次尚待运行，不能据静态等待逻辑断言根因已解决。
