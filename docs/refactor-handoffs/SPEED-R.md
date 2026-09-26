@@ -3,6 +3,7 @@
 - 基线：`046a52e7432fdcebb9524b661ebf4166b80acba1`；工作树 `C:\Users\Ghost\.codex\worktrees\finish-recovery\browser-evidence-studio`，分支 `codex/finish-recovery-20260926`。本包提交 SHA 以 Git 记录为准。
 - C03：format2 replay 与 URL 资源索引按 run 定向重建。写入独立 generation，完成校验后以原子 pointer 发布；pointer 绑定 manifest SHA256，URL 文件另逐项校验 hash。读取固定一次 generation。失败 generation 不删除，旧 pointer 保留。
 - 原件层：raw rrweb、已确认的 `resource-reference` event、resource manifest、blob/hash。重建不会请求历史网站；缺失/损坏/读取失败/索引写失败分别报错。损坏原件只报告并保留；活跃 writer 拒绝重建。
+- 查询读取先核对 pointer/manifest/URL 文件/census 字节上限，再载入内存；超限报 `*_INDEX_BUDGET`，不把超限或读取失败当资源未观察到。
 - URL legacy 索引增加有界 URL hash census，在确认资源事件前写入。已观察 URL 的索引文件丢失返回恢复状态；未知 URL 可返回空。旧无 census 的 archive 标 `unverified`，需要定向恢复建立完整 generation。
 - 可信服务：`inspectRunRecovery` 额外返回 `canRecoverIndexes` 与 `indexDiagnostics.{replay,resources}`（state/reason）；原 `canRecover` 不变。`recoverRunIndexes(studio,{runId,expectedFingerprint})` 只接受登记的单 run、无活跃 writer、当前 fingerprint。公开 HTTP 未增接口。
 - C06：`test/desktop/launch.js` 增 `--refactor-recovery`、`--refactor-soak --soak=1|30`、`--native-input`。`test/desktop/refactor-recovery.ts` 导出 `runRefactorRecoveryScenario(studio,phase)`，支持 `refactor-recovery`、`refactor-recovery-soak`、`refactor-recovery-verify` 三个 phase；由集成 owner 在 `app.ts` 加唯一 hook。

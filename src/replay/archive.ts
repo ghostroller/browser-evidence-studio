@@ -37,13 +37,16 @@ function entryPath(position: ReplayPosition, prefix = 'replay-index'): string { 
 const generationFile = 'replay-index-current.json';
 async function indexPrefix(runDir: string): Promise<string> {
   let pointer: { version?: number; generation?: string; manifestSha256?: string };
-  try { pointer = JSON.parse(await fs.readFile(await safeFile(runDir, generationFile), 'utf8')); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT'){try{await fs.stat(path.join(runDir,'replay-index-generations'));throw new EvidenceError('REPLAY_INDEX_MISSING','Replay generation pointer is missing; directed recovery required',409);}catch(problem){if((problem as NodeJS.ErrnoException).code==='ENOENT')return 'replay-index';throw problem;}} throw new EvidenceError(error instanceof SyntaxError?'REPLAY_INDEX_CORRUPT':'REPLAY_INDEX_READ_FAILED', `Cannot read replay index generation: ${String(error)}`, 409); }
+  try { const file=await safeFile(runDir,generationFile);if((await fs.stat(file)).size>4096)throw new EvidenceError('REPLAY_INDEX_BUDGET','Replay generation pointer exceeds its 4 KiB read budget',413);pointer = JSON.parse(await fs.readFile(file, 'utf8')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT'){try{await fs.stat(path.join(runDir,'replay-index-generations'));throw new EvidenceError('REPLAY_INDEX_MISSING','Replay generation pointer is missing; directed recovery required',409);}catch(problem){if((problem as NodeJS.ErrnoException).code==='ENOENT')return 'replay-index';throw problem;}} if(error instanceof EvidenceError)throw error;throw new EvidenceError(error instanceof SyntaxError?'REPLAY_INDEX_CORRUPT':'REPLAY_INDEX_READ_FAILED', `Cannot read replay index generation: ${String(error)}`, 409); }
   if (pointer.version !== 1 || !/^[a-f0-9-]{36}$/.test(pointer.generation ?? '') || !/^[a-f0-9]{64}$/.test(pointer.manifestSha256 ?? ''))throw new EvidenceError('REPLAY_INDEX_CORRUPT','Malformed replay index generation pointer',409);
   const prefix = `replay-index-generations/${pointer.generation}`;
   try {
-    const bytes=await fs.readFile(await safeFile(runDir, `${prefix}/index-manifest.json`));
-    if(bytes.length>4096||hashBytes(bytes)!==pointer.manifestSha256)throw new EvidenceError('REPLAY_INDEX_CORRUPT','Replay generation manifest hash or budget mismatch',409);
+    const file=await safeFile(runDir, `${prefix}/index-manifest.json`);
+    if((await fs.stat(file)).size>4096)throw new EvidenceError('REPLAY_INDEX_BUDGET','Replay generation manifest exceeds its 4 KiB read budget',413);
+    const bytes=await fs.readFile(file);
+    if(bytes.length>4096)throw new EvidenceError('REPLAY_INDEX_BUDGET','Replay generation manifest grew past its 4 KiB read budget',413);
+    if(hashBytes(bytes)!==pointer.manifestSha256)throw new EvidenceError('REPLAY_INDEX_CORRUPT','Replay generation manifest hash mismatch',409);
     const manifest = JSON.parse(bytes.toString('utf8')) as { version: number; generation: string; records: number };
     if (manifest.version !== 1 || manifest.generation !== pointer.generation || !Number.isSafeInteger(manifest.records)) invalid('Malformed replay index generation manifest');
   } catch (error) { if(error instanceof EvidenceError)throw error;throw new EvidenceError((error as NodeJS.ErrnoException).code==='ENOENT'?'REPLAY_INDEX_MISSING':error instanceof SyntaxError?'REPLAY_INDEX_CORRUPT':'REPLAY_INDEX_READ_FAILED', `Published replay index generation is unavailable: ${String(error)}`, 409); }
