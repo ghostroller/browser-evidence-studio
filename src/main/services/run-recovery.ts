@@ -1,7 +1,7 @@
 import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { EvidenceStore } from '@/evidence/store';
-import { safeFile } from '@/evidence/files';
+import { hashBytes, safeFile } from '@/evidence/files';
 import { inspectWriterLock, recoverWriterLock } from '@/evidence/writer-lock';
 import { RecordingArchive } from '@/replay/archive';
 import { ResourceArchive } from '@/resources/archive';
@@ -32,11 +32,13 @@ async function inspectProjection(runDir:string,kind:'replay'|'resource'):Promise
     const file=await safeFile(runDir,pointer);
     pointerFound=true;
     if((await stat(file)).size>4096)return{state:'corrupt',reason:'generation-pointer-over-budget'};
-    const value=JSON.parse(await readFile(file,'utf8')) as {version?:unknown;generation?:unknown};
-    if(value.version!==1||typeof value.generation!=='string'||!/^[a-f0-9-]{36}$/.test(value.generation))return{state:'corrupt',reason:'invalid-generation-pointer'};
+    const value=JSON.parse(await readFile(file,'utf8')) as {version?:unknown;generation?:unknown;manifestSha256?:unknown};
+    if(value.version!==1||typeof value.generation!=='string'||!/^[a-f0-9-]{36}$/.test(value.generation)||typeof value.manifestSha256!=='string'||!/^[a-f0-9]{64}$/.test(value.manifestSha256))return{state:'corrupt',reason:'invalid-generation-pointer'};
     const manifest=await safeFile(runDir,`${generations}/${value.generation}/index-manifest.json`);
     if((await stat(manifest)).size>(kind==='replay'?4096:2*1024*1024))return{state:'corrupt',reason:'generation-manifest-over-budget'};
-    const metadata=JSON.parse(await readFile(manifest,'utf8')) as {version?:unknown;generation?:unknown};
+    const bytes=await readFile(manifest);
+    if(hashBytes(bytes)!==value.manifestSha256)return{state:'corrupt',reason:'generation-manifest-hash-mismatch'};
+    const metadata=JSON.parse(bytes.toString('utf8')) as {version?:unknown;generation?:unknown};
     if(metadata.version!==1||metadata.generation!==value.generation)return{state:'corrupt',reason:'generation-manifest-mismatch'};
     return{state:'published',reason:'generation-manifest-present'};
   }catch(error){

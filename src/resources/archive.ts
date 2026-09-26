@@ -106,11 +106,13 @@ export class ResourceArchive {
     const urlHash=hashBytes(url);
     let relative=`resource-url-index/${urlHash}.jsonl`,expectedHash:string|undefined,pointerFound=false;
     try {
-      const pointer=JSON.parse(await fs.readFile(await safeFile(this.runDir,'resource-url-index-current.json'),'utf8')) as {version?:number;generation?:string};
+      const pointer=JSON.parse(await fs.readFile(await safeFile(this.runDir,'resource-url-index-current.json'),'utf8')) as {version?:number;generation?:string;manifestSha256?:string};
       pointerFound=true;
-      if(pointer.version!==1||!/^[a-f0-9-]{36}$/.test(pointer.generation??''))throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Malformed resource index generation pointer',409);
+      if(pointer.version!==1||!/^[a-f0-9-]{36}$/.test(pointer.generation??'')||!/^[a-f0-9]{64}$/.test(pointer.manifestSha256??''))throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Malformed resource index generation pointer',409);
       const prefix=`resource-url-index-generations/${pointer.generation}`;
-      const manifest=JSON.parse(await fs.readFile(await safeFile(this.runDir,`${prefix}/index-manifest.json`),'utf8')) as {version?:number;generation?:string;urls?:Record<string,string>};
+      const manifestBytes=await fs.readFile(await safeFile(this.runDir,`${prefix}/index-manifest.json`));
+      if(manifestBytes.length>2*1024*1024||hashBytes(manifestBytes)!==pointer.manifestSha256)throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Resource generation manifest hash or budget mismatch',409);
+      const manifest=JSON.parse(manifestBytes.toString('utf8')) as {version?:number;generation?:string;urls?:Record<string,string>};
       if(manifest.version!==1||manifest.generation!==pointer.generation||!manifest.urls||typeof manifest.urls!=='object')throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Malformed resource index generation manifest',409);
       expectedHash=manifest.urls[urlHash];if(!expectedHash)return [];
       if(!/^[a-f0-9]{64}$/.test(expectedHash))throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Malformed resource index file hash',409);
@@ -265,8 +267,9 @@ export class ResourceArchive {
         if(hashBytes(persisted)!==hashBytes(bytes))throw new Error('Staged URL index failed its hash check');
         hashes[hash]=hashBytes(bytes);
       }
-      await atomicJson(path.join(staged,'index-manifest.json'),{version:1,generation,references,corruptCount,urls:hashes});
-      await atomicJson(path.join(this.runDir,'resource-url-index-current.json'),{version:1,generation});
+      const manifestFile=path.join(staged,'index-manifest.json');
+      await atomicJson(manifestFile,{version:1,generation,references,corruptCount,urls:hashes});
+      await atomicJson(path.join(this.runDir,'resource-url-index-current.json'),{version:1,generation,manifestSha256:hashBytes(await fs.readFile(manifestFile))});
     }catch(error){throw new EvidenceError('RESOURCE_INDEX_WRITE_FAILED',`URL index generation ${generation} remains unpublished after write/validation failure: ${String(error)}`,507);}
     return{generation,references,urls:byUrl.size,corrupt,corruptCount};
   }
