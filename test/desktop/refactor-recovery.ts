@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFile, readdir, rm, truncate, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Studio } from '@/main/services/studio';
-import { RecordingArchive } from '@/replay/archive';
+import { RecordingArchive, REPLAY_MAX_WINDOW_EVENTS } from '@/replay/archive';
 import { ResourceArchive } from '@/resources/archive';
 import { recoverRunIndexes } from '@/main/services/run-recovery';
 import { startFixture } from '../fixtures/site';
@@ -15,7 +15,7 @@ import type { ReplayPosition } from '@/contracts/recording';
 import { sameStream } from '@/capture/recording-types';
 import { app, webContents } from 'electron';
 
-interface NewArchitectureSoak {schemaVersion:1;processId:number;runId:string;minutes:number;position:ReplayPosition;resourceId:string;resourceUrl:string;frameId:string;blobHash:string;rawFiles:Array<{name:string;sha256:string}>;evidenceSnapshot:SoakEvidenceSnapshot;recovery:{replayRecords:number;resourceReferences:number};}
+interface NewArchitectureSoak {schemaVersion:1;processId:number;runId:string;minutes:number;position:ReplayPosition;resourceId:string;resourceUrl:string;frameId:string;blobHash:string;rawFiles:Array<{name:string;sha256:string}>;evidenceSnapshot:SoakEvidenceSnapshot;recovery:{replayRecords:number;resourceReferences:number};sourceStream:{events:number;preBaselineEvents:number;first:ReplayPosition;lastPreBaseline:ReplayPosition|null;baseline:ReplayPosition};}
 
 async function replayMemory(studio:Studio,projectId:string,positions:ReplayPosition[]){
   const before=new Set(webContents.getAllWebContents().map(contents=>contents.id));
@@ -48,10 +48,22 @@ async function longSoak(studio:Studio):Promise<Record<string,unknown>>{
     assert.ok(cssCandidate,'Long load must include an observed CSS response');
     const stream=streams.items.find(item=>sameStream(item.first,cssCandidate.position));
     assert.ok(stream&&stream.first.eventSeq<=cssCandidate.position.eventSeq&&stream.last.eventSeq>=cssCandidate.position.eventSeq,'The measured replay stream must contain the observed CSS position');
-    let seed=0x51a7e,ordinals=[0,Math.floor((stream.events-1)/2),stream.events-1];
-    for(let index=0;index<12;index++){seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;ordinals.push((seed>>>0)%stream.events);}
+    let baselineOrdinal:number|undefined,baseline:ReplayPosition|undefined;
+    for(let ordinal=0;ordinal<Math.min(stream.events,REPLAY_MAX_WINDOW_EVENTS);ordinal+=1000){
+      const page=await recording.positions(stream.first,Math.min(1000,stream.events-ordinal),ordinal);
+      const index=page.items.findIndex(item=>item.type===2);
+      if(index>=0){baselineOrdinal=ordinal+index;baseline=page.items[index].position;break;}
+    }
+    assert.ok(baselineOrdinal!==undefined&&baseline,'The source stream must have a bounded full snapshot before reliable seeks');
+    assert.ok(stream.events-baselineOrdinal>=15,'The source stream must provide 15 distinct replayable seek positions');
+    const lastPreBaseline=baselineOrdinal>0?(await recording.positions(stream.first,1,baselineOrdinal-1)).items[0].position:null;
+    const sourceStream={events:stream.events,preBaselineEvents:baselineOrdinal,first:stream.first,lastPreBaseline,baseline};
+    const first=baselineOrdinal,middle=Math.floor((first+stream.events-1)/2),last=stream.events-1;
+    let seed=0x51a7e;const selected=new Set([first,middle,last]);
+    while(selected.size<15){seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;selected.add(first+(seed>>>0)%(stream.events-first));}
+    const ordinals=[first,middle,last,...[...selected].filter(ordinal=>ordinal!==first&&ordinal!==middle&&ordinal!==last)];
     const seeks=[];
-    for(const ordinal of ordinals){const item:{position:ReplayPosition;type:number;source:number}=(await recording.positions(stream.first,1,ordinal)).items[0];assert.ok(item);const window=await recording.window(item.position);assert.deepEqual(window.position,item.position);seeks.push({ordinal,position:item.position,events:window.records.length,readBytes:window.readBytes});}
+    for(const ordinal of ordinals){const item:{position:ReplayPosition;type:number;source:number}=(await recording.positions(stream.first,1,ordinal)).items[0];assert.ok(item);const window=await recording.window(item.position);assert.deepEqual(window.position,item.position);assert.deepEqual(window.gaps,[],'Selected replay position must have no source gaps');seeks.push({ordinal,position:item.position,events:window.records.length,readBytes:window.readBytes});}
     const position=seeks[2].position;
     const css=await resources.resolve(fixture.url+'/soak-resource.css',position,cssCandidate.frameId);
     assert.ok(css&&css.status==='captured','Select the latest observed CSS request version at the replay position');
@@ -69,10 +81,10 @@ async function longSoak(studio:Studio):Promise<Record<string,unknown>>{
     for(const original of rawFiles)assert.equal(hashBytes(await readFile(path.join(rawDirectory,original.name))),original.sha256);
     const projectId=studio.runs.find(run=>run.id===load.runId)?.projectId;assert.ok(projectId);
     const replay=await replayMemory(studio,projectId,seeks.map(item=>item.position));
-    const saved:NewArchitectureSoak={schemaVersion:1,processId:process.pid,runId:load.runId,minutes,position,resourceId:css.id,resourceUrl:fixture.url+'/soak-resource.css',frameId:css.frameId,blobHash,rawFiles,evidenceSnapshot:load.evidenceSnapshot,
+    const saved:NewArchitectureSoak={schemaVersion:1,processId:process.pid,runId:load.runId,minutes,position,resourceId:css.id,resourceUrl:fixture.url+'/soak-resource.css',frameId:css.frameId,blobHash,rawFiles,evidenceSnapshot:load.evidenceSnapshot,sourceStream,
       recovery:{replayRecords:recovery.replay.records,resourceReferences:recovery.resources.references}};
     await writeFile(path.join(studio.root,'new-architecture-soak.json'),JSON.stringify(saved,null,2));
-    return{passed:true,load:{minutes,cycles:load.load.completedCycles,plannedCycles:load.load.plannedCycles,skippedSlots:load.load.skippedScheduleSlots,performance:load.performanceVerdict,queueMetrics:load.newArchitectureQueueMetrics,memory:load.memory},streams:streams.items.length,seeks,replayMemory:replay,workerMemory:{status:'not-running',reason:'The fixed recording load does not start a runner worker; worker_threads share the main PID.'},recovery:saved.recovery,resourceId:css.id,runId:load.runId};
+    return{passed:true,load:{minutes,cycles:load.load.completedCycles,plannedCycles:load.load.plannedCycles,skippedSlots:load.load.skippedScheduleSlots,performance:load.performanceVerdict,queueMetrics:load.newArchitectureQueueMetrics,memory:load.memory},streams:streams.items.length,sourceStream,seeks,replayMemory:replay,workerMemory:{status:'not-running',reason:'The fixed recording load does not start a runner worker; worker_threads share the main PID.'},recovery:saved.recovery,resourceId:css.id,runId:load.runId};
   }finally{await fixture.close();}
 }
 
@@ -85,7 +97,7 @@ async function verifyLongSoak(studio:Studio):Promise<Record<string,unknown>>{
   assert.equal(hashBytes((await resources.read(saved.resourceId)).bytes),saved.blobHash);
   for(const original of saved.rawFiles)assert.equal(hashBytes(await readFile(path.join(runDir,'raw','rrweb',original.name))),original.sha256);
   const evidence=await verifySoakEvidenceSnapshot(new EvidenceReader(runDir),saved.evidenceSnapshot);
-  return{passed:true,originalProcessId:saved.processId,processId:process.pid,runId:saved.runId,minutes:saved.minutes,recovered: saved.recovery,evidence};
+  return{passed:true,originalProcessId:saved.processId,processId:process.pid,runId:saved.runId,minutes:saved.minutes,sourceStream:saved.sourceStream,recovered: saved.recovery,evidence};
 }
 
 /** One real Electron process, a real format-2 recorder and a directed recovery.
