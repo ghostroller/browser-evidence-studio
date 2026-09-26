@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { readFile, writeFile, rename, readdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, rename } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { app, powerMonitor } from 'electron';
@@ -10,22 +10,12 @@ import type { Studio } from '@/main/services/studio';
 import type { EvidenceReader } from '@/evidence/reader';
 import { safeFile } from '@/evidence/files';
 import { buildSoakEvidenceSnapshot } from './soak-evidence';
+import { archiveGrowth } from './archive-growth';
 
 const KiB = 1024, MiB = KiB * KiB;
 const limits = { checkpointP95Ms: 2000, summaryP95Ms: 500, httpSubmitP95Ms: 300, mainRssBytes: 1024 * MiB, pagePrivateBytes: 512 * MiB };
 const round = (value: number) => Math.round(value * 100) / 100;
 const percentile = (values: number[], fraction = .95) => values.length ? [...values].sort((a, b) => a - b)[Math.ceil(values.length * fraction) - 1] : null;
-async function archiveGrowth(root:string):Promise<{files:number;bytes:number}>{
-  let files=0,bytes=0;
-  const visit=async(directory:string):Promise<void>=>{
-    for(const entry of await readdir(directory,{withFileTypes:true})){
-      const absolute=path.join(directory,entry.name);
-      if(entry.isDirectory())await visit(absolute);
-      else if(entry.isFile()){files++;bytes+=(await stat(absolute)).size;}
-    }
-  };
-  await visit(root);return{files,bytes};
-}
 interface ExpectedAction { sequence: number; commandId: string; selector: string; }
 interface ExpectedRequest { sequence: string; url: string; bytes: number; sha256: string; }
 interface MemorySample {
