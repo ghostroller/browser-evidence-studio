@@ -17,10 +17,22 @@ const external = [
   'browser-evidence-studio/SKILL.md',
   'browser-evidence-studio/references/api.md', 'browser-evidence-studio/references/handoff.md',
   'browser-evidence-studio/references/explore.md', 'browser-evidence-studio/references/validation.md',
+  'browser-evidence-studio/references/workflow.md',
   'orders/package.json', 'orders/package-lock.json', 'orders/standalone.mjs', 'orders/run.mjs',
   'orders/input.schema.json', 'orders/output.schema.json', 'portable-runner.mjs',
 ];
 for (const file of external) assert.ok(statSync(path.join(resources, file)).isFile(), `External resource is missing: ${file}`);
+const skillRoot = path.join(resources, 'browser-evidence-studio');
+for (const file of external.filter(item => item.startsWith('browser-evidence-studio/') && item.endsWith('.md'))) {
+  const source = path.join(resources, file);
+  for (const [, link] of readFileSync(source, 'utf8').matchAll(/\]\(([^)#]+)(?:#[^)]*)?\)/g)) {
+    if (/^[a-z][a-z0-9+.-]*:/i.test(link)) continue;
+    const destination = path.resolve(path.dirname(source), decodeURIComponent(link));
+    const relative = path.relative(skillRoot, destination);
+    assert.ok(relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative), `Packaged skill link leaves its resource directory: ${file} -> ${link}`);
+    assert.ok(statSync(destination).isFile(), `Packaged skill link is missing: ${file} -> ${link}`);
+  }
+}
 assert.ok(!entries.has('examples/jd-account-export/run.mjs'), 'Account example must not enter the application archive');
 assert.ok(!entries.has('skills/browser-evidence-studio/SKILL.md'), 'Agent skill should be externally readable after Studio exits');
 assert.ok(!entries.has('examples/orders/standalone.mjs'), 'Business script should be externally copyable');

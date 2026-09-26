@@ -58,7 +58,7 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 | `GET /projects`、`GET /projects/:projectId` | 需任务授权，仅显示授权项目；项目创建/设置由可信客户端完成 |
 | `GET /projects/:projectId/profiles` | 需授权，按项目查看命名登录环境；创建由可信客户端完成 |
 | `GET /runs`、`GET /runs/:runId` | 需 `history-read`，按授权项目读取；创建由可信客户端完成 |
-| `GET /runs/:runId/pages`、`GET /runs/:runId/snapshot` | 页面登记和有界实时元素摘要；带目标身份及预算 |
+| `GET /runs/:runId/pages`、`GET /runs/:runId/snapshot` | 页面登记和有界实时元素摘要。前者至少带 `authorizationId`；后者还带当前 `pageId/generation`。可选 `projectId/profileId/sessionId` 若提供必须匹配当前身份；服务仍核对 run、授权的 page/target/origin 与撤销状态。只读 GET 不要求重复提交这些身份字段或写操作的 lease |
 | `POST /runs/:runId/pages` | 需 `page-create`、当前 session/profile/page/generation/lease 及授权来源域；创建后台页并返回新 page/target/generation，不切换前台。取消中的创建不会遗留可操作页面 |
 | `POST /runs/:runId/control` | 旧路由保留为拒绝；控制权只由可信客户端管理 |
 | `POST /runs/:runId/actions` | `pageId/leaseEpoch/generation/type`；支持 navigate、click、fill、press、scroll、select 的有限参数 |

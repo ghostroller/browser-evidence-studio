@@ -137,7 +137,13 @@ export function makeDispatch(studio:Studio){
     }
     if(source==='api'&&['snapshot','pages','action','createPage','checkpoint','startValidation','validate','selectPage','requestHuman','cancelHandoff','stopRunner','cancelJob'].includes(method)){
       const capability=['snapshot','pages'].includes(method)?'page-read':['startValidation','validate'].includes(method)?'execute':method==='createPage'?'page-create':'page-act';
-      return studio.authorizedOperation(body,capability,async signal=>{context={...context,signal};signal.throwIfAborted();const result=await invoke();
+      const scopedBody=capability==='page-read'?{
+        ...body,
+        projectId:body.projectId===undefined?studio.required().projectId:body.projectId,
+        profileId:body.profileId===undefined?studio.required().profileId:body.profileId,
+        sessionId:body.sessionId===undefined?studio.state().session?.sessionId:body.sessionId,
+      }:body;
+      return studio.authorizedOperation(scopedBody,capability,async signal=>{context={...context,signal};signal.throwIfAborted();const result=await invoke();
         if(method==='pages'){const grant=studio.tasks.get(body.authorizationId);return {...result,items:result.items.filter((page:any)=>grant.pages.some(allowed=>allowed.pageId===page.pageId&&allowed.targetId===page.targetId))};}
         return result;},context.signal);
     }

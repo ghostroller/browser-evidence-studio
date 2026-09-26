@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { makeDispatch } from '@/main/services/dispatch';
 import { TaskAuthorizations } from '@/main/services/task-authorization';
 import type { Studio } from '@/main/services/studio';
+import { ensure } from '@/shared/errors';
 
 async function fixture(){
   const tasks=new TaskAuthorizations(),page={pageId:'page',targetId:'target',navigationGeneration:1};
@@ -9,11 +10,30 @@ async function fixture(){
   const scope={projectId:'project',sessionId:'session',profileId:'profile',pageId:'page',targetId:'target',url:'https://fixture.test/'};
   const grant=await tasks.issue(scope,{origins:['https://fixture.test'],pages:[{pageId:'page',targetId:'target'}],capabilities:['page-read','page-act','history-read','results-read'],durationMs:60000,maxOperations:50});
   const calls={action:vi.fn(async()=>({done:true})),snapshot:vi.fn(async()=>({pageId:'page'})),summary:vi.fn(async()=>({events:4})),release:vi.fn()};
-  const fake={tasks,active:run,runs:[run],projects:[{id:'project'}],required:()=>run,serialized:async(action:()=>Promise<unknown>)=>action(),state:()=>({active:run,validations:[]}),action:calls.action,snapshot:calls.snapshot,reader:()=>({summary:calls.summary}),releaseHuman:calls.release,
-    authorizedOperation:async(body:any,capability:any,operation:any,signal?:AbortSignal)=>tasks.run(body.authorizationId,capability,{...scope,url:body.type==='navigate'?body.url:scope.url},operation,signal)};
+  const fake={tasks,active:run,runs:[run],projects:[{id:'project'}],required:()=>run,serialized:async(action:()=>Promise<unknown>)=>action(),state:()=>({active:{...run,pages:[page]},session:{sessionId:'session'},validations:[]}),action:calls.action,snapshot:calls.snapshot,reader:()=>({summary:calls.summary}),releaseHuman:calls.release,
+    authorizedOperation:async(body:any,capability:any,operation:any,signal?:AbortSignal)=>{
+      ensure(body.projectId===scope.projectId&&body.profileId===scope.profileId&&body.sessionId===scope.sessionId,'Task browser identity is stale',409);
+      return tasks.run(body.authorizationId,capability,{...scope,url:body.type==='navigate'?body.url:scope.url},operation,signal);
+    }};
   return {tasks,grant,run,calls,dispatch:makeDispatch(fake as unknown as Studio),body:{authorizationId:grant.authorizationId,runId:'run',projectId:'project',profileId:'profile',sessionId:'session',pageId:'page',generation:1,leaseEpoch:1}};
 }
 describe('new and legacy HTTP routes share task scope',()=>{
+  it('page-read GETs use the current authorized identity without requiring duplicate query IDs',async()=>{
+    const f=await fixture();try{
+      const base={authorizationId:f.grant.authorizationId,runId:'run'};
+      await expect(f.dispatch('pages',base,'api')).resolves.toMatchObject({items:[{pageId:'page',targetId:'target'}]});
+      await expect(f.dispatch('snapshot',{...base,pageId:'page',generation:1},'api')).resolves.toEqual({pageId:'page'});
+      for(const wrong of [{projectId:'other'},{profileId:'other'},{sessionId:'other'}]){
+        await expect(f.dispatch('snapshot',{...base,...wrong,pageId:'page',generation:1},'api')).rejects.toMatchObject({status:409});
+      }
+      await expect(f.dispatch('pages',{...base,runId:'other'},'api')).rejects.toMatchObject({status:409});
+      await expect(f.dispatch('snapshot',{...base,pageId:'other',generation:1},'api')).rejects.toMatchObject({status:409});
+      await expect(f.dispatch('snapshot',{...base,pageId:'page',generation:2},'api')).rejects.toMatchObject({status:409});
+      await expect(f.dispatch('action',{...base,pageId:'page',generation:1,leaseEpoch:1,type:'click',selector:'#button'},'api')).rejects.toMatchObject({status:409});
+      f.tasks.revoke(f.grant.authorizationId);
+      await expect(f.dispatch('pages',base,'api')).rejects.toMatchObject({code:'AUTHORIZATION_REVOKED'});
+    }finally{f.tasks.close();}
+  });
   it('cannot omit authorizationId on the old action/snapshot endpoints and rejects revoked grants',async()=>{
     const f=await fixture();try{
       const {authorizationId,...bare}=f.body;

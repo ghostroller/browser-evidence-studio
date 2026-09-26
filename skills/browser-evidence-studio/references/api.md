@@ -1,6 +1,17 @@
 # API 使用
 
-完整路由和字段见项目 [docs/api.md](../../../docs/api.md)。需要精确路由时读取它，不把整套设计文档加载进每个请求。固定交接先按 [handoff.md](handoff.md) 核对实例与授权，再调用 `/v1/capabilities`。
+本参考随安装包保存，所需常用路由和字段在此可直接读取。开发仓库另有完整 `docs/api.md`；安装包不要求能访问开发目录。固定交接先按 [handoff.md](handoff.md) 核对实例与授权，再调用 `/v1/capabilities`。
+
+| 用途 | 方法与最小请求 |
+| --- | --- |
+| 发现 | `GET /v1/health`、`GET /v1/capabilities` 只需当前连接 Bearer；`GET /v1/state?authorizationId=...` 返回授权裁剪后的活动 run、页面、generation 与 lease |
+| 固定资料 | `POST /v1/projects/:projectId/query/materialRevision` 传 `authorizationId/revisionId/contentHash`；`materialCollection` 另传 `kind:"revision"/collection/limit/maxBytes` 和本次分页 `cursor` |
+| 现场页面 | `GET /v1/runs/:runId/pages?authorizationId=...`；`GET /v1/runs/:runId/snapshot?authorizationId=...&pageId=...&generation=...`。只读 GET 可省略 `projectId/profileId/sessionId`；若提供，必须匹配当前身份。服务仍核对授权的 run、page、target、origin 与撤销状态 |
+| 历史证据 | `GET /v1/runs/:runId/summary?authorizationId=...`、`gaps`、`events`、`checkpoints`、`artifacts`，随后按 ID 有界读正文；须有 `history-read` |
+| 页面动作 | `POST /v1/runs/:runId/actions` 传 `authorizationId/projectId/profileId/sessionId/pageId/generation/leaseEpoch/type` 和该动作的受支持参数；需 `page-act`，人工持有控制权时拒绝 |
+| 固定版验收 | `POST /v1/runs/:runId/validations` 传 `authorizationId/projectId/sessionId/profileId/pageId/leaseEpoch/materialRevisionId/materialContentHash/input`；保存返回的 jobId，经 `/v1/jobs/:jobId?authorizationId=...` 查询终态，再读实际 validationId 结果 |
+
+普通 Puppeteer 工作流的文件形状与 reporter 接口见 [workflow.md](workflow.md)，验收顺序见 [validation.md](validation.md)。路径 `/v1` 已写入上表；不要重复附加此前废弃的一次性启动授权字段。
 
 从客户端显示的 `connection/agent-connection.json` 读取 `address/token`，请求统一带 `Authorization: Bearer ...`。连接每次启动变化。不要打印连接对象、认证头或寻找内部 CDP 端口。401 时重读已知连接文件一次；连接失效时检查客户端是否启动，不改 profile 或锁文件。
 
