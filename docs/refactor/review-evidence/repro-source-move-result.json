@@ -1,0 +1,8 @@
+{
+  "test": "same-batch remove/add retains node but loses supplied source metadata",
+  "beforeMetadata": true,
+  "afterParent": 3,
+  "afterMetadata": false,
+  "metadataComplete": false,
+  "result": "BUG REPRODUCED in extracted logic; production recorder/desktop coverage still required"
+}
