@@ -56,7 +56,7 @@ else app.whenReady().then(async()=>{
   window.window.on('close',event=>{event.preventDefault();void shutdown('window-close');});
   if(process.env.BES_TEST){
     const phase=process.env.BES_TEST_PHASE||'main';
-    const allowedPhases=['native-input','main','refactor-s0','refactor-replay','refactor-recording-record','refactor-recording-offline','refactor-runner','refactor-system','refactor-handoff','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
+    const allowedPhases=['native-input','main','refactor-s0','refactor-replay','refactor-recording-record','refactor-recording-offline','refactor-recovery','refactor-recovery-soak','refactor-recovery-verify','refactor-runner','refactor-system','refactor-handoff','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
     ensure(allowedPhases.includes(phase),'Unknown desktop test phase');
     const resultFile=phase==='main'?'test-result.json':`${phase}-result.json`;
     const identity:Record<string,unknown>={phase,processId:process.pid,startedAt:new Date().toISOString()};
@@ -96,6 +96,9 @@ else app.whenReady().then(async()=>{
       }
       if(phase==='native-input'){
         const {runNativeInputScenarios}=await import('../../test/desktop/native-input-scenarios');Object.assign(identity,await runNativeInputScenarios(studio));
+      }else if(phase==='refactor-recovery'||phase==='refactor-recovery-soak'||phase==='refactor-recovery-verify'){
+        const {runRefactorRecoveryScenario}=await import('../../test/desktop/refactor-recovery');
+        Object.assign(identity,await runRefactorRecoveryScenario(studio,phase));
       }else if(phase.startsWith('startup-')){
         const {verifyStartup}=await import('../../test/desktop/startup');
         const reload=startupReload?.();

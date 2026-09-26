@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import type { Studio } from './studio';
 import { ensure } from '@/shared/errors';
 import { loadWorkflow } from '@/runner/fingerprint';
-import { inspectRunRecovery, recoverRun } from './run-recovery';
+import { inspectRunRecovery, recoverRun, recoverRunIndexes } from './run-recovery';
 import { dispatchProject, PROJECT_METHODS } from './project-dispatch';
 const READ=new Set(['state','projects','project','profiles','workflows','runs','run','pages','snapshot','checkpoints','summary','gaps','events','artifacts','artifact','artifactContent','handoffs','validations','validation','validationStartGrant','reviews','history','replay']);
 export function makeDispatch(studio:Studio){
@@ -68,6 +68,7 @@ export function makeDispatch(studio:Studio){
       case 'state':return studio.state();case 'projects':return {items:studio.projects};case 'project':{const p=studio.projects.find(p=>p.id===body.projectId);ensure(p,'Unknown project',404);return p;}
       case 'inspectRunRecovery':ensure(source==='ui','Archive recovery inspection is available in the trusted client only',403);return inspectRunRecovery(studio,body);
       case 'recoverRun':ensure(source==='ui','Archive recovery is available in the trusted client only',403);return recoverRun(studio,body);
+      case 'recoverRunIndexes':ensure(source==='ui','Archive index recovery is available in the trusted client only',403);return recoverRunIndexes(studio,body);
       case 'profiles':return {items:studio.profiles.filter(p=>p.projectId===body.projectId)};
       case 'runs':{const runs=source==='api'?studio.runs.filter(run=>run.projectId===body.projectId):studio.runs;return {items:runs.slice(0,100).map(({id,projectId,profileId,status,createdAt})=>({id,projectId,profileId,status,createdAt})),outputTruncated:runs.length>100};}case 'run':{const run=studio.runs.find(r=>r.id===body.runId);ensure(run,'Unknown run',404);return {...run,active:source==='api'?null:studio.active?.id===body.runId?studio.state().active:null};}
       case 'createProject':return studio.createProject(body);case 'updateProject':return studio.updateProject(body);case 'createProfile':return studio.createProfile(body);case 'startRun':ensure(source==='ui','Browser session creation requires the trusted client',403);return studio.startRun(body);
