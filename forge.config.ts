@@ -5,7 +5,7 @@ export default {
     asar: true, executableName: 'BrowserEvidenceStudio',
     // Keep the skill and copyable business project readable by ordinary Node
     // processes after Studio exits. They contain no account data or profiles.
-    extraResource: ['skills/browser-evidence-studio', 'examples/orders'],
+    extraResource: ['skills/browser-evidence-studio', 'examples/orders', '.vite/build/portable-runner.mjs'],
     ...(process.env.ELECTRON_ZIP_DIR ? { electronZipDir: process.env.ELECTRON_ZIP_DIR } : {}),
     // Puppeteer and ws remain runtime dependencies; Packager prunes development packages.
     ignore: file => !!file && !/^\/(?:\.vite(?:\/|$)|node_modules(?:\/|$)|package(?:-lock)?\.json$)/.test(file),

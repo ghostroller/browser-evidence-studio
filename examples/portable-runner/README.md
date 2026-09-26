@@ -1,6 +1,6 @@
 # Portable runner helper
 
-`src/runner/portable.ts` is the single-file ESM build entry. The main integration build exports `.vite/build/portable-runner.mjs`, containing only the step/error helper and Node built-ins. Copy that artifact and `run.mjs` into a normal Node/Puppeteer business project; install its own supported Puppeteer and lockfile. Runtime does not load Electron, Studio, Vite, an AI service or a second Page API.
+`src/runner/portable.ts` is the single-file ESM build entry. The main integration build exports `.vite/build/portable-runner.mjs`, containing only the step/error helper and Node built-ins. The Windows application also exposes it as `resources/portable-runner.mjs` outside `app.asar` so a business project can copy it after Studio exits. Copy that helper and `run.mjs` into a normal Node/Puppeteer business project; install its own supported Puppeteer and lockfile. Runtime does not load Electron, Studio, Vite, an AI service or a second Page API.
 
 `run.mjs` reads the repository's synthetic order-detail page using ordinary Puppeteer. Studio supplies `page`, `steps`, and an incremental `reporter`. A standalone caller supplies its own Puppeteer page plus awaited `onStep(event)` and durable `onData(batch)` callbacks. The standalone caller must own that page: timeout closes it before returning. With Studio, the main process instead revokes the operation connection and terminates the worker while retaining the live page.
 

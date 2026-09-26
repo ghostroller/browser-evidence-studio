@@ -11,7 +11,7 @@
 
 ## C05 发行与独立运行
 
-- Forge `extraResource` 将 `skills/browser-evidence-studio` 复制到 `resources/browser-evidence-studio`，将 `examples/orders` 复制到 `resources/orders`，二者留在 asar 外，供 Studio 关闭后的普通 Node/Agent 读取。发布路径由 `app.isPackaged`、`process.resourcesPath` 解析；开发路径由 `app.getAppPath()` 解析。应用归档仍只收 `.vite`、运行依赖和根 package/lock。
+- Forge `extraResource` 将 `skills/browser-evidence-studio` 复制到 `resources/browser-evidence-studio`，将 `examples/orders` 复制到 `resources/orders`，并将已构建的 `portable-runner.mjs` 放在 `resources`；它们留在 asar 外，供 Studio 关闭后的普通 Node/Agent 读取。发布路径由 `app.isPackaged`、`process.resourcesPath` 解析；开发路径由 `app.getAppPath()` 解析。应用归档仍只收 `.vite`、运行依赖和根 package/lock。
 - `resources/orders` 自有 `package.json`/`package-lock.json`，声明 `puppeteer-core` 与 Ajv；独立入口继续使用普通 Puppeteer、原结果/部分失败语义。测试将目录复制到仓库外临时目录并在那里 `npm ci`，不复用仓库 node_modules。只使用本地合成站点和新浏览器 profile。
 - `npm run test:release-assets -- PATH_TO_APP_ASAR` 检查 asar 的 main/preload/worker/portable helper 和外置 skill/reference/example，且排除 docs/output/test、账号示例。`npm run test:example` 是外部目录安装与 Chrome 合成流程入口。
 
@@ -20,7 +20,10 @@
 - Node `v24.21.0`、npm `11.19.0`；本树 `npm ci --no-audit --no-fund` 成功（682 packages）。
 - `npm exec vitest run test/unit/fixed-task-handoff.test.ts test/unit/task-authorization.test.ts`：2 文件、11 项通过；包含 250/1000 checkpoint 全页读回、V1 不随 V2 改写、不同实例 envelope、撤销与隐私。`npm run typecheck` 通过。
 - `PYTHONUTF8=1` 运行 skill-creator `quick_validate.py skills/browser-evidence-studio`：有效。Windows 默认 GBK 直接运行会因 UTF-8 中文解码失败；这不是 skill 内容错误。
-- `npm run test:example`：占用目录拒写通过；Chrome 场景因尚未获桌面令牌而跳过。Forge build/package、Windows ZIP、发行版 `--refactor-handoff`、外部目录 Chrome 流程、最终 AT39 均未声称通过。早期构建只能称预检；最终须在 G2 冻结候选重建并验证。
+- 获独占桌面令牌后，早期 P 候选 `npm run package` 成功（`output/p-package-precheck.log`）；`npm run test:release-assets -- out/.../resources/app.asar` 检查内部 main/preload/worker/helper 与外置 skill/reference/example/helper 通过。Windows asar 列举/读取需要使用本机路径分隔符，检查脚本在首次预检失败后已修正并复跑通过。
+- `BROWSER_EXECUTABLE_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe` 下 `npm run test:example`：2/2 通过。测试在仓库外临时目录执行自己的 `npm ci`，Studio 未运行；normal/duplicate 为预期 pass，missing/wrong-image/empty-middle 为预期 fail，结果由测试回读。日志 `output/p-standalone-precheck.log`。Node 对测试中 `shell:true` 的静态 npm 参数发出弃用/风险提示，未改变本次结果。
+- 早期安装版 `--refactor-handoff`、`--refactor-system`、`--refactor-recording` 均通过；录制专项含 record 与 offline 两个进程阶段。日志 `output/p-packaged-handoff-precheck.log`、`p-packaged-system-precheck.log`、`p-packaged-recording-precheck.log`；结果目录分别为 `output/desktop-1790423479032`、`output/desktop-1790423531897`、`output/desktop-1790423639162`。system 日志出现关窗期间 `Untrusted or closing UI sender` 403，但阶段报告为 pass；最终候选应保留该诊断并核对退出路径。
+- 早期 `npm run make` 成功，ZIP 为 `out/make/zip/win32/x64/Browser Evidence Studio-win32-x64-0.1.0.zip`，大小 172,777,585 bytes，SHA-256 `9590AC461FCE5058A4E7546DC851EF012A471FCFAB756E737599DF10E68399C0`。解压至 `output/p-zip-extracted-1790423771518` 后静态资源检查通过，解压 exe 的 `--refactor-handoff` 通过（`output/p-extracted-zip-handoff-precheck.log`、`output/desktop-1790423795452`）；其 `access.skillFile` 指向解压目录 `resources/browser-evidence-studio/SKILL.md`。这些都是 `004e422` 加本树未提交的外置 helper 收尾改动上的**早期预检**，不是 G2/G3 冻结集成提交。最终 AT39 尚未执行。
 
 ## G3/AT39 接续
 
