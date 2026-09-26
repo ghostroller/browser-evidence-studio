@@ -36,7 +36,12 @@
 - 发行版 exe 从最终 ZIP 解压后，设置父进程环境 `BES_HANDOFF_LIVE=1`，执行 `node test/desktop/launch.js --refactor-handoff --executable="ABSOLUTE_EXTRACTED_EXE"`。入口沿用既有 `refactor-handoff` phase；live 模式只在 P 所有的测试场景分支中，不更改产品接口。主控需将 launcher 的 live 超时延到大于场景的 45 分钟等待期限；普通 handoff 仍是 4 分钟。
 - 场景通过 Studio 建立合成订单 project/profile/run、录制位置、固定材料修订，并由受信 UI 发放精确 origin/page/目录授权与点击“准备交给 Agent”。它在系统临时目录生成新的空白工作流目录和交接目录，不写 `workflow.json`、`run.mjs` 或答案。交接目录严格只有 `task.md`、`manifest.json`、`access.json`、`ready.json`；ready 中只有标识、路径、nonce、期限，没有 Bearer。`BES_AT39_READY {...}` 从运行中日志给出这些路径。`access.json` 指向已安装技能、空白工作流目录和当前用户连接文件；连接 token 不复制进交接。
 - 新模型输入边界：只给交接三文件、`access.skillFile` 所指技能及引用、该授权连接路径、合成目标（收集全部订单和详情、分页结束证据、图像身份一致性，解释并修复一次失败）。不给本仓库源码、fixture 源码、既有手写业务脚本、之前 Agent 的实现历史或 `ready.json` 内容作为任务说明。新 Agent 必须在 `access.scriptDirectory` 写自己的普通 Puppeteer 工作流，用受限 API 验证。
-- 主控在 Agent 完成后向 `ready.json` 中 `completionFile` 写入小 JSON `{"nonce":"<ready.nonce>","status":"completed"}`；Agent 失败则写 `status:"failed"`。该信号位于交接目录之外，只代表验收流程结束，不代表业务需求通过。场景只接受匹配 nonce 的显式信号，最多等待 45 分钟，授权 50 分钟；超时、撤销或失败均不能报成功。退出前撤销授权、关闭 Studio，并写 `at39-live-result.json`。最终业务结论仍由独立 Agent 产物与 Studio 验证记录判定。当前只做 `npm run typecheck`，未运行 Electron live 夹具。
+- 主控在 Agent 完成后向 `ready.json` 中 `completionFile` 写入小 JSON `{"nonce":"<ready.nonce>","status":"completed","executionId":"<exact host execution>","reportId":"<exact host report>","evidenceDirectory":"<Agent 审查记录绝对目录>"}`；Agent 失败则写 `status:"failed"`。该信号位于交接目录之外，只代表验收流程结束；新增 ID 仅作宿主原件查找引用，不能自报业务 pass。场景只接受匹配 nonce 的显式信号，最多等待 45 分钟，授权 50 分钟。退出前撤销授权、关闭 Studio，并写 `at39-live-result.json`。D05 验收器另核对实际工作流和审查记录、执行/报告固定身份、代码/输入指纹、7 条订单的分页/图像/来源检查；缺项时 launcher 的 passed 为 false。失败解释的语义和关闭 Studio 后的独立运行仍由集成 owner 分项复核。
+
+### D05 验收器修复（2026-09-27，待集成）
+
+- 本树从已验证集成提交 `9bea873` 建立；D05 只改 `test/desktop/refactor-handoff.ts`、新增窄验收函数及单测。协调信号不再直接设置 `report.passed`。`at39-live-result.json` 分列 `harnessCompleted`、`agentDelivered`、`businessVerified`，并保留 exact execution/report ID 和已核对的资料、代码、输入指纹。
+- `npx vitest run test/unit/at39-acceptance.test.ts`：4/4 通过；先新增的无产物负例在实现前因缺验收器模块而失败。负例覆盖合法 completed nonce 但空目录、错误资料修订/代码/输入身份、`not-run` 报告，以及缺少分页或图像身份检查。`npm run typecheck` 通过。完整输出保留在 `output/d05-logs/at39-unit.log` 和 `output/d05-logs/typecheck.log`。这些是不启动桌面的窄验证，不冒称新候选 ZIP 的 live AT39 已通过。
 
 ### 解压 ZIP 的独立样例测试入口
 
