@@ -80,6 +80,34 @@ function launchPhase(phase, timeoutMs, { dataRoot = root, extraEnv = {}, termina
 }
 
 async function main() {
+  if (process.argv.includes('--refactor-soak')) {
+    const minutes = Number(soakArgument ? soakArgument.slice('--soak='.length) : 30);
+    const summary = { passed: false, output: root, minutes, phases: [] };
+    try {
+      assert.ok(Number.isSafeInteger(minutes) && minutes >= 1 && minutes <= 60);
+      for (const phase of ['refactor-recovery-soak', 'refactor-recovery-verify']) {
+        const result = await launchPhase(phase, phase === 'refactor-recovery-soak' ? 300000 + minutes * 60000 : 180000,
+          { extraEnv: phase === 'refactor-recovery-soak' ? { BES_SOAK_MINUTES: String(minutes) } : {} });
+        summary.phases.push(result);
+        assert.ok(result.passed, `${phase} failed: ${result.error || result.result?.error}`);
+      }
+      assert.notEqual(summary.phases[0].pid, summary.phases[1].pid);
+      summary.passed = true;
+    } catch (error) { summary.error = String(error); }
+    fs.writeFileSync(path.join(root, 'refactor-soak-summary.json'), JSON.stringify(summary, null, 2));
+    console.log(JSON.stringify({ passed: summary.passed, output: root, minutes, phases: summary.phases.map(({ phase, passed, pid }) => ({ phase, passed, pid })), error: summary.error }, null, 2));
+    process.exitCode = summary.passed ? 0 : 1;
+    return;
+  }
+  for (const [flag, phase, timeout] of [['--refactor-recovery', 'refactor-recovery', 180000], ['--native-input', 'native-input', 180000]]) {
+    if (!process.argv.includes(flag)) continue;
+    const result = await launchPhase(phase, timeout);
+    const summary = { passed: result.passed, output: root, phase: result };
+    fs.writeFileSync(path.join(root, `${phase}-summary.json`), JSON.stringify(summary, null, 2));
+    console.log(JSON.stringify({ passed: result.passed, output: root, error: result.error || result.result?.error }, null, 2));
+    process.exitCode = result.passed ? 0 : 1;
+    return;
+  }
   if (process.argv.includes('--refactor-handoff')) {
     const result = await launchPhase('refactor-handoff', 240000);
     const summary = { passed: result.passed, output: root, phase: result };

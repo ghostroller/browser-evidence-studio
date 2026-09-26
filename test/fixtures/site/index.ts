@@ -126,6 +126,7 @@ export async function startFixture(options: { port?: number; qrTtlMs?: number } 
         return send(response, 200, browserEnvironmentPage(request, url.searchParams.get('kind') || 'main'));
       }
       if (path === '/api/browser-environment') return json(response, { headers: browserEnvironmentHeaders(request) });
+      if (path === '/soak-resource.css') return send(response, 200, 'body { outline-color: rgb(20, 40, 60) }', 'text/css; charset=utf-8');
       if (path === '/soak') return send(response, 200, document('连续录制负载', '<section><button id="soak-click-1">合成点击 1</button><output id="action-count">0</output><p>100 ms DOM 更新：<output id="tick">0</output></p></section>', `
         let count = 0, tick = 0;
         const button = document.querySelector('button'), output = document.querySelector('#action-count');

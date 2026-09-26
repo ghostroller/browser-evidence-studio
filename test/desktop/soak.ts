@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { readFile, writeFile, rename } from 'node:fs/promises';
+import { readFile, writeFile, rename, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { app, powerMonitor } from 'electron';
@@ -15,6 +15,17 @@ const KiB = 1024, MiB = KiB * KiB;
 const limits = { checkpointP95Ms: 2000, summaryP95Ms: 500, httpSubmitP95Ms: 300, mainRssBytes: 1024 * MiB, pagePrivateBytes: 512 * MiB };
 const round = (value: number) => Math.round(value * 100) / 100;
 const percentile = (values: number[], fraction = .95) => values.length ? [...values].sort((a, b) => a - b)[Math.ceil(values.length * fraction) - 1] : null;
+async function archiveGrowth(root:string):Promise<{files:number;bytes:number}>{
+  let files=0,bytes=0;
+  const visit=async(directory:string):Promise<void>=>{
+    for(const entry of await readdir(directory,{withFileTypes:true})){
+      const absolute=path.join(directory,entry.name);
+      if(entry.isDirectory())await visit(absolute);
+      else if(entry.isFile()){files++;bytes+=(await stat(absolute)).size;}
+    }
+  };
+  await visit(root);return{files,bytes};
+}
 interface ExpectedAction { sequence: number; commandId: string; selector: string; }
 interface ExpectedRequest { sequence: string; url: string; bytes: number; sha256: string; }
 interface MemorySample {
@@ -111,7 +122,7 @@ function memoryReport(samples: MemorySample[]) {
 }
 
 /** A fixed synthetic workload. One-minute runs are mechanism preflights, never long-run acceptance. */
-export async function runSoak(studio: Studio, url: string, minutes: number) {
+export async function runSoak(studio: Studio, url: string, minutes: number, options: { newArchitecture?: boolean } = {}) {
   assert.ok(Number.isFinite(minutes) && minutes >= 1 && minutes <= 60);
   if (studio.active) await studio.seal(); if(studio.state().session)await studio.closeSession();
   const actions: ExpectedAction[] = [], requests: ExpectedRequest[] = [], checkpointIds: string[] = [], samples: MemorySample[] = [];
@@ -128,6 +139,7 @@ export async function runSoak(studio: Studio, url: string, minutes: number) {
     qualification: minutes >= 30 ? '30-minute-or-longer-fixed-load' : minutes >= 20 ? '20-minute-fixed-load' : 'mechanism-preflight-only',
     load: { cadenceMs: 1000, plannedCycles: Math.ceil(minutes * 60), regularResponseBytes: 64 * KiB, largeResponseBytes: MiB, largeEveryMs: 60000, checkpointEveryMs: 60000, summaryEveryMs: 10000, domTickMs: 100, skippedScheduleSlots: 0, completedCycles: 0, maxCycleWorkMs: 0, cyclesOverCadence: 0 },
     thresholds: limits, expected: { actions, requests }, limitations: ['UI first-visible-feedback latency is not measured.', 'Memory protection limits are not a leak-free or indefinite-growth acceptance criterion.', 'Evidence completeness is limited to acknowledged synthetic actions and responses in this run.'] };
+  if(options.newArchitecture)report.newArchitectureSamples=[];
   const powerEvents: Array<{ event: string; at: string; elapsedMs: number | null }> = [];
   report.powerEvents = { items: powerEvents, dropped: 0 };
   const save = async (status: string) => {
@@ -157,6 +169,10 @@ export async function runSoak(studio: Studio, url: string, minutes: number) {
     const profile = await studio.createProfile({ projectId: project.id, name: '独立合成长录制' });
     await studio.startRun({ projectId: project.id, profileId: profile.id, url: url + '/soak' });
     const run = studio.required(), page = studio.current(); report.runId = run.id;
+    if(options.newArchitecture){
+      await page.page.evaluate(async()=>{await new Promise<void>((resolve,reject)=>{const link=document.createElement('link');link.rel='stylesheet';link.href='/soak-resource.css';link.onload=()=>resolve();link.onerror=()=>reject(new Error('Synthetic long-run CSS failed'));document.head.appendChild(link);});});
+      await page.capture.flush();
+    }
     await studio.control('agent');
     studio.window.window.setTitle('Browser Evidence Studio — 合成长录制自动验证，请勿手动导航');
     const connection = JSON.parse(await readFile(studio.connection.file, 'utf8'));
@@ -242,6 +258,7 @@ export async function runSoak(studio: Studio, url: string, minutes: number) {
         await measure('largeFetch', () => fetchPayload('large-' + sequence, MiB), cycleStages);
         await measure('checkpoint', () => checkpoint('soak-' + sequence), cycleStages);
         await measure('captureFlush', () => page.capture.flush(), cycleStages);
+        if(options.newArchitecture)report.newArchitectureSamples.push({elapsedMs:round(loadElapsed()),archive:await archiveGrowth(run.store.runDir),queue:page.capture.queueMetrics});
         if (!firstArtifactId) await measure('fieldRead', () => fieldRead('early'), cycleStages);
         console.log(`SOAK ${(loadElapsed() / 60000).toFixed(1)}/${minutes} min; actions=${actions.length}, checkpoint=${checkpointIds.length}`);
         nextCheckpoint += 60000;
@@ -267,6 +284,7 @@ export async function runSoak(studio: Studio, url: string, minutes: number) {
     report.elapsedMs = report.load.loadElapsedMs; report.load.completedCycles = actions.length;
     assert.ok(report.elapsedMs >= durationMs); await page.capture.flush(); await summary(); await memory(); await fieldRead('late');
     report.pageAcknowledgedActions = await page.page.$eval('#action-count', element => Number(element.textContent)); assert.equal(report.pageAcknowledgedActions, actions.length);
+    if(options.newArchitecture){report.newArchitectureQueueMetrics=page.capture.queueMetrics;report.newArchitectureSamples.push({elapsedMs:report.elapsedMs,archive:await archiveGrowth(run.store.runDir),queue:page.capture.queueMetrics});}
     await save('verifying'); const verificationAt = performance.now();
     await studio.seal(); if(studio.state().session)await studio.closeSession(); const reader = studio.reader(run.id);
     report.digests = await verifyExpected(reader, page.pageId, actions, requests);
