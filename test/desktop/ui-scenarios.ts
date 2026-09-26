@@ -42,10 +42,10 @@ export async function runReviewUiScenarios(studio: Studio): Promise<void> {
     await waitFor(() => evaluate<string>(`document.querySelector('select[aria-label="项目"]')?.value || ''`), value => value === project.id, 'project selected');
     await click('存档', `document.querySelector('.panel-tabs')`);
     const visibleRuns = studio.runs.filter(run => run.projectId === project.id);
-    await waitFor(() => evaluate<number>(`document.querySelectorAll('.run-list button').length`), count => count === visibleRuns.length, 'fresh project archive list');
+    await waitFor(() => evaluate<number>(`document.querySelectorAll('.run-list .run-item').length`), count => count === visibleRuns.length, 'fresh project archive list');
     const index = visibleRuns.findIndex(run => run.id === record.runId);
     assert(index >= 0);
-    await evaluate<void>(`document.querySelectorAll('.run-list button')[${index}].click()`);
+    await evaluate<void>(`document.querySelectorAll('.run-list .run-item')[${index}].click()`);
     await waitFor(() => evaluate<string>(`document.querySelector('.archive-meta code')?.textContent || ''`), value => value === record.runId, 'validation run opened');
     await click('结构化数据 / 验收', `document.querySelector('.archive-tabs')`);
     await evaluate<void>(`document.querySelector('.validation-list button').click()`);
