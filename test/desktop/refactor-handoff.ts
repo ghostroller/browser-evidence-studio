@@ -87,6 +87,11 @@ export async function runRefactorHandoffScenario(studio: Studio, siteUrl: string
     const overlayCheckpoint = await dispatch('checkpoint', { key: 'handoff-overlay-capture', title: 'Handoff overlay capture' }, 'ui');
     assert.equal(overlayCheckpoint.metadata?.artifacts?.[0]?.captureStatus, 'complete', JSON.stringify(overlayCheckpoint.metadata?.artifacts?.[0]));
     assert.equal(overlayCheckpoint.metadata?.artifacts?.[1]?.captureStatus, 'complete', 'Hidden native page DOM should be captured');
+    await studio.current().page.goto(siteUrl + '/orders/SYN-001', { waitUntil: 'domcontentloaded' });
+    await studio.current().page.waitForSelector('#order-detail');
+    const hiddenDetail = await dispatch('checkpoint', { key: 'handoff-hidden-detail', title: 'Hidden detail capture' }, 'ui');
+    assert.equal(hiddenDetail.metadata?.artifacts?.[0]?.captureStatus, 'complete', JSON.stringify(hiddenDetail.metadata?.artifacts?.[0]));
+    assert.equal(hiddenDetail.metadata?.artifacts?.[1]?.captureStatus, 'complete', 'Hidden detail DOM should be captured');
     await ui.executeJavaScript(`([...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='返回工作台'))?.click()`);
     const handoffs = await readdir(path.join(studio.root, 'projects', project.id, 'handoffs'));
     assert.equal(handoffs.length, 1);
