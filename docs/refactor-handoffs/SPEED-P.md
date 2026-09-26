@@ -30,3 +30,10 @@
 1. 用最终冻结候选执行 typecheck/build/package/make；对实际 `resources/app.asar` 执行 `test:release-assets`，核对 ZIP 中同一资源，再持桌面令牌从发行版 exe 跑 `--refactor-handoff`，检查 `access.skillFile` 可由普通文件读取。
 2. 从 `resources/orders` 复制独立项目到仓库外空目录，用自身 lock `npm ci`，在 Studio 关闭后以独立 Chrome 和合成站点跑正常及失败变体，保留输出目录与命令/退出码。
 3. AT39 必须另起全新模型上下文，只提供真实导出三文件、安装版技能入口、必要授权环境与合成任务目标；不提供实现历史、标准答案、fixture 业务脚本。让新 Agent 根据固定资料产出普通 Puppeteer 实现，解释一次失败并修复；记录身份、候选 SHA、输入和结果。P 的预演不能替代该验收。
+
+### AT39 实时交接夹具（待桌面令牌实测）
+
+- 发行版 exe 从最终 ZIP 解压后，设置父进程环境 `BES_HANDOFF_LIVE=1`，执行 `node test/desktop/launch.js --refactor-handoff --executable="ABSOLUTE_EXTRACTED_EXE"`。入口沿用既有 `refactor-handoff` phase；live 模式只在 P 所有的测试场景分支中，不更改产品接口。主控需将 launcher 的 live 超时延到大于场景的 45 分钟等待期限；普通 handoff 仍是 4 分钟。
+- 场景通过 Studio 建立合成订单 project/profile/run、录制位置、固定材料修订，并由受信 UI 发放精确 origin/page/目录授权与点击“准备交给 Agent”。它在系统临时目录生成新的空白工作流目录和交接目录，不写 `workflow.json`、`run.mjs` 或答案。交接目录严格只有 `task.md`、`manifest.json`、`access.json`、`ready.json`；ready 中只有标识、路径、nonce、期限，没有 Bearer。`BES_AT39_READY {...}` 从运行中日志给出这些路径。`access.json` 指向已安装技能、空白工作流目录和当前用户连接文件；连接 token 不复制进交接。
+- 新模型输入边界：只给交接三文件、`access.skillFile` 所指技能及引用、该授权连接路径、合成目标（收集全部订单和详情、分页结束证据、图像身份一致性，解释并修复一次失败）。不给本仓库源码、fixture 源码、既有手写业务脚本、之前 Agent 的实现历史或 `ready.json` 内容作为任务说明。新 Agent 必须在 `access.scriptDirectory` 写自己的普通 Puppeteer 工作流，用受限 API 验证。
+- 主控在 Agent 完成后向 `ready.json` 中 `completionFile` 写入小 JSON `{"nonce":"<ready.nonce>","status":"completed"}`；Agent 失败则写 `status:"failed"`。该信号位于交接目录之外，只代表验收流程结束，不代表业务需求通过。场景只接受匹配 nonce 的显式信号，最多等待 45 分钟，授权 50 分钟；超时、撤销或失败均不能报成功。退出前撤销授权、关闭 Studio，并写 `at39-live-result.json`。最终业务结论仍由独立 Agent 产物与 Studio 验证记录判定。当前只做 `npm run typecheck`，未运行 Electron live 夹具。
