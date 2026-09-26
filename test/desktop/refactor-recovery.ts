@@ -124,11 +124,28 @@ async function verifyLongSoak(studio:Studio):Promise<Record<string,unknown>>{
   return{passed:true,originalProcessId:saved.processId,processId:process.pid,runId:saved.runId,minutes:saved.minutes,sourceStream:saved.sourceStream,recovered: saved.recovery,evidence,replay};
 }
 
+/** Recheck a copied, sealed load after a replay fix without repeating its load. */
+async function verifyArchivedReplayProbe(studio:Studio):Promise<Record<string,unknown>>{
+  const request=JSON.parse(await readFile(path.join(studio.root,'replay-probe-request.json'),'utf8')) as {runId:string;projectId:string;originalProcessId:number;ordinals:number[]};
+  assert.ok(/^[a-f0-9-]{36}$/.test(request.runId));
+  assert.ok(request.projectId&&Number.isSafeInteger(request.originalProcessId)&&request.originalProcessId!==process.pid);
+  assert.ok(Array.isArray(request.ordinals)&&request.ordinals.length>=17&&request.ordinals.every(value=>Number.isSafeInteger(value)&&value>=0));
+  const recording=new RecordingArchive(path.join(studio.root,'runs',request.runId));
+  const streams=await recording.streams(1000),stream=streams.items.find(item=>item.first.recordingId===request.runId&&item.events>Math.max(...request.ordinals));
+  assert.ok(stream,'Copied archive has no requested source stream');
+  const positions=[];
+  for(const ordinal of request.ordinals){const item=(await recording.positions(stream.first,1,ordinal)).items[0];assert.ok(item,`Missing ordinal ${ordinal}`);positions.push(item.position);}
+  assert.equal(positions[3].eventSeq,24482,'The original failed Meta seek must be included');
+  assert.equal(positions.at(-1)!.eventSeq,24483,'The next FullSnapshot must be included');
+  const replay=await replayMemory(studio,request.projectId,positions,2);
+  return {passed:true,kind:'archived-replay-probe',runId:request.runId,originalProcessId:request.originalProcessId,processId:process.pid,ordinals:request.ordinals,replay};
+}
+
 /** One real Electron process, a real format-2 recorder and a directed recovery.
  * The long-load entry extends this same fixture after the short gate passes. */
 export async function runRefactorRecoveryScenario(studio:Studio,phase:string):Promise<Record<string,unknown>>{
   if(phase==='refactor-recovery-soak')return longSoak(studio);
-  if(phase==='refactor-recovery-verify')return verifyLongSoak(studio);
+  if(phase==='refactor-recovery-verify')return process.env.BES_REPLAY_PROBE==='1'?verifyArchivedReplayProbe(studio):verifyLongSoak(studio);
   assert.equal(phase,'refactor-recovery');
   if(studio.active)await studio.seal();if(studio.state().session)await studio.closeSession();
   const fixture=await startFixture();
