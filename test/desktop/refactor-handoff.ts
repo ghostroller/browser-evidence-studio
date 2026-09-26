@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Studio } from '@/main/services/studio';
@@ -18,6 +19,7 @@ async function until<T>(read: () => Promise<T>, accept: (value: T) => boolean, l
 /** One trusted preparation followed by a fresh client using only the exported
  * manifest, current-user connection file and public loopback API. */
 export async function runRefactorHandoffScenario(studio: Studio, siteUrl: string): Promise<Record<string, unknown>> {
+  if (process.env.BES_HANDOFF_LIVE === '1') return runLiveHandoffScenario(studio, siteUrl);
   const report: Record<string, any> = { passed: false, pid: process.pid };
   const dispatch = makeDispatch(studio);
   let authorizationId = '';
@@ -202,5 +204,130 @@ export async function runRefactorHandoffScenario(studio: Studio, siteUrl: string
     if (authorizationId && report.handoff?.projectId) {
       try { if (studio.tasks.get(authorizationId).status === 'active') await dispatch('revokeTask', { projectId: report.handoff.projectId, authorizationId }, 'ui'); } catch { /* preserve original test error */ }
     }
+  }
+}
+
+/** AT39 preparation. The separate evaluator sees only an installed skill and
+ * the exported envelopes; its workflow directory starts empty. */
+async function runLiveHandoffScenario(studio: Studio, siteUrl: string): Promise<Record<string, unknown>> {
+  const report: Record<string, any> = { passed: false, mode: 'at39-live', pid: process.pid };
+  const dispatch = makeDispatch(studio);
+  const deadlineMs = 45 * 60_000;
+  const nonce = randomUUID();
+  const handoffDir = await mkdtemp(path.join(tmpdir(), 'bes-at39-handoff-'));
+  const workflowDir = await mkdtemp(path.join(tmpdir(), 'bes-at39-workflow-'));
+  const completionFile = path.join(tmpdir(), `bes-at39-complete-${nonce}.json`);
+  let authorizationId = '';
+  let projectId = '';
+  try {
+    if (studio.active) await studio.seal();
+    if (studio.state().session) await studio.closeSession();
+    const project = await studio.createProject({ name: 'AT39 synthetic orders',
+      objective: 'Collect every synthetic order and its detail using ordinary Puppeteer. Preserve page completion and prove each image belongs to the same order. Repair a failed assumption before final validation.',
+      scriptDirectory: workflowDir });
+    projectId = project.id;
+    const profile = await studio.createProfile({ projectId, name: 'AT39 synthetic profile' });
+    await studio.startRun({ projectId, profileId: profile.id, url: siteUrl + '/orders' });
+    const run = studio.required(), page = studio.current();
+    await page.page.waitForSelector('#ssr-data');
+    await page.capture.flush();
+    const position = page.capture.recordingPosition;
+    assert.ok(position, 'The list page has a recorded position');
+    const draft = await dispatch('createMaterialDraft', { projectId }, 'ui');
+    const edited = await dispatch('editMaterialDraft', { projectId, draftId: draft.draftId, expectedDraftRevision: draft.draftRevision,
+      edits: [
+        { operation: 'recordings', recordingRefs: [run.id] },
+        { operation: 'upsert', collection: 'checkpoints', item: { id: 'orders-list', kind: 'requirement', anchor: position,
+          capturedAt: new Date().toISOString(), createdAt: new Date().toISOString(), title: 'Synthetic orders list',
+          notes: 'Use the visible list and detail pages. API and SSR observations can corroborate; neither alone proves every rendered page was visited.',
+          requirementIds: ['all-orders', 'matching-details'], annotationIds: [] } },
+        { operation: 'upsert', collection: 'fields', item: { id: 'order-id', dataset: 'orders', name: 'Order ID',
+          description: 'Stable synthetic order identity', outputPath: '/id', valueType: 'string', sourcePolicy: 'any-evidenced' } },
+        { operation: 'upsert', collection: 'fields', item: { id: 'image-order-id', dataset: 'orders', name: 'Image order ID',
+          description: 'Identity displayed by each detail image; must equal its order ID', outputPath: '/imageOrderId', valueType: 'string', sourcePolicy: 'any-evidenced' } },
+        { operation: 'upsert', collection: 'requirements', item: { id: 'all-orders', dataset: 'orders',
+          description: 'Visit all pages of the synthetic orders list, collect each distinct order and its detail, and show a termination proof for pagination.',
+          rules: [{ type: 'min-rows', count: 7 }, { type: 'unique', field: 'id' }, { type: 'pagination-complete', minPages: 3 }], fieldIds: ['order-id'] } },
+        { operation: 'upsert', collection: 'requirements', item: { id: 'matching-details', dataset: 'orders',
+          description: 'For each order, verify that the detail image identity matches the order ID. A mismatch is a failed result that must be diagnosed and corrected.',
+          rules: [{ type: 'required', field: 'imageOrderId' }, { type: 'same-entity', field: 'imageOrderId', equalsField: 'id' }], fieldIds: ['order-id', 'image-order-id'] } },
+      ] }, 'ui');
+    assert.equal(edited.status, 'saved');
+    const revision = await dispatch('publishMaterialDraft', { projectId, draftId: draft.draftId,
+      expectedDraftRevision: edited.draft.draftRevision }, 'ui');
+    const grant = await dispatch('authorizeTask', { projectId, profileId: profile.id, sessionId: studio.state().session!.sessionId,
+      leaseEpoch: run.leaseEpoch, pageIds: [page.pageId], origins: [new URL(siteUrl).origin],
+      capabilities: ['materials-read', 'materials-edit', 'history-read', 'page-read', 'page-act', 'page-create', 'execute', 'results-read', 'handoff-export'],
+      durationMs: 50 * 60_000, maxOperations: 2000 }, 'ui');
+    authorizationId = grant.authorizationId;
+
+    const ui = studio.window.window.webContents;
+    await until(() => ui.executeJavaScript(`(() => {const button=[...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='任务授权'&&!item.disabled);if(!button)return false;button.click();return true})()`), Boolean, 'enabled task overlay');
+    await until(() => ui.executeJavaScript(`document.querySelector('.overlay-heading')?.textContent?.includes('任务授权与撤销')===true`), Boolean, 'opened task overlay');
+    await until(() => ui.executeJavaScript(`!![...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='准备交给 Agent')`), Boolean, 'handoff button');
+    await ui.executeJavaScript(`(() => {const select=document.querySelector('select[aria-label="交接资料版本"]');select.value=${JSON.stringify(revision.revisionId)};select.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await until(() => ui.executeJavaScript(`!![...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='准备交给 Agent'&&!item.disabled)`), Boolean, 'selected fixed revision');
+    assert.equal(await ui.executeJavaScript(`(() => {const button=[...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='准备交给 Agent'&&!item.disabled);if(!button)return false;button.click();return true})()`), true);
+    await until(() => ui.executeJavaScript(`!![...document.querySelectorAll('[role="status"]')].find(item=>item.textContent?.includes('固定交接已保存'))`), Boolean, 'saved fixed handoff');
+    const handoffs = await readdir(path.join(studio.root, 'projects', projectId, 'handoffs'));
+    assert.equal(handoffs.length, 1);
+    const sourceDir = path.join(studio.root, 'projects', projectId, 'handoffs', handoffs[0]);
+    for (const name of ['task.md', 'manifest.json', 'access.json']) await copyFile(path.join(sourceDir, name), path.join(handoffDir, name));
+    const task = await readFile(path.join(handoffDir, 'task.md'), 'utf8');
+    const manifest = JSON.parse(await readFile(path.join(handoffDir, 'manifest.json'), 'utf8'));
+    const access = JSON.parse(await readFile(path.join(handoffDir, 'access.json'), 'utf8'));
+    assert.equal(manifest.revisionId, revision.revisionId);
+    assert.equal(manifest.contentHash, revision.contentHash);
+    assert.equal(manifest.taskSha256, createHash('sha256').update(task).digest('hex'));
+    assert.equal(access.authorization.authorizationId, authorizationId);
+    assert.equal(access.scriptDirectory, workflowDir);
+    assert.equal((await readdir(workflowDir)).length, 0, 'Independent workflow directory must start empty');
+    assert.equal(path.basename(access.skillFile), 'SKILL.md');
+    await stat(access.skillFile);
+    const connection = JSON.parse(await readFile(access.connectionFile, 'utf8'));
+    assert.ok(!task.includes(connection.token) && !JSON.stringify(manifest).includes(connection.token) && !JSON.stringify(access).includes(connection.token));
+    const healthResponse = await fetch(connection.address + '/v1/health', { headers: { Authorization: `Bearer ${connection.token}` }, signal: AbortSignal.timeout(10_000) });
+    assert.equal(healthResponse.status, 200);
+    assert.equal((await healthResponse.json()).instanceId, access.instanceId);
+    const stateResponse = await fetch(connection.address + `/v1/state?authorizationId=${authorizationId}`,
+      { headers: { Authorization: `Bearer ${connection.token}` }, signal: AbortSignal.timeout(10_000) });
+    assert.equal(stateResponse.status, 200);
+    assert.equal((await stateResponse.json()).active.projectId, projectId);
+    const ready = { schemaVersion: 1, mode: 'at39-live', nonce, projectId, revisionId: revision.revisionId,
+      contentHash: revision.contentHash, handoffDir, workflowDir, completionFile, studioPid: process.pid,
+      expiresAt: grant.expiresAt, deadlineAt: new Date(Date.now() + deadlineMs).toISOString() };
+    await writeFile(path.join(handoffDir, 'ready.json'), JSON.stringify(ready, null, 2), { flag: 'wx' });
+    assert.deepEqual((await readdir(handoffDir)).sort(), ['task.md', 'manifest.json', 'access.json', 'ready.json'].sort());
+    report.handoff = ready;
+    console.log('BES_AT39_READY ' + JSON.stringify(ready));
+    const end = Date.now() + deadlineMs;
+    for (;;) {
+      if (Date.now() >= end) throw new Error('AT39 live handoff timed out without explicit completion signal');
+      if (studio.tasks.get(authorizationId).status !== 'active') throw new Error('AT39 task authorization expired or was revoked before completion');
+      try {
+        const info = await stat(completionFile);
+        assert.ok(info.isFile() && info.size <= 2048, 'AT39 completion signal must be a small regular file');
+        const signal = JSON.parse(await readFile(completionFile, 'utf8'));
+        assert.equal(signal.nonce, nonce, 'AT39 completion nonce differs');
+        assert.ok(['completed', 'failed'].includes(signal.status), 'AT39 completion status is invalid');
+        report.completion = { status: signal.status, at: new Date().toISOString() };
+        if (signal.status === 'failed') throw new Error('AT39 evaluator reported failure');
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      await delay(500);
+    }
+    report.passed = true;
+    return report;
+  } catch (error) { report.error = String(error); throw error; }
+  finally {
+    if (authorizationId && projectId) {
+      try { if (studio.tasks.get(authorizationId).status === 'active') await dispatch('revokeTask', { projectId, authorizationId }, 'ui'); }
+      catch (error) { report.cleanupError = String(error); }
+    }
+    try { if (studio.active) await studio.seal(); if (studio.state().session) await studio.closeSession(); }
+    catch (error) { report.cleanupError = String(error); }
+    await writeFile(path.join(studio.root, 'at39-live-result.json'), JSON.stringify(report, null, 2));
   }
 }
