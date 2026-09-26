@@ -29,7 +29,7 @@ test('opens the first complete snapshot when a stream begins with a meta event',
 
 test('closes a native replay host that opens after the workspace unmounts', async () => {
   const opening = deferred<ReturnType<typeof host>>();
-  const call = vi.fn(async (method: string) => {
+  const call = vi.fn(async (method: string, _body?:any) => {
     if (method === 'recordingForeground') return { status: 'legacy', items: [] };
     if (method === 'recordingStreams') return { items: [{ first: at(1), last: at(1), events: 1, monotonicTime: true }] };
     if (method === 'recordingPositions') return { items: [{ position: at(1), type: 2, source: -1 }] };
@@ -41,7 +41,10 @@ test('closes a native replay host that opens after the workspace unmounts', asyn
   const view = render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={at(1)} selecting={false} canStop={false}
     onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
   await waitFor(() => expect(call).toHaveBeenCalledWith('openReplay', expect.anything()));
+  const openingId=call.mock.calls.find(args=>args[0]==='openReplay')?.[1]?.replayId;
+  expect(openingId).toMatch(/^[a-f0-9-]{36}$/);
   view.unmount();
+  expect(call).toHaveBeenCalledWith('closeReplay',expect.objectContaining({replayId:openingId}));
   await act(async () => opening.resolve(host(at(1), 1)));
   await waitFor(() => expect(call).toHaveBeenCalledWith('closeReplay', expect.objectContaining({ replayId: 'replay-one' })));
 });

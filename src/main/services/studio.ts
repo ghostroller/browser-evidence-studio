@@ -16,6 +16,7 @@ import { startWorkflow, type WorkflowHandle } from '@/runner/manager';
 import type { HumanRequest } from '@/contracts/workflow';
 import { fingerprintInput, fingerprintWorkflow, loadWorkflow } from '@/runner/fingerprint';
 import { ValidationStartGrants, type ValidationStartBinding, type ValidationStartGrant } from './validation-start-grants';
+import { clickManagedElement } from '@/runner/managed-input';
 import { connectManagedPage } from '@/runner/puppeteer';
 import { captureCheckpointMaterials } from '@/capture/checkpoint';
 import { snapshotElements } from '@/capture/privacy';
@@ -35,7 +36,7 @@ export type { ValidationLifecycleContext, ValidationLifecycleObserver, Validatio
 interface Project { id:string; name:string; objective:string; scriptDirectory?:string; createdAt:string; }
 interface Profile { id:string; projectId:string; name:string; savedAt?:string; loginStatus:'unknown'|'verified'|'expired'; }
 interface ManagedPage extends PageIdentity { view:WebContentsView; page:Page; capture:CaptureCoordinator; }
-interface ManagedOperation { browser:Browser; gate:GateTransport; page:Page; targetId:string; }
+interface ManagedOperation { browser:Browser; gate:GateTransport; page:Page; targetId:string; documentEpoch:number; }
 interface PendingOperation { targetId:string; leaseEpoch:number; abort:AbortController; gate?:GateTransport; promise:Promise<ManagedOperation>; }
 interface CheckpointOperation { id:string; pageId:string; phase:'draining'|'capturing'|'saving'; startedAt:string; abort:AbortController; done:Promise<void>; }
 interface HandoffReleaseResult { passed:true; handoffId:string; }
@@ -166,7 +167,15 @@ export class Studio {
     try{await Promise.race([observed,cancelled]);}finally{signal.removeEventListener('abort',aborted);}
   }
   private async save(){await atomicJson(path.join(this.root,'workspace.json'),{schemaVersion:1,projects:this.projects,profiles:this.profiles});}
-  serialized<T>(fn:()=>Promise<T>):Promise<T>{const next=this.queue.then(fn);this.queue=next.catch(()=>{});return next;}
+  serialized<T>(fn:()=>Promise<T>,signal?:AbortSignal):Promise<T>{
+    let started=false;const next=this.queue.then(()=>{signal?.throwIfAborted();started=true;return fn();});this.queue=next.catch(()=>{});
+    if(!signal)return next;
+    return new Promise<T>((resolve,reject)=>{
+      const abort=()=>{if(!started)reject(new StudioError(signal.reason?.name==='TimeoutError'?408:409,signal.reason?.name==='TimeoutError'?'action_deadline':'action_cancelled','Action stopped during queue'));};
+      signal.addEventListener('abort',abort,{once:true});if(signal.aborted)abort();
+      void next.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));
+    });
+  }
   required(){ensure(this.active,'No active run',409);return this.active;}
   private live(){ensure(this.browser,'No live browser session',409);return this.browser.runtime;}
   private pageContents(p:ManagedPage){try{const contents=p.view.webContents;return contents&&!contents.isDestroyed()?contents:undefined;}catch{return undefined;}}
@@ -420,7 +429,9 @@ export class Studio {
         pending.abort.signal.throwIfAborted();this.assertOperationOwner(r,p,leaseEpoch);
         const connected=await connectManagedPage(gate,p.targetId);browser=connected.browser;
         pending.abort.signal.throwIfAborted();this.assertOperationOwner(r,p,leaseEpoch);
-        const operation={...connected,gate,targetId:p.targetId};r.operation=operation;return operation;
+        const operation={...connected,gate,targetId:p.targetId,documentEpoch:0};
+        connected.page.on('framenavigated',frame=>{if(frame===connected.page.mainFrame())operation.documentEpoch++;});
+        r.operation=operation;return operation;
       }catch(error){pending.gate?.close();await browser?.disconnect();throw error;}
       finally{if(r.pendingOperation===pending)r.pendingOperation=undefined;}
     })();
@@ -438,24 +449,39 @@ export class Studio {
     r.controller=controller;r.locked=false;this.window.lock(controller!=='human');
     await r.store.appendEvent({type:'control',source:'studio',data:{controller,leaseEpoch:r.leaseEpoch}});return this.state().active;
   }
-  async action(body:any,signal?:AbortSignal){signal?.throwIfAborted();const r=this.required(),p=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;ensure(p,'Unknown managed page',409);ensure(Number.isSafeInteger(body.generation)&&body.generation>=0,'Navigation generation is required',409);this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(body.leaseEpoch===leaseEpoch,'Stale lease or wrong page identity',409);
-    let stopping:Promise<void>|undefined;const abort=()=>{r.leaseEpoch++;stopping=this.revokeOperation(r);};signal?.addEventListener('abort',abort,{once:true});
+  async action(body:any,signal?:AbortSignal){
+    const timeout=AbortSignal.timeout(15_000),combined=signal?AbortSignal.any([signal,timeout]):timeout;
+    combined.throwIfAborted();const r=this.required(),p=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;
+    ensure(p,'Unknown managed page',409);ensure(Number.isSafeInteger(body.generation)&&body.generation>=0,'Navigation generation is required',409);
+    this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(body.leaseEpoch===leaseEpoch,'Stale lease or wrong page identity',409);
+    let documentEpoch=0;
+    let phase='connection',stopping:Promise<void>|undefined,op:ManagedOperation|undefined;
+    const abort=()=>{if(r.leaseEpoch===leaseEpoch)r.leaseEpoch++;stopping=this.revokeOperation(r);};
+    const check=()=>{combined.throwIfAborted();this.assertOperationOwner(r,p,leaseEpoch,body.type==='navigate'?undefined:body.generation);if(op){ensure(op.targetId===p.targetId&&r.operation===op,'Target mismatch',409);if(body.type!=='navigate')ensure(op.documentEpoch===documentEpoch,'Operation document changed',409);}};
+    combined.addEventListener('abort',abort,{once:true});
     try{
-    const op=await this.operation(r,p,leaseEpoch);this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(op.targetId===p.targetId&&r.operation===op,'Target mismatch',409);
-    const commandId=randomUUID();await r.store.appendEvent({type:'command',source:'api',pageId:p.pageId,data:{commandId,type:body.type,selector:body.selector,controller:r.controller}});
-    this.assertOperationOwner(r,p,leaseEpoch,body.generation);
-    switch(body.type){case 'navigate':ensure(/^https?:\/\//.test(body.url),'HTTP(S) URL required');await op.page.goto(body.url);break;case 'click':{
-      if(p.pageId===r.selectedPageId){ensure(p.view.getVisible(),'Page is not presented for native input; close the covering view and retry',409);await op.page.click(String(body.selector));break;}
-      // A hidden native view does not advance IntersectionObserver, which
-      // Puppeteer's click() waits for. Use its target-scoped mouse input after
-      // an explicit scroll and geometry check, without changing the UI page.
-      const element=await op.page.$(String(body.selector));ensure(element,'Click target was not found',404);
-      try{await this.window.withBackgroundInteraction(p.view,async()=>{ensure(p.view.getVisible(),'Page is not presented for native input; close the covering view and retry',409);await element.scrollIntoView();const point=await element.clickablePoint();await op.page.mouse.click(point.x,point.y);});}
-      finally{await element.dispose();}
-      break;
-    }case 'fill':await op.page.$eval(String(body.selector),(el:any)=>{el.value='';el.dispatchEvent(new Event('input',{bubbles:true}));});await op.page.type(String(body.selector),String(body.value));break;case 'press':await op.page.keyboard.press(body.key);break;case 'scroll':await op.page.evaluate(({x,y})=>window.scrollBy(x,y),{x:Number(body.x)||0,y:Number(body.y)||0});break;case 'select':await op.page.select(String(body.selector),String(body.value));break;default:ensure(false,'Unsupported action');}
-    signal?.throwIfAborted();return {commandId,generation:p.navigationGeneration};
-    }finally{signal?.removeEventListener('abort',abort);await stopping;}
+      op=await this.operation(r,p,leaseEpoch);documentEpoch=op.documentEpoch;check();this.assertOperationOwner(r,p,leaseEpoch,body.generation);op.gate.setCommandGuard(check);
+      const commandId=randomUUID();await r.store.appendEvent({type:'command',source:'api',pageId:p.pageId,data:{commandId,type:body.type,selector:body.selector,controller:r.controller}});check();
+      phase='preparation';
+      const input=async()=>{
+        const inputCheck=()=>{check();this.window.assertInputReady(p.view);};inputCheck();op!.gate.setCommandGuard(inputCheck);phase='input';
+        switch(body.type){
+          case 'click':await clickManagedElement(op!.page,String(body.selector),inputCheck);break;
+          case 'fill':await op!.page.$eval(String(body.selector),(el:any)=>{el.value='';el.dispatchEvent(new Event('input',{bubbles:true}));});inputCheck();await op!.page.type(String(body.selector),String(body.value));break;
+          case 'press':await op!.page.keyboard.press(body.key);break;
+          case 'scroll':await op!.page.evaluate(({x,y})=>window.scrollBy(x,y),{x:Number(body.x)||0,y:Number(body.y)||0});break;
+          case 'select':await op!.page.select(String(body.selector),String(body.value));break;
+          default:ensure(false,'Unsupported action');
+        }
+        check();
+      };
+      if(body.type==='navigate'){ensure(/^https?:\/\//.test(body.url),'HTTP(S) URL required');phase='navigation';await op.page.goto(body.url);check();}
+      else await this.window.withBackgroundInteraction(p.view,input);
+      return {commandId,generation:p.navigationGeneration,completion:'command-completed'};
+    }catch(error){
+      if(combined.aborted)throw new StudioError(timeout.aborted||combined.reason?.name==='TimeoutError'?408:409,timeout.aborted||combined.reason?.name==='TimeoutError'?'action_deadline':'action_cancelled','Action stopped during '+phase);
+      throw error;
+    }finally{op?.gate.setCommandGuard();combined.removeEventListener('abort',abort);await stopping;}
   }
   async checkpoint(body:any,options:{fromRunner?:boolean;pageId?:string;signal?:AbortSignal}={}){
     options.signal?.throwIfAborted();

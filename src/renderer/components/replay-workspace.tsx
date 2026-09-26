@@ -51,6 +51,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const [scrubTime, setScrubTime] = useState<number | null>(null);
   const hostRef = useRef<Host | null>(null);
   const mounted = useRef(false);
+  const pendingOpen = useRef<string | null>(null);
   const seekToken = useRef(0);
   const loadToken = useRef(0);
   const pollSelection = useRef(0);
@@ -96,17 +97,19 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
     if (!continuePlayback) { setPlaying(false); playRef.current = false; }
     const current = hostRef.current;
     const opened = !current;
+    const openingId=opened?crypto.randomUUID():null;
+    if(openingId){if(pendingOpen.current)closeNative(pendingOpen.current);pendingOpen.current=openingId;}
     try {
       const next: Host = current
         ? await call('seekReplay', { replayId: current.replayId, position: target })
-        : await call('openReplay', { position: target });
+        : await call('openReplay', { position: target, replayId: openingId });
       if (!mounted.current || token !== seekToken.current) {
         if (opened) closeNative(next.replayId);
         return;
       }
       applyHost(next, token);
     } catch (failure) { if (mounted.current && token === seekToken.current) setError(String(failure)); }
-    finally { if (mounted.current && token === seekToken.current) setSeeking(false); }
+    finally { if(pendingOpen.current===openingId)pendingOpen.current=null; if (mounted.current && token === seekToken.current) setSeeking(false); }
   }, [applyHost, call, closeNative]);
   const loadPositions = useCallback(async (selected: Stream, ordinal = 0): Promise<PositionRow[]> => {
     const result: { items: PositionRow[]; nextOrdinal?: number } = await call('recordingPositions', { position: selected.first, ordinal, limit: 100 });
@@ -140,7 +143,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
         }).catch(failure => setError(String(failure))); }
     }).catch(failure => { if (token === loadToken.current) setError(String(failure)); });
     return () => { mounted.current = false; ++loadToken.current; ++seekToken.current; playRef.current = false; gapWait.current?.abort(); const current = hostRef.current;
-      hostRef.current = null; if (current) closeNative(current.replayId); };
+      hostRef.current = null; if(pendingOpen.current){closeNative(pendingOpen.current);pendingOpen.current=null;} if (current) closeNative(current.replayId); };
   }, [projectId, recordingId, call, loadPositions, seek, closeNative]);
   const requestedKey = requestedPosition && `${requestedPosition.recordingId}/${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}/${requestedPosition.eventSeq}`;
   useEffect(() => {

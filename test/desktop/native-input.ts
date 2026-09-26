@@ -10,19 +10,22 @@ import type { Studio } from '@/main/services/studio';
 export async function clickSyntheticHuman(studio: Studio, selector: string): Promise<void> {
   const session = studio.state().session, managed = studio.current(), host = studio.window.window;
   assert.ok(session, 'Synthetic native input requires a live session');
-  const assertOwnership = () => {
+  const assertOwnership = (requireVisible=true) => {
     const currentSession=studio.state().session;
     assert.equal(currentSession?.sessionId, session.sessionId, 'The native input session must remain unchanged');
     assert.equal(currentSession?.recordingId, session.recordingId, 'The native input recording boundary must remain unchanged');
     assert.equal(studio.current().pageId, managed.pageId, 'The native input target must remain selected');
     assert.equal(currentSession?.controller, 'human', 'Synthetic native input requires explicit human ownership');
     assert.equal(currentSession?.locked, false, 'Synthetic native input cannot bypass an operation lock');
-    assert.equal(managed.view.getVisible(), true, 'The business native view must be visible');
+    if(requireVisible)assert.equal(managed.view.getVisible(), true, 'The business native view must be visible: '+JSON.stringify(studio.window.presentationStatus()));
     assert.equal(studio.window.mask.getVisible(), false, 'The native input mask must be absent');
   };
-  assertOwnership();
+  assertOwnership(false);
   if (host.isMinimized()) host.restore();
   host.show();
+  const visibleDeadline=Date.now()+2500;
+  while(!managed.view.getVisible()&&Date.now()<visibleDeadline)await delay(25);
+  assertOwnership();
   host.focus();
   managed.view.webContents.focus();
   const focusDeadline = Date.now() + 2500;

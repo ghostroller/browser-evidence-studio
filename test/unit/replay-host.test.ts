@@ -31,6 +31,36 @@ function browserFixture(){
   return {browser,playback,holdPresentation:(promise:Promise<string[]>)=>{(context as any).__replayPresentation=promise;}};
 }
 describe('isolated replay lifecycle',()=>{
+  it('rejects stale close without cancelling a pending replacement; closing current is target scoped',async()=>{
+    const f=setup(),a=await f.host.open({projectId:'project',position}),b=await f.host.open({projectId:'project',position}),held=deferred<any>();
+    f.materials.replay.mockImplementationOnce(()=>held.promise);
+    const c=f.host.open({projectId:'project',position});
+    expect(()=>f.host.close(a.replayId)).toThrow('no longer active');
+    f.host.close(b.replayId);
+    held.resolve(f.service);
+    expect((await c).status).toBe('ready');
+    f.host.close();
+  });
+  it('cancels only the identified pending open and rejects malformed or duplicate identities',async()=>{
+    const f=setup(),id='10000000-0000-0000-0000-000000000001',held=deferred<any>();f.materials.replay.mockImplementationOnce(()=>held.promise);
+    const pending=f.host.open({projectId:'project',position,replayId:id});
+    await expect(f.host.open({projectId:'project',position,replayId:id})).rejects.toThrow('already active');
+    await expect(f.host.open({projectId:'project',position,replayId:'wrong'})).rejects.toThrow('Invalid replay');
+    expect(f.host.close(id)?.status).toBe('closed');held.resolve(f.service);
+    expect((await pending).status).toBe('closed');expect(fake.views).toHaveLength(0);
+  });
+  it('retains an Escape selection failure on the current owner',async()=>{
+    const f=setup(),opened=await f.host.open({projectId:'project',position});await f.host.select(opened.replayId,true);
+    const held=deferred<boolean>();fake.selection=held.promise;
+    const handler=fake.views[0].webContents.on.mock.calls.find((args:any[])=>args[0]==='before-input-event')[1];
+    handler({preventDefault:vi.fn()},{key:'Escape'});held.reject(new Error('Selection transport failed'));
+    await vi.waitFor(async()=>expect((await f.host.status(opened.replayId)).selectionError).toBe('Selection transport failed'));f.host.close();
+  });
+  it('global shutdown cancels a pending open without creating a native view',async()=>{
+    const f=setup(),held=deferred<any>();f.materials.replay.mockImplementationOnce(()=>held.promise);
+    const pending=f.host.open({projectId:'project',position});f.host.close();held.resolve(f.service);
+    expect((await pending).status).toBe('closed');expect(fake.views).toHaveLength(0);
+  });
   it('does not allow a delayed open to replace a newer native view',async()=>{const f=setup(),first=deferred<any>();f.materials.replay.mockImplementationOnce(()=>first.promise);const old=f.host.open({projectId:'project',position});const current=await f.host.open({projectId:'project',position});first.resolve(f.service);expect((await old).status).toBe('closed');expect(fake.views).toHaveLength(1);expect((await f.host.status(current.replayId)).status).toBe('ready');f.host.close();});
   it('handles destruction while shell initialization is pending',async()=>{const f=setup(),load=deferred<void>();fake.load=load.promise;const pending=f.host.open({projectId:'project',position});await vi.waitFor(()=>expect(fake.views).toHaveLength(1));f.host.close();load.reject(new Error('Destroyed during load'));expect((await pending).status).toBe('closed');expect(fake.views[0].webContents.executeJavaScript).not.toHaveBeenCalled();});
   it('does not focus or publish selection from a superseded seek',async()=>{const f=setup(),opened=await f.host.open({projectId:'project',position}),selection=deferred<boolean>();fake.selection=selection.promise;const pending=f.host.select(opened.replayId,true);await f.host.seek({projectId:'project',replayId:opened.replayId,position:{...position,eventSeq:2,sourceTimeMs:2}});selection.resolve(true);expect((await pending).selecting).toBe(false);expect(fake.views[0].webContents.focus).not.toHaveBeenCalled();f.host.close();});

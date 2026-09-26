@@ -128,3 +128,11 @@ test('human takeover permits bounded attached-session housekeeping without openi
   gate.send(JSON.stringify({ id: 41, ...commands[1] }));
   assert.equal(raw.sent.length, 4, 'Even housekeeping is denied after the transport closes');
 });
+
+test('checks the action owner again before internal follow-up CDP commands',()=>{
+  const raw=new FakeTransport(),gate=new GateTransport(raw);let valid=true;
+  gate.setCommandGuard(()=>{if(!valid)throw new Error('document changed');});
+  gate.send(JSON.stringify({id:1,method:'DOM.getContentQuads'}));raw.reply(1);valid=false;
+  assert.throws(()=>gate.send(JSON.stringify({id:2,method:'Input.dispatchMouseEvent'})),/document changed/);
+  assert.equal(raw.sent.length,1);gate.setCommandGuard();gate.close();
+});

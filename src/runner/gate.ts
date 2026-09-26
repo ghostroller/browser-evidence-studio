@@ -52,6 +52,9 @@ export class GateTransport implements ProtocolTransport {
   onclose?: (details?: TransportCloseInfo) => void;
   private closedWith?: GateCloseDiagnostic;
   get closeDiagnostic(): GateCloseDiagnostic | undefined { return this.closedWith; }
+  private commandGuard?: () => void;
+  /** Scoped host action guard, checked even inside Puppeteer's internal awaits. */
+  setCommandGuard(guard?: () => void) { this.commandGuard=guard; }
   private state: GateState = 'open';
   private readonly pending = new Map<number, string>();
   private conflicts = 0;
@@ -93,6 +96,7 @@ export class GateTransport implements ProtocolTransport {
       this.options.onConflict?.(conflict);
       return;
     }
+    if(this.state==='open'&&!this.isMaintenance(command))this.commandGuard?.();
     if (this.pending.has(id)) throw new Error(`Duplicate in-flight CDP command id ${id}`);
     if (maintenance) this.maintenanceCommands += 1;
     this.pending.set(id, command.method);
