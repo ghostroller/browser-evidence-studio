@@ -170,18 +170,22 @@ export async function runApiScenarios(studio: Studio, siteUrl: string): Promise<
     report.artifactBytes = fragment.bytes; report.artifactContinuationBytes = continuation.bytes;
     const binaryMetadata = await get(`/v1/runs/${run.id}/artifacts/${screenshot.id}?maxBytes=2048`, 2048);
     assert.equal(binaryMetadata.data.bodyStatus, 'binary'); assert.equal(binaryMetadata.data.text, undefined);
-    for (const artifact of [screenshot, dom]) {
+    const screenshotContent = await fetch(`${connection.address}/v1/runs/${run.id}/artifacts/${screenshot.id}/content`, {
+      headers: { Authorization: `Bearer ${connection.token}` }, signal: AbortSignal.timeout(10_000), redirect: 'error',
+    });
+    assert.equal(screenshotContent.status, 403, 'Ordinary Agent history cannot read unredacted checkpoint pixels');
+    assert.equal((await screenshotContent.json()).error?.code, 'invalid_request');
+    for (const artifact of [dom]) {
       const response = await fetch(`${connection.address}/v1/runs/${run.id}/artifacts/${artifact.id}/content`, {
         headers: { Authorization: `Bearer ${connection.token}` }, signal: AbortSignal.timeout(10_000), redirect: 'error',
       });
-      assert.equal(response.status, 200); assert.equal(response.headers.get('content-type'), artifact === screenshot ? 'image/png' : 'text/html');
+      assert.equal(response.status, 200); assert.equal(response.headers.get('content-type'), 'text/html');
       assert.equal(response.headers.get('content-disposition'), 'attachment'); assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
       assert.equal(response.headers.get('cache-control'), 'no-store');
       const policy = response.headers.get('content-security-policy')?.split(';').map(value => value.trim()) || [];
       assert.ok(policy.includes("default-src 'none'")); assert.ok(policy.includes('sandbox'));
       const bytes = Buffer.from(await response.arrayBuffer()); assert.equal(bytes.length, artifact.capturedBytes);
-      if (artifact === screenshot) { assert.deepEqual(bytes.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])); report.screenshotBytes = bytes.length; }
-      else assert.match(bytes.toString('utf8'), /^<!doctype html>/i);
+      assert.match(bytes.toString('utf8'), /^<!doctype html>/i);
     }
     report.actionCount = await count(); assert.equal(report.actionCount, 1);
 

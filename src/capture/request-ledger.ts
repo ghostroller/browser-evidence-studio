@@ -8,6 +8,10 @@ export interface CapturedRequest {
   frameId?: string;
   loaderId?: string;
   startedAt: string;
+  pageId?: string;
+  recordingId?: string;
+  navigationGeneration?: number;
+  responseObservedAt?: string;
   streaming?: boolean;
 }
 
@@ -27,7 +31,7 @@ export class RequestLedger {
   private sequence = 0;
   constructor(private readonly sessionId: string, private readonly targetId: string, private readonly capacity = 4096) {}
 
-  begin(input: { requestId: string; url: string; frameId?: string; loaderId?: string; redirect: boolean }): {
+  begin(input: { requestId: string; url: string; frameId?: string; loaderId?: string; redirect: boolean; scope?: { pageId: string; recordingId: string; navigationGeneration: number } }): {
     current: CapturedRequest; previous?: CapturedRequest; evicted?: CapturedRequest;
   } {
     const previous = this.active.get(input.requestId);
@@ -39,6 +43,7 @@ export class RequestLedger {
       requestId: input.requestId,
       key: `${this.sessionId}/${this.targetId}/${input.requestId}/${occurrence}/${hop}`,
       occurrence, hop, url: input.url, mime: '', frameId: input.frameId, loaderId: input.loaderId, startedAt: new Date().toISOString(),
+      pageId: input.scope?.pageId, recordingId: input.scope?.recordingId, navigationGeneration: input.scope?.navigationGeneration,
     };
     let evicted: CapturedRequest | undefined;
     if (!previous && this.active.size >= this.capacity) {
@@ -51,10 +56,20 @@ export class RequestLedger {
     return { current, previous, evicted };
   }
 
-  response(requestId: string, mime: string): CapturedRequest | undefined {
+  response(requestId: string, mime: string, observedAt?: string): CapturedRequest | undefined {
     const current = this.active.get(requestId);
-    if (current) { current.mime = mime; current.streaming = /event-stream/i.test(mime); }
+    if (current) this.observeResponse(current, mime, observedAt);
     return current;
+  }
+
+  /** Redirect headers belong to the old hop, even after begin() installs the next hop. */
+  observeRedirect(previous: CapturedRequest, mime: string, observedAt: string): void {
+    this.observeResponse(previous, mime, observedAt);
+  }
+  private observeResponse(request: CapturedRequest, mime: string, observedAt?: string): void {
+    request.mime = mime;
+    request.streaming = /event-stream/i.test(mime);
+    if (observedAt) request.responseObservedAt = observedAt;
   }
 
   finish(requestId: string): CapturedRequest | undefined {

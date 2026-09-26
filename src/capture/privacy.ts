@@ -11,16 +11,43 @@ export function redactHtml(html: string): { text: string; redacted: boolean } {
   const document = parse(html); let redacted = false;
   function visit(node: DefaultTreeAdapterTypes.Node, maskText = false): void {
     if ('tagName' in node) {
+      // Inline scripts can contain page state or credentials that are unrelated
+      // to the visible DOM. They are not a safe checkpoint representation.
+      if (node.tagName === 'script') { node.attrs = []; node.childNodes = []; redacted = true; return; }
       const classValue = node.attrs.find(attr => attr.name === 'class')?.value ?? '';
       maskText ||= /(?:^|\s)rr-mask(?:\s|$)/.test(classValue) || node.tagName === 'textarea';
       if (/(?:^|\s)rr-block(?:\s|$)/.test(classValue)) { node.attrs = [{ name: 'class', value: 'rr-block' }]; node.childNodes = []; redacted = true; return; }
-      for (const attr of node.attrs) if (maskText && attr.name !== 'class' || credential.test(attr.name) || credentialUrl(attr.value) || attr.name === 'value' && /^(input|textarea|select|option)$/.test(node.tagName)) { attr.value = '[redacted]'; redacted = true; }
+      for (const attr of node.attrs) if (maskText && attr.name !== 'class' || attr.name === 'srcdoc' || credential.test(attr.name) || credentialUrl(attr.value) || attr.name === 'value' && /^(input|textarea|select|option)$/.test(node.tagName)) { attr.value = '[redacted]'; redacted = true; }
       if ('content' in node) visit(node.content, maskText);
     }
     if (node.nodeName === '#text' && 'value' in node) { const safe = maskText ? '[redacted]' : redactUrlText(node.value); redacted ||= safe !== node.value; node.value = safe; }
     if ('childNodes' in node) for (const child of node.childNodes) visit(child, maskText);
   }
   visit(document); return { text: redacted ? serialize(document) : html, redacted };
+}
+
+/** Runs in the inspected page through Puppeteer. Keep this function self-contained:
+ * page.evaluate serializes its body, not its imported helpers. */
+export function snapshotElements(doc: Document = document) {
+  const selected = Array.from(doc.querySelectorAll('a,button,input,select,[role],h1,h2')).slice(0, 80);
+  return selected.flatMap((el, ref) => {
+    if (el.closest('.rr-block')) return [];
+    const privateContent = Boolean(el.closest('.rr-mask') || el.querySelector('.rr-mask,.rr-block,input,textarea,select,option'));
+    const form = /^(input|textarea|select|option)$/i.test(el.localName);
+    const safe = (value: string | null | undefined) => {
+      if (value == null) return null;
+      const trimmed = value.trim().slice(0, 180);
+      return /(?:password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key)(?:=|%3d)|:\/\/[^/\s@]+@/i.test(trimmed)
+        ? '[redacted credential URL]' : trimmed;
+    };
+    const escapedId = el.id && doc.defaultView?.CSS?.escape?.(el.id);
+    return [{
+      ref, tag: el.tagName, role: privateContent ? null : safe(el.getAttribute('role')),
+      name: privateContent ? null : safe(el.getAttribute('aria-label')),
+      text: privateContent || form ? '[redacted]' : safe(el.textContent),
+      selector: privateContent ? null : escapedId ? '#' + escapedId : null,
+    }];
+  });
 }
 
 export function responsePrivacy(bytes: Buffer, mediaType: string): { data?: Buffer; redacted: boolean; excludedReason?: string; privacyError?: ReturnType<typeof captureError> } {

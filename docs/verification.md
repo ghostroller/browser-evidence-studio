@@ -1,5 +1,13 @@
 # 实际验证记录
 
+## 2026-09-26 Q1 生产 JSON 来源与隐私闭环
+
+Node `v24.21.0`、npm `11.19.0`。`npx vitest run test/unit/production-json-source.test.ts test/unit/capture.test.ts test/unit/capture-navigation.test.ts test/unit/project-executions.test.ts test/unit/privacy-channels.test.ts test/unit/checkpoint.test.ts test/unit/refactor-recording.test.ts`：**7 文件 / 39 项通过**，日志 `output/q1-regression-final.log`。`npm run typecheck`、`npm run build` 通过，日志 `output/q1-typecheck2.log`、`output/q1-build2.log`。
+
+`node test/desktop/launch.js --refactor-system` 在真实 Electron/Puppeteer 与生产 ReplayHost/React UI 下通过，报告 `output/desktop-1790407386424/refactor-system-report.json`，完整日志 `output/q1-refactor-system-launch2.log`。真实页面在 worker step 中请求 JSON，CaptureCoordinator 写出响应正文，宿主从当前 run 索引取实际 artifact ID；固定执行判定正确值 `pass`、错误值 `fail`，只在读取时移除时间身份则 `inconclusive`，没有改写原件。既有 DOM 显示值链三种变体及 241 事件 UI 工作台仍通过。真实 checkpoint PNG 保持完整，Agent HTTP `/content` 返回 403，可信 UI 可读 21,235 字节；列表/普通 artifact 查询只给元数据。
+
+新增隐私哨兵用例覆盖 `.rr-mask`、`.rr-block`、表单、`srcdoc`、内联脚本和实时 snapshot；截图像素未做脱敏，按受限原件处理。未据此宣称任意页面的个人信息识别、子 frame/open shadow 完整快照或可安全导出原始截图。源站/worker 测试使用纯合成数据，未访问真实账号。首次 N01 单测的缺失 `pageId` 失败日志 `output/q1-json-baseline.log` 保留。
+
 ## 2026-09-26 R1–R8 限界修复与真实 UI 闭环
 
 本批在主目录 `main` 集成 A/D/E 的必要提交后执行，Node `v24.21.0`、npm `11.19.0`；锁定依赖未改。只使用合成站点和独立 `output/desktop-*` 数据，不使用真实账号。原始录制、失败日志及工作树均保留。逐项范围见 [本批交接](refactor-handoffs/G-R1-R8-20260926.md)。

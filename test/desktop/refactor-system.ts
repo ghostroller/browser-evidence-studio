@@ -10,13 +10,20 @@ import { ArchiveReplayService } from '@/replay/service';
 import { SourceModel } from '@/replay/source-model';
 import type { HistoricalElementRef } from '@/contracts/recording';
 import { runRefactorWorkbenchUi } from './refactor-workbench';
+import { SocketTransport } from '@/main/browser/connection';
+import { GateTransport } from '@/runner/gate';
+import { startWorkflow } from '@/runner/manager';
+import { EvidenceReader } from '@/evidence/reader';
 
 /** Real A/B/C/E/F integration. The root alone schedules its Electron process.
  * No HTTP request can supply source observations, scope facts or human reviews. */
 export async function runRefactorSystemScenario(studio: Studio): Promise<Record<string, unknown>> {
   const report: Record<string, any> = { passed: false, pid: process.pid, variants: [] };
   const html = '<!doctype html><title>Fixed source fixture</title><style>body{font:20px sans-serif}.amount{display:inline-block}</style><main><div data-entity="o-1"><span class="amount" data-field="amount">12.00</span></div><div data-entity="o-2"><span class="amount" data-field="amount">45.00</span></div><div id="source-a"><span id="moved" data-original="stable-source">moved source</span></div><div id="source-b"></div><input id="unsaved" value="synthetic-unsaved"></main>';
-  const server = createServer((_request, response) => { response.setHeader('content-type', 'text/html'); response.end(html); });
+  const server = createServer((request, response) => {
+    if(request.url?.startsWith('/api/orders')){response.setHeader('content-type','application/json');response.end(JSON.stringify({items:[{id:'o-1',amount:'12.00'},{id:'o-2',amount:'45.00'}]}));return;}
+    response.setHeader('content-type', 'text/html'); response.end(html);
+  });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address !== 'string');
   const origin = `http://127.0.0.1:${address.port}`, sourceUrl = origin + '/orders';
@@ -115,6 +122,14 @@ export async function runRefactorSystemScenario(studio: Studio): Promise<Record<
       assert.equal(steps.items.at(-1).state, variant === 'evidence-partial' ? 'partial' : 'succeeded');
       report.variants.push({ variant, executionId, reportId: assessed.reportId, overall: assessed.overall, sourceVerdict: requirements.items[0].sourceVerdict, step: steps.items.at(-1).state });
     }
+    const checkpointArtifacts=await studio.reader(studio.required().id).artifacts({limit:100,maxBytes:32768});
+    const restrictedScreenshot=checkpointArtifacts.items.find((item:any)=>item.kind==='screenshot'&&item.captureStatus==='complete') as any;
+    assert.ok(restrictedScreenshot,'Real checkpoint keeps its complete screenshot bytes');
+    const deniedScreenshot=await http('GET',`/v1/runs/${studio.required().id}/artifacts/${restrictedScreenshot.id}/content?authorizationId=${grant.authorizationId}`);
+    assert.equal(deniedScreenshot.status,403,'Ordinary Agent history cannot export raw checkpoint pixels');
+    const trustedScreenshot=await dispatch('artifactContent',{runId:studio.required().id,artifactId:restrictedScreenshot.id},'ui');
+    assert.deepEqual(trustedScreenshot.binary.subarray(0,8),Buffer.from([137,80,78,71,13,10,26,10]));
+    report.screenshotPrivacy={agentContentStatus:deniedScreenshot.status,trustedUiBytes:trustedScreenshot.binary.length};
     await dispatch('revokeTask', { projectId: project.id, authorizationId: grant.authorizationId }, 'ui');
     const revoked = await http('POST', `/v1/projects/${project.id}/query/materialRevisions`, { authorizationId: grant.authorizationId, limit: 10 });
     assert.equal(revoked.status, 403); assert.equal(studio.current().targetId, targetId);
@@ -137,6 +152,7 @@ export async function runRefactorSystemScenario(studio: Studio): Promise<Record<
     assert(withIssue.datasetCatalogIssues?.some((item:any)=>item.entry.endsWith('/bad-state')&&item.code==='INDEX_RECOVERY_REQUIRED'));
     assert(withIssue.datasetCatalogIssues?.some((item:any)=>item.entry==='unexpected-attempt'));
     report.badDataset={status:'corrupt-unselectable',goodCommittedRecords:2,catalogIssue:'unexpected-attempt'};
+    report.jsonSource=await runProductionJsonSourceChain(studio,project.id,origin);
     await closeSource();
     await runRefactorWorkbenchUi(studio, { projectId: project.id, recordingId, replayPosition: movedPosition, executionId: goodExecutionId, partialExecutionId: report.variants[2].executionId, brokenDatasetId:'bad-state', targetSelector: '#moved' });
     report.workbenchUi = 'passed-with-source-server-closed';
@@ -146,4 +162,63 @@ export async function runRefactorSystemScenario(studio: Studio): Promise<Record<
     await writeFile(path.join(studio.root, 'refactor-system-report.json'), JSON.stringify(report, null, 2));
     await closeSource();
   }
+}
+
+async function runProductionJsonSourceChain(studio:Studio,projectId:string,origin:string){
+  const run=studio.required(),page=studio.current(),sourceUrl=origin+'/api/orders';
+  const directory=path.join(studio.root,'json-source-business');await mkdir(directory);
+  await writeFile(path.join(directory,'package-lock.json'),'{"lockfileVersion":3}');
+  await writeFile(path.join(directory,'workflow.json'),JSON.stringify({schemaVersion:1,workflowId:'json-source-business',driver:'puppeteer',entry:'./run.mjs',exportName:'run',requirements:[{id:'orders-json',checkpointKey:'orders-json',description:'Captured JSON order amounts',dataset:'orders-json'}]}));
+  await writeFile(path.join(directory,'run.mjs'),`export async function run({page,input,reporter,steps}){
+    const result=await steps.run({stepId:'orders-json',run:async()=>{
+      const records=await page.evaluate(async()=>{const response=await fetch('/api/orders');return (await response.json()).items;});
+      const source=await reporter.attachArtifact('captured-network-json','source-handle','application/json');
+      if(input.variant==='wrong-value')records[0].amount='unobserved-value';
+      return {records,sourceRef:source.id};
+    },commit:async(value,ctx)=>{
+      const identity={executionId:ctx.identity.executionId,attemptId:ctx.identity.attemptId,datasetId:'orders-json'};
+      await reporter.beginDataset(identity);
+      await reporter.appendBatch({...identity,batchId:'captured-json',records:value.records,provenance:{origin:'browser',sourceRefs:[value.sourceRef]}});
+      await reporter.finishDataset({...identity,status:'complete',committedBatches:1,committedRecords:value.records.length});
+    }});
+    return {stepStatus:result.status};
+  }`);
+  const draft=await studio.materials.service.createDraft(projectId,'human');
+  await studio.materials.service.updateDraft(projectId,draft.draftId,0,{checkpoints:[],annotations:[],recordingRefs:[run.id],
+    requirements:[{id:'orders-json',description:'Captured order amounts',dataset:'orders-json',fieldIds:['amount'],rules:[{type:'min-rows',count:2},{type:'unique',field:'id'}]}],
+    fields:[{id:'amount',dataset:'orders-json',name:'amount',description:'Amount in captured response',sourcePolicy:'any-evidenced',outputPath:'/amount',sourceProof:{kind:'json-record',sourceUrl,rowsPointer:'/items',entityPointer:'/id',outputEntityPath:'/id',valuePointer:'/amount'}}]},'human');
+  const revision=await studio.materials.service.publish(projectId,draft.draftId,1,'human');
+  const seen=new Set<string>();
+  const variants=[] as Array<{variant:string;overall:string;sourceVerdict:string;sourceRef:string}>;
+  for(const variant of ['good','wrong-value']){
+    const executionId=randomUUID(),managed=await studio.executions.begin({executionId,projectId,materialRevisionId:revision.revisionId,materialContentHash:revision.contentHash,
+      directory,dependencyLockPath:path.join(directory,'package-lock.json'),input:{variant},mode:'current-page-test',runId:run.id,pageId:page.pageId,environmentRef:'real-electron-puppeteer'});
+    let sourceRef='';
+    try{
+      const transport=new GateTransport(await SocketTransport.connect(studio.endpoint));
+      const result=await (await startWorkflow({directory,input:{variant},targetId:page.targetId,transport,dependencyLockPath:path.join(directory,'package-lock.json'),
+        snapshotDirectory:managed.snapshotDirectory,execution:{binding:managed.binding,datasets:managed.datasets,saveStep:managed.saveStep},beforeWorker:managed.prepared,
+        hooks:{checkpoint:async()=>({id:'unused'}),emitData:async()=>{},assertion:async()=>{},progress:async()=>{},requestHuman:async()=>{},attachArtifact:async()=>{
+          await page.capture.flush();
+          const reader=studio.reader(run.id);let cursor:string|undefined;const candidates:any[]=[];
+          do{const batch=await reader.artifacts({limit:100,maxBytes:32768,cursor});candidates.push(...batch.items.filter((item:any)=>item.kind==='response-body'&&item.captureStatus==='complete'&&item.source?.url===sourceUrl&&item.source?.recordingId===run.id&&!seen.has(item.id)));cursor=batch.nextCursor;}while(cursor);
+          assert.equal(candidates.length,1,'The test host must resolve one real captured JSON body, not create source metadata');
+          sourceRef=candidates[0].id;seen.add(sourceRef);return {id:sourceRef};
+        }}})).done;
+      assert.equal(result.status,'completed');await managed.finish(result);
+    }finally{await managed.close();}
+    assert.ok(sourceRef);
+    const assessed=await studio.executions.assess(projectId,executionId);
+    const requirements=await studio.executions.reportItems(projectId,executionId,assessed.reportId,'requirements',{maxBytes:8192,limit:10});
+    assert.equal(assessed.overall,variant==='good'?'pass':'fail',JSON.stringify(assessed));
+    assert.equal((requirements.items[0] as any).sourceVerdict,variant==='good'?'pass':'fail');
+    variants.push({variant,overall:assessed.overall,sourceVerdict:(requirements.items[0] as any).sourceVerdict,sourceRef});
+    if(variant==='good'){
+      const original=EvidenceReader.prototype.artifactMetadata;
+      EvidenceReader.prototype.artifactMetadata=async function(id){const metadata=await original.call(this,id);if(id!==sourceRef)return metadata;return {...metadata,source:{...(typeof metadata.source==='object'?metadata.source:{}),responseObservedAt:undefined}};};
+      try{const missing=await studio.executions.assess(projectId,executionId);assert.equal(missing.overall,'inconclusive','Missing producer identity must never pass as JSON source');}
+      finally{EvidenceReader.prototype.artifactMetadata=original;}
+    }
+  }
+  return {sourceUrl,variants,missingIdentity:'inconclusive'};
 }

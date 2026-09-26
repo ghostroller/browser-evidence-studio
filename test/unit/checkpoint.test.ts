@@ -21,7 +21,7 @@ test('checkpoint preserves capture order and distinguishes an empty DOM from fai
   assert.equal(result.outcome, 'completed');
   assert.ok(Number.isFinite(Date.parse(result.captureEndedAt)));
   assert.deepEqual(result.materials, [
-    { kind: 'screenshot', mediaType: 'image/png', data: new Uint8Array([137, 80, 78, 71]), captureStatus: 'complete' },
+    { kind: 'screenshot', mediaType: 'image/png', metadata: { capturePrivacy: { policy: 'bes-capture-privacy-v1', access: 'restricted', reason: 'unredacted-pixels' } }, data: new Uint8Array([137, 80, 78, 71]), captureStatus: 'complete' },
     { kind: 'dom', mediaType: 'text/html', data: '', captureStatus: 'empty' },
   ]);
 });

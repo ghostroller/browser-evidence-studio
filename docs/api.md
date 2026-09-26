@@ -61,7 +61,7 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 | `POST /runs/:runId/seal` | flush、核验引用/哈希后封存；封存后原件不可追加 |
 | `GET /runs/:runId/summary`、`gaps`、`events`、`artifacts` | 摘要、缺口、时间线、附件元数据索引 |
 | `GET /runs/:runId/artifacts/:artifactId` | 有界文本/JSON path 读取 |
-| `GET /runs/:runId/artifacts/:artifactId/content` | 显式二进制读取；哈希及 run 内路径校验，禁止路径越界和链接逃逸 |
+| `GET /runs/:runId/artifacts/:artifactId/content` | 显式二进制读取；哈希及 run 内路径校验。原始 checkpoint 截图只允许可信 UI 查看，普通任务授权返回 403；旧未标记截图同样受限 |
 | `GET /artifacts/:artifactId?runId=...`、`GET /artifacts/:artifactId/content?runId=...` | 附件读取的同等入口 |
 | `POST/GET /runs/:runId/handoffs` | 发起/读取人工交接；请求含 `pageId/instructions/completionCheck/timeoutMs` |
 | `POST /handoffs/:handoffId/cancel` | 停止等待中的 runner；人工交还与完成检查由可信客户端界面执行 |
@@ -79,7 +79,7 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 
 `maxBytes` 限制序列化 JSON 响应字节，包含元数据、转义和游标。`responseBytes/elapsedMs` 报告实际响应大小与读取耗时，不捏造模型 token 消耗。大记录可返回 `record-exceeds-query-budget`，按 `fields` 缩小字段或提高允许范围内的预算。索引重建不改变证据 ID，但使旧游标返回 `STALE_CURSOR`，应从原查询重新开始。
 
-正文按 UTF-8 字符边界分页；`jsonPath` 支持 JSON Pointer `/orders/0/id` 和简单 `$.orders[0].id`。选中真实 null 为 `pathStatus:present,value:null`，字段不存在为 `pathStatus:missing`，解析失败为 `bodyStatus:json-parse-failed`。JSON path 内存解析限 16 MiB；大对象按 `json-fragment` 片段加 cursor 返回。二进制不进入 JSON/base64；通过 `/content` 显式读取，单次内容上限 16 MiB。
+正文按 UTF-8 字符边界分页；`jsonPath` 支持 JSON Pointer `/orders/0/id` 和简单 `$.orders[0].id`。选中真实 null 为 `pathStatus:present,value:null`，字段不存在为 `pathStatus:missing`，解析失败为 `bodyStatus:json-parse-failed`。JSON path 内存解析限 16 MiB；大对象按 `json-fragment` 片段加 cursor 返回。二进制不进入 JSON/base64；允许的材料通过 `/content` 显式读取，单次内容上限 16 MiB。原始截图像素未保证遮罩，历史查询只暴露其状态和引用；普通 Agent 不能下载原始 PNG。
 
 原件 `captureStatus`：complete、empty、missing、truncated、read-failed、not-applicable、excluded、unknown。它与查询的 `outputTruncated` 相互独立。读取空字段或空数组不能补造采集缺口；时间相近的事件只能说明时序关联。
 

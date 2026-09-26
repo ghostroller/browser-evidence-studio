@@ -1,5 +1,7 @@
 # 当前进度与接续
 
+2026-09-26 Q1 已完成并进入 Q2。正常生产 JSON 响应正文现在带 CDP 回调时记录的响应时间、固定 request/hop、page/recording/frame/loader 身份；独立判定同时核对请求开始与响应观测均在真实 host attempt 范围内。旧档缺身份保持来源不足。旧 checkpoint DOM 与实时 snapshot 执行遮罩；完整原始截图保留，但普通 Agent 二进制接口拒绝读取（旧未标记截图同样拒绝），可信 UI 仍可查看。真实 Electron/Puppeteer producer→consumer：JSON 正确/错误分别 pass/fail、缺失身份 inconclusive；普通 DOM 来源和 241 事件 React UI 回归通过。具体命令和限制见 [Q1 交接](refactor-handoffs/Q1-20260926.md)。以下 R1–R8 暂停说明是历史状态。
+
 2026-09-26 本次按 [R1–R8 限界修复交接](refactor-handoffs/G-R1-R8-20260926.md) 收拢 A/D/E 待合成果并完成指定闭环，实现提交 `f62e5f4`，现按用户要求暂停。当前主树 `npm test` **50 文件 / 298 项**、类型检查和构建通过；真实 Electron 录制后关闭源站，新进程生产 ReplayHost 离线资源状态 `ready`，真实 React UI 完成 241 事件连续播放/暂停/定位、移动节点源属性、注释与需求编辑、固定版本、任务授权与完整/部分/坏目录结果查看。范围限本机合成页面；安装包、新架构长测、跨源资源及真实账号仍未验收。旧暂停点及历史执行记录保留如下，不作为当前 HEAD 状态。
 
 2026-09-26 06:14 本次完整重构按用户要求暂停。已完成主控真实派发、审查和多轮集成；A 的录制/离线同源 frame 专项、首轮固定资料→授权→真实 worker→双实体显示值核验系统链通过，D/E 基础模块已接入。完整重构未完成：实际新 UI、剩余资源边界、交接导出、安装包、新 Agent 与新架构长测继续待验收。当前实现/测试提交 `85a7eca`；准确目录、任务 ID、待审查提交与 A 未提交 fixture 见 [暂停接续记录](refactor-handoffs/PAUSE-20260926.md)，整体范围见 [重构状态](refactor-status.md)。以下 S0 与旧版本事实保留，不表示新架构已全体验收。

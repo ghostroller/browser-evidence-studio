@@ -154,8 +154,12 @@ export class ProjectExecutions {
     const reader=new EvidenceReader(path.join(this.root,'runs',value.runId));
     const jsonSources=new CapturedJsonSourceReader(async sourceRef=>{
       let metadata;try{metadata=await reader.artifactMetadata(sourceRef);}catch(error){if(['ENOENT','ARTIFACT_NOT_FOUND'].includes((error as {code:string}).code))return;throw error;}
-      const observed=typeof metadata.source==='object'?metadata.source?.responseObservedAt:undefined;
-      const time=typeof observed==='string'?Date.parse(observed):NaN,sourcePage=typeof metadata.source==='object'?metadata.source?.pageId:undefined,matches=scopes.filter(scope=>scope.executionId===id&&scope.recordingId===value.runId&&sourcePage===scope.pageId&&time>=Date.parse(scope.startedAt)&&time<=Date.parse(scope.finishedAt!));
+      const source=metadata.source&&typeof metadata.source==='object'?metadata.source:undefined;
+      const observed=typeof source?.responseObservedAt==='string'?Date.parse(source.responseObservedAt):NaN;
+      const started=typeof source?.requestStartedAt==='string'?Date.parse(source.requestStartedAt):NaN;
+      const matches=scopes.filter(scope=>scope.executionId===id&&scope.recordingId===value.runId&&
+        source?.recordingId===value.runId&&source?.pageId===scope.pageId&&Number.isFinite(observed)&&Number.isFinite(started)&&started<=observed&&
+        started>=Date.parse(scope.startedAt)&&observed<=Date.parse(scope.finishedAt!));
       const stepMatches=matches.filter(scope=>scope.attemptId!==value.workflowAttemptId),owners=stepMatches.length?stepMatches:matches;
       if(owners.length!==1)return;
       return {reader,scope:{executionId:id,attemptId:owners[0].attemptId,recordingId:value.runId}};

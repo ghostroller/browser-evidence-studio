@@ -2,7 +2,7 @@ import type { ArtifactInput } from '@/evidence/contracts';
 import { redactHtml } from './privacy';
 
 export type CheckpointCaptureOutcome = 'completed' | 'timed-out' | 'cancelled';
-export type CheckpointMaterial = Pick<ArtifactInput, 'kind' | 'mediaType' | 'data' | 'captureStatus' | 'reason'>;
+export type CheckpointMaterial = Pick<ArtifactInput, 'kind' | 'mediaType' | 'data' | 'captureStatus' | 'reason' | 'metadata'>;
 
 export interface CheckpointCaptureOptions {
   screenshot: () => Promise<Uint8Array>;
@@ -36,7 +36,7 @@ export async function captureCheckpointMaterials(options: CheckpointCaptureOptio
   const deadline = performance.now() + options.timeoutMs;
   return new Promise(resolve => {
     const descriptors = [
-      { kind: 'screenshot', mediaType: 'image/png' },
+      { kind: 'screenshot', mediaType: 'image/png', metadata: { capturePrivacy: { policy: 'bes-capture-privacy-v1', access: 'restricted', reason: 'unredacted-pixels' } } },
       { kind: 'dom', mediaType: 'text/html' },
     ] as const;
     const settled: (CheckpointMaterial | undefined)[] = [undefined, undefined];
@@ -82,7 +82,7 @@ export async function captureCheckpointMaterials(options: CheckpointCaptureOptio
         data => {
           if (!canAccept() || data === undefined) return;
           const privacy=index===1&&typeof data==='string'?redactHtml(data):undefined;
-          accept(index, { ...descriptors[index], data:privacy?.text??data, captureStatus: data.length ? 'complete' : 'empty',...(privacy?.redacted?{reason:'Form values and privacy-marked DOM content redacted at capture'}:{}) });
+          accept(index, { ...descriptors[index], data:privacy?.text??data, captureStatus: data.length ? 'complete' : 'empty',...(privacy?.redacted?{reason:'Form values and privacy-marked DOM content redacted at capture',metadata:{capturePrivacy:{policy:'bes-capture-privacy-v1',representation:'redacted-dom'}}}:{}) });
         },
         reason => {
           if (!canAccept()) return;
