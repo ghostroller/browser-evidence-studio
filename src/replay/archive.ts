@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { ReplayPosition, RecordingGap } from '@/contracts/recording';
 import { parseReplayPosition, sameReplayPosition } from '@/contracts/recording';
 import type { RecordingEnvelope, RawReceipt } from '@/capture/recording-types';
@@ -9,6 +9,7 @@ import { EvidenceError } from '@/evidence/contracts';
 import { EvidenceReader } from '@/evidence/reader';
 import { atomicJson, hashBytes, jsonLines, readSlice, safeFile } from '@/evidence/files';
 import type { EvidenceStore } from '@/evidence/store';
+import { inspectWriterLock } from '@/evidence/writer-lock';
 
 export const REPLAY_MAX_EVENT_BYTES = 16 * 1024 * 1024;
 export const REPLAY_MAX_WINDOW_BYTES = 64 * 1024 * 1024;
@@ -32,8 +33,25 @@ export interface ReplayWindow {
 function streamKey(position: ReplayPosition): string {
   return createHash('sha256').update(JSON.stringify([position.recordingId, position.pageId, position.documentId, position.streamEpoch])).digest('hex');
 }
-function entryPath(position: ReplayPosition): string { return `replay-index/${streamKey(position)}/${position.eventSeq}.json`; }
+function entryPath(position: ReplayPosition, prefix = 'replay-index'): string { return `${prefix}/${streamKey(position)}/${position.eventSeq}.json`; }
+const generationFile = 'replay-index-current.json';
+async function indexPrefix(runDir: string): Promise<string> {
+  let pointer: { version?: number; generation?: string };
+  try { pointer = JSON.parse(await fs.readFile(await safeFile(runDir, generationFile), 'utf8')); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT'){try{await fs.stat(path.join(runDir,'replay-index-generations'));throw new EvidenceError('REPLAY_INDEX_MISSING','Replay generation pointer is missing; directed recovery required',409);}catch(problem){if((problem as NodeJS.ErrnoException).code==='ENOENT')return 'replay-index';throw problem;}} throw new EvidenceError(error instanceof SyntaxError?'REPLAY_INDEX_CORRUPT':'REPLAY_INDEX_READ_FAILED', `Cannot read replay index generation: ${String(error)}`, 409); }
+  if (pointer.version !== 1 || !/^[a-f0-9-]{36}$/.test(pointer.generation ?? '')) invalid('Malformed replay index generation pointer');
+  const prefix = `replay-index-generations/${pointer.generation}`;
+  try {
+    const manifest = JSON.parse(await fs.readFile(await safeFile(runDir, `${prefix}/index-manifest.json`), 'utf8')) as { version: number; generation: string; records: number };
+    if (manifest.version !== 1 || manifest.generation !== pointer.generation || !Number.isSafeInteger(manifest.records)) invalid('Malformed replay index generation manifest');
+  } catch (error) { if(error instanceof EvidenceError)throw error;throw new EvidenceError((error as NodeJS.ErrnoException).code==='ENOENT'?'REPLAY_INDEX_MISSING':error instanceof SyntaxError?'REPLAY_INDEX_CORRUPT':'REPLAY_INDEX_READ_FAILED', `Published replay index generation is unavailable: ${String(error)}`, 409); }
+  return prefix;
+}
 function invalid(message: string): never { throw new EvidenceError('INVALID_REPLAY', message, 409); }
+async function savedIndexFile(runDir:string,relative:string):Promise<string>{
+  try{return await safeFile(runDir,relative);}
+  catch(error){throw new EvidenceError((error as NodeJS.ErrnoException).code==='ENOENT'?'REPLAY_INDEX_MISSING':'REPLAY_INDEX_READ_FAILED',`Cannot open replay index ${relative}: ${String(error)}`,409);}
+}
 function checkRecord(record: RecordingEnvelope): void {
   const position = parseReplayPosition(record.position);
   if (record.formatVersion !== 2 || !record.event || record.event.timestamp !== position.sourceTimeMs || !Array.isArray(record.metadata) || !Array.isArray(record.gaps)) invalid('Malformed format-2 recording record');
@@ -92,8 +110,8 @@ function project(record: RecordingEnvelope, receipt: RawReceipt, previous?: Entr
     ordinal:(previous?.ordinal??-1)+1,first:previous?.first??record.position,monotonicTime:(previous?.monotonicTime??true)&&(!previous||record.position.sourceTimeMs>=previous.position.sourceTimeMs) };
 }
 
-async function writeTimeline(runDir:string,entry:Entry,record:RecordingEnvelope):Promise<void>{
-  const directory=path.join(runDir,'replay-index',streamKey(entry.position));
+async function writeTimeline(runDir:string,entry:Entry,record:RecordingEnvelope,prefix='replay-index'):Promise<void>{
+  const directory=path.join(runDir,prefix,streamKey(entry.position));
   const filename=path.join(directory,'positions.bin');
   const row=Buffer.alloc(24);row.writeDoubleLE(entry.position.sourceTimeMs,0);row.writeDoubleLE(entry.position.eventSeq,8);row.writeInt32LE(record.event.type,16);row.writeInt32LE(record.event.type===3?record.event.data.source:-1,20);
   const handle=await fs.open(filename,'r+').catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return fs.open(filename,'wx+');throw error;});
@@ -123,51 +141,62 @@ export class RecordingArchive {
   }
   async streams(limit=100,after?:string):Promise<{items:RecordingStream[];nextCursor?:string}>{
     if(!Number.isSafeInteger(limit)||limit<1||limit>1000)invalid('Stream limit must be 1..1000');
-    if(after&&!/^[a-f0-9]{64}$/.test(after))invalid('Invalid stream cursor');
+    const prefix=await indexPrefix(this.runDir),generation=prefix==='replay-index'?'legacy':prefix.split('/')[1];
+    let afterKey:string|undefined;
+    if(after){const match=/^(legacy|[a-f0-9-]{36}):([a-f0-9]{64})$/.exec(after);if(!match)invalid('Invalid stream cursor');if(match[1]!==generation)throw new EvidenceError('REPLAY_INDEX_GENERATION_CHANGED','Replay index generation changed; restart stream enumeration',409);afterKey=match[2];}
     if(after){const manifest=JSON.parse(await fs.readFile(await safeFile(this.runDir,'manifest.json'),'utf8')) as {status:string};if(manifest.status!=='sealed')throw new EvidenceError('ACTIVE_STREAM_CURSOR','Paginated stream enumeration requires a sealed recording; refresh the active first page.',409);}
-    const directory=await fs.opendir(path.join(this.runDir,'replay-index'));
+    const directory=await fs.opendir(path.join(this.runDir,prefix));
     const keys:string[]=[];
     for await(const entry of directory){
-      if(!/^[a-f0-9]{64}$/.test(entry.name)||after&&entry.name<=after)continue;
+      if(!/^[a-f0-9]{64}$/.test(entry.name)||afterKey&&entry.name<=afterKey)continue;
       keys.push(entry.name);keys.sort();if(keys.length>limit+1)keys.pop();
     }
     const items:RecordingStream[]=[];
-    for(const key of keys.slice(0,limit)){const file=await safeFile(this.runDir,`replay-index/${key}/stream.json`);if((await fs.stat(file)).size>4096)invalid('Stream descriptor exceeds budget');const descriptor=checkedStream(JSON.parse(await fs.readFile(file,'utf8')));if(streamKey(descriptor.first)!==key)invalid('Stream descriptor identity mismatch');items.push(descriptor);}
-    return{items,...(keys.length>limit?{nextCursor:keys[limit-1]}:{})};
+    for(const key of keys.slice(0,limit)){const file=await savedIndexFile(this.runDir,`${prefix}/${key}/stream.json`);if((await fs.stat(file)).size>4096)invalid('Stream descriptor exceeds budget');const descriptor=checkedStream(JSON.parse(await fs.readFile(file,'utf8')));if(streamKey(descriptor.first)!==key)invalid('Stream descriptor identity mismatch');items.push(descriptor);}
+    return{items,...(keys.length>limit?{nextCursor:`${generation}:${keys[limit-1]}`}:{})};
   }
   async positions(stream:ReplayPosition,limit=100,ordinal=0):Promise<{items:Array<{position:ReplayPosition;type:number;source:number}>;nextOrdinal?:number}>{
-    const descriptor=await this.stream(stream);
+    return this.readPositions(stream,limit,ordinal,await indexPrefix(this.runDir));
+  }
+  private async readPositions(stream:ReplayPosition,limit:number,ordinal:number,prefix:string):Promise<{items:Array<{position:ReplayPosition;type:number;source:number}>;nextOrdinal?:number}>{
+    const descriptor=await this.stream(stream,prefix);
     if(!Number.isSafeInteger(limit)||limit<1||limit>1000||!Number.isSafeInteger(ordinal)||ordinal<0||ordinal>descriptor.events)invalid('Invalid position query range');
-    const count=Math.min(limit,descriptor.events-ordinal),data=await readSlice(this.runDir,`replay-index/${streamKey(stream)}/positions.bin`,ordinal*24,count*24);
+    const count=Math.min(limit,descriptor.events-ordinal);
+    await savedIndexFile(this.runDir,`${prefix}/${streamKey(stream)}/positions.bin`);
+    let data:Buffer;try{data=await readSlice(this.runDir,`${prefix}/${streamKey(stream)}/positions.bin`,ordinal*24,count*24);}
+    catch(error){throw new EvidenceError('REPLAY_INDEX_READ_FAILED',`Cannot read replay positions: ${String(error)}`,409);}
     if(data.length!==count*24)invalid('Position index is truncated; rebuild required');
     const items=Array.from({length:count},(_,index)=>({position:parseReplayPosition({...descriptor.first,sourceTimeMs:data.readDoubleLE(index*24),eventSeq:data.readDoubleLE(index*24+8)}),type:data.readInt32LE(index*24+16),source:data.readInt32LE(index*24+20)}));
     for(let index=0;index<items.length;index++){const item=items[index];if(item.type<0||item.type>6||item.source< -1||item.source>16||item.position.eventSeq<descriptor.first.eventSeq||item.position.eventSeq>descriptor.last.eventSeq||index>0&&items[index-1].position.eventSeq>=item.position.eventSeq)invalid('Malformed position index row');}
     return{items,...(ordinal+count<descriptor.events?{nextOrdinal:ordinal+count}:{})};
   }
   async resolveTime(stream:ReplayPosition,sourceTimeMs:number):Promise<ReplayPosition>{
-    const descriptor=await this.stream(stream);
+    const prefix=await indexPrefix(this.runDir),descriptor=await this.stream(stream,prefix);
     if(!Number.isFinite(sourceTimeMs)||!descriptor.monotonicTime)invalid('Time seek requires a finite timestamp and a monotonic source clock; choose an explicit event position');
     let low=0,high=descriptor.events-1,selected:ReplayPosition|undefined;
-    while(low<=high){const mid=Math.floor((low+high)/2),item=(await this.positions(stream,1,mid)).items[0];if(item.position.sourceTimeMs<=sourceTimeMs){selected=item.position;low=mid+1;}else high=mid-1;}
+    while(low<=high){const mid=Math.floor((low+high)/2),item=(await this.readPositions(stream,1,mid,prefix)).items[0];if(item.position.sourceTimeMs<=sourceTimeMs){selected=item.position;low=mid+1;}else high=mid-1;}
     if(!selected)invalid('Requested time precedes this stream');
-    await this.window(selected);return selected;
+    await this.windowAt(selected,prefix);return selected;
   }
-  private async stream(position:ReplayPosition):Promise<RecordingStream>{
-    parseReplayPosition(position);const file=await safeFile(this.runDir,`replay-index/${streamKey(position)}/stream.json`);
+  private async stream(position:ReplayPosition,prefix:string):Promise<RecordingStream>{
+    parseReplayPosition(position);const file=await savedIndexFile(this.runDir,`${prefix}/${streamKey(position)}/stream.json`);
     if((await fs.stat(file)).size>4096)invalid('Stream descriptor exceeds budget');
     const descriptor=checkedStream(JSON.parse(await fs.readFile(file,'utf8')));
     if(!sameStream(descriptor.first,position)||!Number.isSafeInteger(descriptor.events)||descriptor.events<1)invalid('Malformed stream descriptor');return descriptor;
   }
   async window(position: ReplayPosition, signal?: AbortSignal): Promise<ReplayWindow> {
+    return this.windowAt(position,await indexPrefix(this.runDir),signal);
+  }
+  private async windowAt(position:ReplayPosition,prefix:string,signal?:AbortSignal):Promise<ReplayWindow>{
     parseReplayPosition(position); signal?.throwIfAborted();
-    const target = await this.entry(position);
+    const target = await this.entry(position,prefix);
     if (target.baseline === null) throw new EvidenceError('REPLAY_GAP', 'No bounded full snapshot exists before this event; inspect gaps or choose a later baseline.', 409);
     if (target.windowBytes > REPLAY_MAX_WINDOW_BYTES || target.windowEvents > REPLAY_MAX_WINDOW_EVENTS || position.eventSeq - target.baseline >= REPLAY_MAX_WINDOW_EVENTS) invalid('Replay window exceeds its budget');
     const records: RecordingEnvelope[] = []; let readBytes = 0;
     const slots: Entry[] = [];
     for (let seq = position.eventSeq; seq >= target.baseline;) {
       signal?.throwIfAborted();
-      const slot = seq === position.eventSeq ? target : await this.entry({ ...position, eventSeq: seq }, false);
+      const slot = seq === position.eventSeq ? target : await this.entry({ ...position, eventSeq: seq }, prefix,false);
       slots.push(slot);
       if(slots.length > REPLAY_MAX_WINDOW_EVENTS) invalid('Replay window event count exceeds budget');
       if (slot.receipt.bytes > REPLAY_MAX_EVENT_BYTES || readBytes + slot.receipt.bytes > REPLAY_MAX_WINDOW_BYTES) invalid('Replay record exceeds its read budget');
@@ -190,10 +219,10 @@ export class RecordingArchive {
     return { position, records, gaps: checked!.gaps, readBytes, baselineSeq: target.baseline };
   }
   async status(position: ReplayPosition): Promise<{ gaps: RecordingGap[]; baselineSeq: number | null }> {
-    const entry = await this.entry(position); return { gaps: entry.gaps, baselineSeq: entry.baseline };
+    const entry = await this.entry(position,await indexPrefix(this.runDir)); return { gaps: entry.gaps, baselineSeq: entry.baseline };
   }
-  private async entry(position: ReplayPosition, exactTime = true): Promise<Entry> {
-    const file = await safeFile(this.runDir, entryPath(position));
+  private async entry(position: ReplayPosition,prefix:string, exactTime = true): Promise<Entry> {
+    const file = await savedIndexFile(this.runDir, entryPath(position,prefix));
     if ((await fs.stat(file)).size > 128 * 1024) invalid('Replay index entry exceeds budget');
     const entry = JSON.parse(await fs.readFile(file, 'utf8')) as Entry;
     if (entry.version !== 2 || !sameStream(entry.position, position) || entry.position.eventSeq !== position.eventSeq || exactTime && entry.position.sourceTimeMs !== position.sourceTimeMs) invalid('Replay position does not match its index');
@@ -203,29 +232,52 @@ export class RecordingArchive {
   /** Maintenance-only streaming rebuild; queries never call this implicitly.
    * Damaged raw tails are reported and never repaired or removed here. */
   async rebuild(): Promise<{ records: number; corruptCount: number; corrupt: Array<{ file: string; offset: number; reason: string }> }> {
+    const ownership=await inspectWriterLock(this.runDir);
+    if(ownership.state!=='unlocked')throw new EvidenceError('ACTIVE_INDEX_REBUILD',`Replay recovery requires an unlocked writer (${ownership.state})`,409);
     const previous = new Map<string, Entry>(), corrupt: Array<{ file: string; offset: number; reason: string }> = [];
     let records = 0, corruptCount=0;
     const report=(item:{file:string;offset:number;reason:string})=>{corruptCount++;if(corrupt.length<128)corrupt.push(item);};
-    const files = (await fs.readdir(path.join(this.runDir, 'raw', 'rrweb'))).filter(name => /^rrweb-\d{6}\.jsonl$/.test(name)).sort();
-    for (const name of files) {
+    const generation = randomUUID(), prefix = `replay-index-generations/${generation}`;
+    try{await fs.mkdir(path.join(this.runDir,prefix),{recursive:true});}
+    catch(error){throw new EvidenceError('REPLAY_INDEX_WRITE_FAILED',`Cannot stage replay index generation ${generation}: ${String(error)}`,507);}
+    let files: string[];
+    try { files = (await fs.readdir(path.join(this.runDir, 'raw', 'rrweb'))).filter(name => /^rrweb-\d{6}\.jsonl$/.test(name)).sort(); }
+    catch(error) { throw new EvidenceError('REPLAY_ORIGINAL_READ_FAILED',`Cannot enumerate original recordings: ${String(error)}`,409); }
+    try { for (const name of files) {
       const relative = `raw/rrweb/${name}`;
-      for await (const line of jsonLines(await safeFile(this.runDir, relative))) {
+      let source: string;
+      try { source = await safeFile(this.runDir, relative); }
+      catch(error) { throw new EvidenceError('REPLAY_ORIGINAL_READ_FAILED',`Cannot open ${relative}: ${String(error)}`,409); }
+      for await (const line of jsonLines(source)) {
         if (line.invalid) { report({ file: relative, offset: line.offset, reason: line.invalid }); continue; }
         const raw = line.value!, record = raw.payload as RecordingEnvelope | undefined;
         if (record?.formatVersion !== 2) continue;
+        let entry: Entry;
         try {
           checkRecord(record);
-          const bytes = await readSlice(this.runDir, relative, line.offset, line.bytes), key = streamKey(record.position);
+          const key = streamKey(record.position);
+          let bytes: Buffer;
+          try { bytes = await readSlice(this.runDir, relative, line.offset, line.bytes); }
+          catch(error) { throw new EvidenceError('REPLAY_ORIGINAL_READ_FAILED',`Cannot read ${relative} at ${line.offset}: ${String(error)}`,409); }
+          if(bytes.length!==line.bytes)throw new Error('Original recording line was truncated during recovery');
           const receipt = { id: String(raw.id), sequence: Number(raw.sequence), file: relative, offset: line.offset, bytes: line.bytes, sha256: hashBytes(bytes) };
-          const entry = project(record, receipt, previous.get(key));
-          await atomicJson(path.join(this.runDir, entryPath(record.position)), entry);
-          await writeTimeline(this.runDir,entry,record);
-          previous.set(key, entry); records++;
-          for(const [oldKey,old] of previous)if(oldKey!==key&&old.position.pageId===record.position.pageId)previous.delete(oldKey);
-          if(previous.size>256)previous.delete(previous.keys().next().value!);
-        } catch (error) { report({ file: relative, offset: line.offset, reason: String(error) }); }
+          entry = project(record, receipt, previous.get(key));
+        } catch (error) { if(error instanceof EvidenceError&&error.code==='REPLAY_ORIGINAL_READ_FAILED')throw error;report({ file: relative, offset: line.offset, reason: String(error) }); continue; }
+        try {
+          await atomicJson(path.join(this.runDir, entryPath(record.position,prefix)), entry);
+          await writeTimeline(this.runDir,entry,record,prefix);
+        } catch(error) { throw new EvidenceError('REPLAY_INDEX_WRITE_FAILED',`Replay index generation ${generation} remains unpublished after write failure: ${String(error)}`,507); }
+        previous.set(streamKey(record.position), entry); records++;
+        if(previous.size>256)throw new EvidenceError('REPLAY_INDEX_BUDGET','Replay recovery exceeds 256 concurrent source streams',413);
+        if(records>1_000_000)throw new EvidenceError('REPLAY_INDEX_BUDGET','Replay recovery exceeds one million events',413);
       }
-    }
+      }
+    } catch(error) { if(error instanceof EvidenceError)throw error; throw new EvidenceError('REPLAY_ORIGINAL_READ_FAILED',`Cannot scan original recordings: ${String(error)}`,409); }
+    try {
+      for(const [key,entry] of previous){const descriptor=checkedStream(JSON.parse(await fs.readFile(await safeFile(this.runDir,`${prefix}/${key}/stream.json`),'utf8')));if(descriptor.events!==entry.ordinal+1||(await fs.stat(await safeFile(this.runDir,`${prefix}/${key}/positions.bin`))).size!==descriptor.events*24)invalid('Rebuilt replay timeline is incomplete');}
+      await atomicJson(path.join(this.runDir,prefix,'index-manifest.json'),{version:1,generation,records,streams:previous.size,corruptCount});
+      await atomicJson(path.join(this.runDir,generationFile),{version:1,generation});
+    } catch(error) { throw new EvidenceError('REPLAY_INDEX_WRITE_FAILED',`Replay index generation ${generation} remains unpublished after validation/publication failure: ${String(error)}`,507); }
     return { records, corruptCount, corrupt };
   }
 }

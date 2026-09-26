@@ -3,6 +3,8 @@ import path from 'node:path';
 import { EvidenceStore } from '@/evidence/store';
 import { safeFile } from '@/evidence/files';
 import { inspectWriterLock, recoverWriterLock } from '@/evidence/writer-lock';
+import { RecordingArchive } from '@/replay/archive';
+import { ResourceArchive } from '@/resources/archive';
 import { ensure } from '@/shared/errors';
 import type { Studio } from './studio';
 
@@ -20,10 +22,58 @@ async function recoveryTarget(studio: Studio, runId: unknown) {
   return { record, runDir: actual };
 }
 
+type IndexState = 'published'|'legacy'|'missing'|'unverified'|'corrupt'|'read-failed';
+async function inspectProjection(runDir:string,kind:'replay'|'resource'):Promise<{state:IndexState;reason:string}>{
+  const pointer=kind==='replay'?'replay-index-current.json':'resource-url-index-current.json';
+  const base=kind==='replay'?'replay-index':'resource-url-index';
+  const generations=kind==='replay'?'replay-index-generations':'resource-url-index-generations';
+  let pointerFound=false;
+  try{
+    const file=await safeFile(runDir,pointer);
+    pointerFound=true;
+    if((await stat(file)).size>4096)return{state:'corrupt',reason:'generation-pointer-over-budget'};
+    const value=JSON.parse(await readFile(file,'utf8')) as {version?:unknown;generation?:unknown};
+    if(value.version!==1||typeof value.generation!=='string'||!/^[a-f0-9-]{36}$/.test(value.generation))return{state:'corrupt',reason:'invalid-generation-pointer'};
+    const manifest=await safeFile(runDir,`${generations}/${value.generation}/index-manifest.json`);
+    if((await stat(manifest)).size>(kind==='replay'?4096:2*1024*1024))return{state:'corrupt',reason:'generation-manifest-over-budget'};
+    const metadata=JSON.parse(await readFile(manifest,'utf8')) as {version?:unknown;generation?:unknown};
+    if(metadata.version!==1||metadata.generation!==value.generation)return{state:'corrupt',reason:'generation-manifest-mismatch'};
+    return{state:'published',reason:'generation-manifest-present'};
+  }catch(error){
+    if(pointerFound&&(error as NodeJS.ErrnoException).code==='ENOENT')return{state:'missing',reason:'published-generation-manifest-missing'};
+    if((error as NodeJS.ErrnoException).code!=='ENOENT')return{state:error instanceof SyntaxError?'corrupt':'read-failed',reason:String(error)};
+    try{await lstat(path.join(runDir,generations));return{state:'missing',reason:'generation-pointer-missing'};}
+    catch(problem){if((problem as NodeJS.ErrnoException).code!=='ENOENT')return{state:'read-failed',reason:String(problem)};}
+    try{
+      const baseInfo=await lstat(path.join(runDir,base));
+      if(!baseInfo.isDirectory()||baseInfo.isSymbolicLink())return{state:'corrupt',reason:'legacy-index-not-regular-directory'};
+      if(kind==='resource'){
+        try{await safeFile(runDir,`${base}/url-census.jsonl`);}catch(problem){return{state:(problem as NodeJS.ErrnoException).code==='ENOENT'?'unverified':'read-failed',reason:'legacy-url-census-unavailable'};}
+      }
+      return{state:'legacy',reason:'legacy-index-directory-present'};
+    }catch(problem){return{state:(problem as NodeJS.ErrnoException).code==='ENOENT'?'missing':'read-failed',reason:String(problem)};}
+  }
+}
+
 export async function inspectRunRecovery(studio: Studio, body: { runId?: unknown }) {
   const { record, runDir } = await recoveryTarget(studio, body.runId);
   const inspection = await inspectWriterLock(runDir);
-  return { runId: record.id, status: record.status, error: record.error, inspection, canRecover: !studio.active && record.status === 'unreadable' && ['unlocked', 'dead', 'pid-reused'].includes(inspection.state) };
+  const indexDiagnostics=await Promise.all([inspectProjection(runDir,'replay'),inspectProjection(runDir,'resource')]);
+  return { runId: record.id, status: record.status, error: record.error, inspection, canRecover: !studio.active && record.status === 'unreadable' && ['unlocked', 'dead', 'pid-reused'].includes(inspection.state),
+    canRecoverIndexes:!studio.active&&record.status==='sealed'&&inspection.state==='unlocked',indexDiagnostics:{replay:indexDiagnostics[0],resources:indexDiagnostics[1]} };
+}
+
+/** Directed projection repair for one saved run. The originals remain read-only;
+ * neither historical resource recovery nor replay recovery can fetch a URL. */
+export async function recoverRunIndexes(studio: Studio, body: { runId?: unknown; expectedFingerprint?: unknown }) {
+  const { record, runDir } = await recoveryTarget(studio, body.runId);
+  ensure(!studio.active || studio.active.id !== record.id, 'Stop the run before rebuilding its indexes', 409);
+  const inspection = await inspectWriterLock(runDir);
+  ensure(body.expectedFingerprint === inspection.lockFingerprint, 'Writer ownership changed; inspect the archive again', 409);
+  ensure(inspection.state === 'unlocked', `Index recovery refused (${inspection.state}): ${inspection.message}`, 409);
+  const replay = await new RecordingArchive(runDir).rebuild();
+  const resources = await new ResourceArchive(runDir).rebuildUrlIndex();
+  return { runId: record.id, replay, resources };
 }
 
 /** Only the trusted UI invokes this after displaying the currently inspected ownership. */

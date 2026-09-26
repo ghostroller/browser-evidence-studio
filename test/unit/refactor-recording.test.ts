@@ -405,6 +405,7 @@ describe('format-2 production recorder and bounded archive', () => {
     expect(firstWindow.readBytes).toBeLessThan(64 * 1024 * 1024);
     expect(initial.length).toBeGreaterThan(0);
     await evidence.seal();
+    await evidence.close();stores.splice(stores.indexOf(evidence),1);
     const rawPaths = (await fs.readdir(path.join(evidence.runDir, 'raw/rrweb'))).sort();
     const before = await Promise.all(rawPaths.map(file => fs.readFile(path.join(evidence.runDir, 'raw/rrweb', file), 'utf8')));
     const archive = new RecordingArchive(evidence.runDir), rebuilt = await archive.rebuild();
