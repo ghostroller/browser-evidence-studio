@@ -49,8 +49,10 @@ async function longSoak(studio:Studio):Promise<Record<string,unknown>>{
     const seeks=[];
     for(const ordinal of ordinals){const item=(await recording.positions(stream.first,1,ordinal)).items[0];assert.ok(item);const window=await recording.window(item.position);assert.deepEqual(window.position,item.position);seeks.push({ordinal,position:item.position,events:window.records.length,readBytes:window.readBytes});}
     const position=seeks[2].position;
-    const css=(await resources.list(1000)).items.find(item=>item.status==='captured'&&item.originalUrl.status==='present'&&item.originalUrl.value===fixture.url+'/soak-resource.css');
-    assert.ok(css,'Long load must include an observed CSS response');
+    const cssCandidate=(await resources.list(1000)).items.find(item=>item.status==='captured'&&item.originalUrl.status==='present'&&item.originalUrl.value===fixture.url+'/soak-resource.css');
+    assert.ok(cssCandidate,'Long load must include an observed CSS response');
+    const css=await resources.resolve(fixture.url+'/soak-resource.css',position,cssCandidate.frameId);
+    assert.ok(css&&css.status==='captured','Select the latest observed CSS request version at the replay position');
     const blobHash=hashBytes((await resources.read(css.id)).bytes);
     const rawDirectory=path.join(runDir,'raw','rrweb');
     const rawFiles=await Promise.all((await readdir(rawDirectory)).filter(name=>/^rrweb-\d{6}\.jsonl$/.test(name)).sort().map(async name=>({name,sha256:hashBytes(await readFile(path.join(rawDirectory,name)))})));
@@ -103,8 +105,10 @@ export async function runRefactorRecoveryScenario(studio:Studio,phase:string):Pr
     const streams=await recording.streams();assert.ok(streams.items.length>0,'Production recorder must save a format-2 stream');
     const stream=streams.items[0],positions=await recording.positions(stream.first,1000);assert.ok(positions.items.length>0);
     const position=positions.items.at(-1)!.position;
-    const css=(await resources.list(1000)).items.find(item=>item.status==='captured'&&item.originalUrl.status==='present'&&item.originalUrl.value===fixture.url+'/soak-resource.css');
-    assert.ok(css,'Synthetic observed CSS must have a saved manifest and blob');
+    const cssCandidate=(await resources.list(1000)).items.find(item=>item.status==='captured'&&item.originalUrl.status==='present'&&item.originalUrl.value===fixture.url+'/soak-resource.css');
+    assert.ok(cssCandidate,'Synthetic observed CSS must have a saved manifest and blob');
+    const css=await resources.resolve(fixture.url+'/soak-resource.css',position,cssCandidate.frameId);
+    assert.ok(css&&css.status==='captured','Select the latest observed CSS request version at the replay position');
     const blob=await resources.read(css.id),blobHash=createHash('sha256').update(blob.bytes).digest('hex');
     await studio.seal();await studio.closeSession();
     const rawDirectory=path.join(run.store.runDir,'raw','rrweb');

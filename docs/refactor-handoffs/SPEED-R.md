@@ -11,3 +11,8 @@
 - 原有门槛不变：checkpoint P95 ≤2 s，summary P95 ≤500 ms，HTTP submit P95 ≤300 ms，零跳过调度槽，主 RSS ≤1 GiB，源页 private ≤512 MiB。`--soak=1` 只是初始化预检。Node runner 用 `worker_threads`，与 main 同 PID；固定录制负载不启动 runner worker，故其独立 OS RSS 不存在、worker heap 增长未测。若需活跃 worker heap，集成 owner 可对 `WorkflowHandle` 暴露窄 `Worker.getHeapStatistics()` 采样。
 - 已在本树验证：Node 24.21.0/npm 11.19.0；`npm.cmd ci`；`npm.cmd run typecheck`；`npm.cmd test -- test/unit/directed-index-recovery.test.ts test/unit/refactor-recording.test.ts test/unit/run-recovery.test.ts`。测试覆盖 URL 丢失/污染、positions 截断、原件尾部损坏、写失败、旧 generation 保留、writer lock 和服务身份。最终计数见本包消息/日志。
 - 仍待 G2 冻结候选：集成 app phase、可信 dispatch/资料 UI 修复入口；桌面令牌下短 Electron 预检、1 分钟机制预检、安静负载 30 分钟与跨 PID 读回。同一候选完整矩阵由集成 owner 调度。此处不把未运行的桌面/长测写成通过。
+
+## 集成短测发现与修正
+
+- 集成 `410be41` 首次沙箱 Electron 启动在产品代码前因 GPU 子进程 DLL 缺失退出；保留 `output/finish-r-refactor-recovery.log`。获准正常宿主重试后进入真实 fixture，发现同一 CSS URL 有两次合法 captured 请求（source eventSeq 3、5）；fixture 从 `list()` 随机顺序拿第一个 ID，却把它与按历史时间选择的最新 `resolve()` ID 强行相等，导致断言失败。保留 `output/finish-r-refactor-recovery-host.log` 和数据根。
+- 已将短测与长测 fixture 都改为在移除索引前锁定 `resolve()` 返回的实际版本，重建后核对相同 ID/bytes。新增两个同 URL 版本的独立模块回归。`npm.cmd run typecheck` 与 `npm.cmd test -- test/unit/directed-index-recovery.test.ts`（11/11）通过。此修正仍需合并、重建并复跑 Electron；不把此前失败改记通过。
