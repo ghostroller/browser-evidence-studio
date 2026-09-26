@@ -18,3 +18,5 @@
 - 已将短测与长测 fixture 都改为在移除索引前锁定 `resolve()` 返回的实际版本，重建后核对相同 ID/bytes。新增两个同 URL 版本的独立模块回归。`npm.cmd run typecheck` 与 `npm.cmd test -- test/unit/directed-index-recovery.test.ts`（11/11）通过。此修正仍需合并、重建并复跑 Electron；不把此前失败改记通过。
 - 集成 `1a2d992` 的宿主 Electron 短测再次进入 fixture，发现 `streams()[0]` 是较早的 2-event document stream，而 CSS 的保存位置属于稍后的 10-event stream；原选择使 CSS 版本解析断言失败。保留 `output/finish-r-recovery-1a2d992.log` 与 `output/desktop-1790424655521`，Electron PID 28088 已退出。
 - fixture 现按 CSS 保存位置的 recording/page/document/epoch 身份选择 stream，并在 seek 前断言该 stream 的 eventSeq 范围包含 CSS 位置。短测和长测共用这一约束；这是 fixture 选流修正，尚无证据表明产品恢复算法错误。此修正仍需合并、重建并复跑 Electron。
+- 集成 `ec61058` 的宿主 Electron `--refactor-recovery` 已通过（`output/finish-r-recovery-ec61058.log`，`output/desktop-1790425027302`）。串行 `--refactor-soak --soak=1` 在第一个 synthetic checkpoint job 返回 `failed` 后停止，尚无完成的负载循环；日志 `output/finish-r-soak1-ec61058.log`，数据 `output/desktop-1790425054475/soak-result.json`。旧 fixture 只断言 job 状态，未保存其错误详情，无法从已保存数据判定根因。
+- `test/desktop/soak.ts` 现对失败的终态 job 保存有界 status/code/HTTP status/message，遮蔽连接 token，并把同一诊断放入原断言错误；不输出 job body，不修改成功断言、负载或门槛。合并重建后需再次跑短长测以取得具体错误。

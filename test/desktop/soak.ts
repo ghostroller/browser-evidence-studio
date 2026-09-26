@@ -190,7 +190,17 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
       while (performance.now() - at < 30000) {
         const reply = await request('GET', `/v1/jobs/${submitted.data.jobId}`); assert.equal(reply.status, 200);
         if (['succeeded', 'failed', 'cancelled'].includes(reply.data.status)) {
-          assert.equal(reply.data.status, 'succeeded'); const captured = reply.data.result;
+          if (reply.data.status !== 'succeeded') {
+            const error: Record<string, unknown> = reply.data.error && typeof reply.data.error === 'object' ? reply.data.error : {};
+            const safeText = (value: unknown, maxLength: number) => typeof value === 'string'
+              ? value.replaceAll(connection.token, '[redacted]').replace(/[\r\n]+/g, ' ').slice(0, maxLength) : null;
+            report.terminalCheckpointJob = { status: safeText(reply.data.status, 32), error: {
+              code: safeText(error.code, 80), status: Number.isInteger(error.status) ? error.status : null,
+              message: safeText(error.message, 512),
+            } };
+          }
+          assert.equal(reply.data.status, 'succeeded', report.terminalCheckpointJob
+            ? `Synthetic checkpoint job: ${JSON.stringify(report.terminalCheckpointJob)}` : undefined); const captured = reply.data.result;
           assert.equal(captured.metadata.captureStatus, 'complete'); assert.equal(captured.metadata.captureOutcome, 'completed'); assert.equal(captured.captureConsistency, 'consistent');
           assert.equal(captured.pageId, page.pageId); assert.equal(captured.artifactRefs.length, 2);
           checkpointIds.push(captured.id); checkpointCaptureTimestampMs.push(Date.parse(captured.savedAt) - Date.parse(captured.captureStartedAt)); checkpointMs.push(round(performance.now() - at)); return;
