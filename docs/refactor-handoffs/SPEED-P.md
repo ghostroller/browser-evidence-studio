@@ -37,3 +37,8 @@
 - 场景通过 Studio 建立合成订单 project/profile/run、录制位置、固定材料修订，并由受信 UI 发放精确 origin/page/目录授权与点击“准备交给 Agent”。它在系统临时目录生成新的空白工作流目录和交接目录，不写 `workflow.json`、`run.mjs` 或答案。交接目录严格只有 `task.md`、`manifest.json`、`access.json`、`ready.json`；ready 中只有标识、路径、nonce、期限，没有 Bearer。`BES_AT39_READY {...}` 从运行中日志给出这些路径。`access.json` 指向已安装技能、空白工作流目录和当前用户连接文件；连接 token 不复制进交接。
 - 新模型输入边界：只给交接三文件、`access.skillFile` 所指技能及引用、该授权连接路径、合成目标（收集全部订单和详情、分页结束证据、图像身份一致性，解释并修复一次失败）。不给本仓库源码、fixture 源码、既有手写业务脚本、之前 Agent 的实现历史或 `ready.json` 内容作为任务说明。新 Agent 必须在 `access.scriptDirectory` 写自己的普通 Puppeteer 工作流，用受限 API 验证。
 - 主控在 Agent 完成后向 `ready.json` 中 `completionFile` 写入小 JSON `{"nonce":"<ready.nonce>","status":"completed"}`；Agent 失败则写 `status:"failed"`。该信号位于交接目录之外，只代表验收流程结束，不代表业务需求通过。场景只接受匹配 nonce 的显式信号，最多等待 45 分钟，授权 50 分钟；超时、撤销或失败均不能报成功。退出前撤销授权、关闭 Studio，并写 `at39-live-result.json`。最终业务结论仍由独立 Agent 产物与 Studio 验证记录判定。当前只做 `npm run typecheck`，未运行 Electron live 夹具。
+
+### 解压 ZIP 的独立样例测试入口
+
+- `BES_ORDERS_SOURCE_DIR` 可设为绝对路径 `EXTRACTED_ZIP/resources/orders`，`npm run test:example` 会从该目录复制六个发布样例文件到新的系统临时目录，执行其自己的 `npm ci`；占用输出目录断言与 normal、duplicate、missing、wrong-image、empty-middle 五个合成 Chrome 变体共用这份安装副本。未设置时仍以仓库 `examples/orders` 为来源。测试打印实际来源，避免把源码样例误记为 ZIP 验收。
+- 在早期 ZIP `output/p-zip-extracted-1790423771518/resources/orders` 上验证：`node --check test/release/orders-standalone.test.mjs`、`npm run typecheck` 通过；设置 `BES_ORDERS_SOURCE_DIR` 和 `BROWSER_EXECUTABLE_PATH=C:\Program Files\Google\Chrome\Application\chrome.exe` 后 `npm run test:example` 2/2 通过。该结果只证明早期 ZIP 的独立样例，不替代冻结集成候选的最终 G3 复测。
