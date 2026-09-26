@@ -1,0 +1,8 @@
+{
+  "scope": "isolated-control-flow-probe-not-project-test",
+  "sourceCommit": "237d778bebf99dce74f3f4929eb320f17e10c7ff",
+  "node": "v22.16.0",
+  "before": "replay-index",
+  "afterUnpublishedStagingDirectory": "REPLAY_INDEX_MISSING",
+  "legacyDirectoryStillExists": true
+}

@@ -1,5 +1,20 @@
 # 实际验证记录
 
+## 2026-09-27 D07 同候选发布门
+
+本轮以 `main@ee904cd` 冻结实现/测试/发行内容。D01 首次 staging 失败保留 legacy 可读、D02 坏资源版本保留且不回退、D03 原始封存完整性独立验证、D04 长测经生产 ReplayHost 检查 ready/位置/资源/DOM/节点、D05 AT39 将 harness/Agent 交付/独立业务报告拆开；负例与修复日志见 [G4 交接](refactor-handoffs/G4-20260926.md)。未重置历史成果或修改原件。
+
+| 命令 / 证据 | 同候选实际结果 |
+| --- | --- |
+| `npm.cmd run typecheck`、`npm.cmd test`、`npm.cmd run build` | 均通过；61 文件/373 项；`output/d07-final-typecheck-ee904cd.log`、`output/d07-final-unit-ee904cd.log`、`output/d07-final-build-ee904cd.log`。 |
+| `node test/desktop/launch.js --refactor-soak --soak=1` | 完整短预检通过，60/60、零跳槽、生产 ReplayHost 15 次定位与 DOM/节点/资源断言、索引恢复、封存与新 PID 读回；`output/d07-final-soak-precheck-ee904cd.log` 和 `output/desktop-1790452150633/refactor-soak-summary.json`。 |
+| `node test/desktop/launch.js --refactor-soak --soak=30` | 正式安静负载通过，实测 1,800,013.73 ms、1800/1800、1830 请求、零跳槽；checkpoint/summary/HTTP P95 为 219.98/13.76/3.87 ms。档案增加 32,770 文件、232,789,304 字节；源 27,129 事件，重建 27,131 replay record、1 资源；15 次真实 ReplayHost 检查及录制 PID 60144→新进程 PID 41252 读回通过。`output/d07-final-soak30-ee904cd.log`、`output/desktop-1790452299829/refactor-soak-summary.json`。先前 18–19 分钟写入失败、Meta 回放边界错误、短测 0.57 ms 早醒失败日志保留，未计通过。 |
+| `npm.cmd run make`、`npm.cmd run test:release-assets -- output/release-extract-ee904cd-D4A031A3232C/resources/app.asar` | 均通过；4 个 asar 构建文件、13 个外置资源。六项解压 EXE smoke 均通过：handoff、system、recording、runner、recovery、replay；日志 `output/d07-final-make-ee904cd.log`、`output/d07-final-release-assets-ee904cd.log`、`output/d07-final-packaged-*-ee904cd.log`。 |
+| Studio 关闭后的仓库外独立脚本 | 从该 ZIP 解压并复制 `resources/orders` 至系统临时目录，独立 `npm ci`，Chrome 合成 normal/duplicate 2/2 通过，错误图片/缺项/空中间页按预期失败，非空输出拒绝；`output/d07-final-standalone-ee904cd-host.log`。首次受限 Chrome 启动超时日志保留，不计通过。 |
+| 全新 Agent AT39 | 第五位真正全新 Agent 仅凭该解压包的固定交接、skill 和临时授权独立编写普通 Puppeteer 工作流。首轮来源引用不足的报告为 `inconclusive`，修复后宿主执行 `611a32f9-85ac-4bc2-b017-2eebed52072b`、独立报告 `b552e535-5e4f-4185-bf79-f3c67ae34e8e` 为 `pass/complete`，3 页/7 条、7 个详情图像身份、两个需求来源判定通过；主控先核对原件/固定版本/代码指纹再发完成信号。现场 `harnessCompleted`、`agentDelivered`、`businessVerified` 均 true，授权撤销；`output/d07-final-at39-live-ee904cd.log`、`output/desktop-1790455200565/at39-live-result.json`、`output/at39-pass-ee904cd`。早期 `9bea873` 结果不代替当前包。 |
+
+ZIP 原件 `output/release-ee904cd-D4A031A3232CD0CBCC5B6836E2F303A8A2BF698ACDF4202F94BBC448C0247FC1.zip`：174,573,928 字节，SHA-256 `D4A031A3232CD0CBCC5B6836E2F303A8A2BF698ACDF4202F94BBC448C0247FC1`。完整桌面矩阵与录制/离线专项在生产代码 `1d71a10` 通过，`ee904cd` 随后只改长测计时夹具；其日志为 `output/d07-final-ordered-desktop-1d71a10.log`、`output/d07-final-refactor-recording-1d71a10.log`。真实账号、扫码、不同物理 DPI/多屏、真实磁盘耗尽、跨源/OOPIF DOM、closed shadow、Canvas 内部语义和包签名仍未测或超出声明能力。
+
 ## 2026-09-26 Q3 固定交接与公开接口
 
 Node `v24.21.0` / npm `11.19.0`。`npm test` **54 文件 / 326 项通过**，`output/q3-unit-commit.log`；`npm run typecheck`、`npm run build` 通过，`output/q3-typecheck-commit.log`、`output/q3-build-commit.log`。
@@ -46,7 +61,11 @@ S0 专项覆盖实际 WebContentsView 输入/现场保留、下一段 full snaps
 最终完整 19 进程桌面矩阵通过，产物 `output/desktop-1790364974479/desktop-summary.json`；本轮也有失败记录，具体对照见 S0 交接；不得用下面历史发行包或长测的通过替代本次源码验证。旧 UI 的深色存档恢复和 popup 首次点击出现过间歇失败，原始日志保留。没有取消断言、跳过 UI 或修改旧原件来求通过。
 
 
-更新日期：2026-09-24，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
+更新日期：2026-09-27，Windows x64。本页记录实际执行结果；设计文档中的其余目标不自动视为完成。自动化回归仅面向本机合成数据。未修改旧仓库，未把任何运行材料、Cookie 或 profile 放入 Git。
+
+## G2–G4 新架构交付候选（2026-09-27）
+
+精确提交、完整日志、失败记录、AT01–AT40 与限制见 [G2–G4 交接](refactor-handoffs/G4-20260926.md)。`main@9bea873` 类型检查、`npm.cmd test` 56 文件/350 项、`npm.cmd run make` 和解压资源检查通过，日志分别为 `output/at39-source-contract-typecheck.log`、`output/at39-source-proof-unit-9bea873.log`、`output/at39-source-proof-make-9bea873.log`、`output/at39-source-proof-assets-9bea873.log`。运行时代码在 `81da1db` 的完整保序桌面矩阵通过；正式 30 分钟新架构负载是更早冻结 `58c5dea`，不能写成在 `9bea873` 重跑。`9bea873` 只改变合成 AT39 固定任务的真实来源约束及随包文档，不修改运行时代码。该包的全新 Agent 固定版独立评估 `pass`（7 条、3 页，两个来源判定通过），宿主原件与报告已核对，证据 `output/at39-pass-9bea873`；D01–D05 的后续修订仍需同一最终候选重新验收。
 
 ## 整体审查修复（2026-09-24）
 

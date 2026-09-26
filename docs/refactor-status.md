@@ -1,8 +1,20 @@
 # 重构状态（S0/G 独写）
 
-更新：2026-09-26。总规范是 refactor/01-modification-plan.md；本表区分已验证原型与生产集成，不以提交数量计完成。
+更新：2026-09-27。总规范是 refactor/01-modification-plan.md；本表区分已验证原型与生产集成，不以提交数量计完成。
+
+| 当前发布证据（2026-09-27） | 已核实状态 / 边界 |
+| --- | --- |
+| 候选与工作区 | 早期 G4 包 `9bea873` 及审查基线 `237d778` 仅作历史；D01–D05 集成后的冻结实现/测试/发行候选为 `ee904cd`，其后仅整理文档。旧 L/R/P 和 A–F 工作树、分支、录制原件与失败日志均保留；本批未推送。 |
+| D01–D05 | D01 首次 staging 失败仍能读原 legacy；D02 坏资源版本保留 tombstone 且不回退旧版；D03 原始封存 ledger 不被重建 hash 代替；D04 生产 ReplayHost 的 ready/位置/资源/DOM/节点逐次断言；D05 将 harness、Agent 交付、真实业务报告分项核实。先负例、后最小修复，提交和日志见 [G4 交接](refactor-handoffs/G4-20260926.md)。 |
+| 完整单元/类型/构建 | `ee904cd` 的 `npm.cmd test` **61 文件/373 项**、`npm.cmd run typecheck`、`npm.cmd run build` 均通过；`output/d07-final-unit-ee904cd.log`、`d07-final-typecheck-ee904cd.log`、`d07-final-build-ee904cd.log`。 |
+| 桌面/恢复/长测 | 完整未跳桌面矩阵和录制/离线专项在生产代码 `1d71a10` 通过；`ee904cd` 随后仅改长测计时夹具。`ee904cd` 的**完整短预检**和**正式 30 分钟**同一冻结源码/构建通过：1800/1800、零跳槽、27,129 源事件、15 次生产 ReplayHost seek/DOM/节点/资源断言、新 PID 读回；`output/d07-final-soak-precheck-ee904cd.log`、`output/d07-final-soak30-ee904cd.log` 与 `output/desktop-1790452299829/refactor-soak-summary.json`。早期 `4afed84`/`570edc8` 失败长测和 `1d71a10` 早醒短测原样保留，未计通过。 |
+| Windows ZIP/独立脚本 | `ee904cd` 的 ZIP `output/release-ee904cd-D4A031A3232CD0CBCC5B6836E2F303A8A2BF698ACDF4202F94BBC448C0247FC1.zip`，174,573,928 字节，SHA-256 `D4A031A3232CD0CBCC5B6836E2F303A8A2BF698ACDF4202F94BBC448C0247FC1`。make、外置资源检查、解压 EXE 六项 smoke 通过；Studio 关闭后从该包复制 `resources/orders` 到仓库外，独立 `npm ci` 与 Chrome 合成业务 2/2 通过。完整日志见 G4 交接。 |
+| AT39 分项 | `ee904cd` 解压包的第五位真正全新 Agent 独立编写普通 Puppeteer 工作流，首轮因缺冻结来源为 `inconclusive`，修复后 3 页/7 条订单与 7 个详情图像身份检查、固定版本独立报告 `pass/complete`；两需求来源判定均 pass。主控先核对宿主执行 `611a32f9-85ac-4bc2-b017-2eebed52072b`、报告 `b552e535-5e4f-4185-bf79-f3c67ae34e8e`、固定 hash 与交付代码指纹，再写完成信号；现场 `harnessCompleted=true`、`agentDelivered=true`、`businessVerified=true`、`passed=true`，授权撤销。`output/at39-pass-ee904cd` 与 `output/desktop-1790455200565/at39-live-result.json`；`9bea873` 结果仅作早期历史。 |
+| 当前阻塞与外部未测 | D01–D05 与本机合成发布门已闭环；真实账号、扫码/验证码、不同物理 DPI/多屏、真实磁盘耗尽、跨源/OOPIF DOM、closed shadow、Canvas 内部语义与签名证书未测或在声明边界外。固定材料仍为 `candidate`，机器 pass 未代替人工批准。 |
 
 **当前进度（2026-09-26 Q3 暂停点）**：Q1 `a0fbbd3`、Q2 `25b7baa` 已完成；Q3 固定交接、可信 UI、公开 page-create/后台页操作、项目 skill 和自动客户端专项通过，见 [Q3 交接](refactor-handoffs/Q3-20260926.md)。当前 Q3 代码的完整旧桌面矩阵三次未通过，失败日志保留，Q4 必须解决后复验；新架构长测、安装版、全新 Agent、真人业务仍待验收。R1–R8 实现提交 `f62e5f4` 及下方旧暂停/A–G 派发记录仅作历史，不重复启动或重置工作树。
+
+上段是 Q3 历史暂停点，不是当前 HEAD。下表保留原 T 项派工时快照，不再用其 `implementing` 标签判当前交付状态。
 
 | T | 依赖 | owner | 状态 | 实际范围 / 接续 |
 |---|---|---|---|---|
