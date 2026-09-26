@@ -85,8 +85,12 @@ async function main() {
     const summary = { passed: false, output: root, minutes, phases: [] };
     try {
       assert.ok(Number.isSafeInteger(minutes) && minutes >= 1 && minutes <= 60);
+      // The measured load is followed by full index recovery, fifteen replay
+      // seeks and verification in a second Electron process. A three-minute
+      // load needed over three more minutes for those checks on this host.
+      const recoveryAllowanceMs = minutes >= 30 ? 20 * 60_000 : 300_000;
       for (const phase of ['refactor-recovery-soak', 'refactor-recovery-verify']) {
-        const result = await launchPhase(phase, phase === 'refactor-recovery-soak' ? 300000 + minutes * 60000 : 180000,
+        const result = await launchPhase(phase, phase === 'refactor-recovery-soak' ? recoveryAllowanceMs + minutes * 60000 : 180000,
           { extraEnv: phase === 'refactor-recovery-soak' ? { BES_SOAK_MINUTES: String(minutes) } : {} });
         summary.phases.push(result);
         assert.ok(result.passed, `${phase} failed: ${result.error || result.result?.error}`);
