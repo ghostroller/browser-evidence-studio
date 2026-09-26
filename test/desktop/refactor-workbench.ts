@@ -43,8 +43,8 @@ export async function runRefactorWorkbenchUi(studio: Studio, fixture: WorkbenchF
     await click('存档', `document.querySelector('.panel-tabs')`);
     const index = studio.runs.filter(run => run.projectId === fixture.projectId).findIndex(run => run.id === runId);
     assert(index >= 0, `Run ${runId} was not indexed in the project`);
-    await wait(() => evaluate<number>(`document.querySelectorAll('.run-list button').length`), count => count > index, 'project archive list');
-    await evaluate<void>(`document.querySelectorAll('.run-list button')[${index}].click()`);
+    await wait(() => evaluate<number>(`document.querySelectorAll('.run-list .run-item').length`), count => count > index, 'project archive list');
+    await evaluate<void>(`document.querySelectorAll('.run-list .run-item')[${index}].click()`);
     await wait(() => evaluate<string>(`document.querySelector('.archive-meta code')?.textContent || ''`), value => value === runId, 'requested run archive');
   };
   assert.equal(fixture.replayPosition.recordingId, fixture.recordingId);
