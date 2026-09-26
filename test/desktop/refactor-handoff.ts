@@ -121,6 +121,14 @@ export async function runRefactorHandoffScenario(studio: Studio, siteUrl: string
     assert.equal(state.data.active.sessionId, grant.sessionId);
     const identity = state.data.active.pages.find((item: any) => item.pageId === grant.pages[0].pageId);
     assert.ok(identity?.targetId && Number.isSafeInteger(identity.generation));
+    const livePages = await request('GET', scoped(`/v1/runs/${state.data.active.id}/pages`));
+    assert.equal(livePages.status, 200, JSON.stringify(livePages.data.error));
+    assert(livePages.data.items.some((item: any) => item.pageId === identity.pageId && item.targetId === identity.targetId));
+    const liveSnapshot = await request('GET', scoped(`/v1/runs/${state.data.active.id}/snapshot?pageId=${identity.pageId}&generation=${identity.generation}`));
+    assert.equal(liveSnapshot.status, 200, JSON.stringify(liveSnapshot.data.error));
+    assert.equal(liveSnapshot.data.pageId, identity.pageId);
+    const mismatchedRead = await request('GET', scoped(`/v1/runs/${state.data.active.id}/pages?sessionId=wrong-session`));
+    assert.equal(mismatchedRead.status, 409, 'An explicitly wrong read identity remains rejected');
     const fixed = await request('POST', `/v1/projects/${manifest.projectId}/query/materialRevision`, {
       authorizationId, revisionId: manifest.revisionId, contentHash: manifest.contentHash });
     assert.equal(fixed.status, 200); assert.equal(fixed.data.contentHash, revision.contentHash);
