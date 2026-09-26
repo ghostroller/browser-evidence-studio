@@ -4,10 +4,12 @@ import { copyFile, mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { app } from 'electron';
 import type { Studio } from '@/main/services/studio';
 import { makeDispatch } from '@/main/services/dispatch';
 import { ArchiveReplayService } from '@/replay/service';
 import { SourceModel } from '@/replay/source-model';
+import { assessAt39Completion, inspectAt39Delivery } from './at39-acceptance';
 
 async function until<T>(read: () => Promise<T>, accept: (value: T) => boolean, label: string, timeoutMs = 30_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
@@ -240,6 +242,7 @@ async function runLiveHandoffScenario(studio: Studio, siteUrl: string): Promise<
   const completionFile = path.join(tmpdir(), `bes-at39-complete-${nonce}.json`);
   let authorizationId = '';
   let projectId = '';
+  let completion: { nonce: string; status: 'completed' | 'failed'; executionId?: string; reportId?: string; evidenceDirectory?: string } | undefined;
   try {
     if (studio.active) await studio.seal();
     if (studio.state().session) await studio.closeSession();
@@ -349,13 +352,20 @@ async function runLiveHandoffScenario(studio: Studio, siteUrl: string): Promise<
         assert.ok(['completed', 'failed'].includes(signal.status), 'AT39 completion status is invalid');
         report.completion = { status: signal.status, at: new Date().toISOString() };
         if (signal.status === 'failed') throw new Error('AT39 evaluator reported failure');
+        completion = signal;
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
       await delay(500);
     }
-    report.passed = true;
+    const completedSignal = completion;
+    assert.ok(completedSignal);
+    report.acceptance = await assessAt39Completion({ nonce, fixed: { projectId, revisionId: revision.revisionId,
+      contentHash: revision.contentHash }, signal: completedSignal, reader: studio.executions,
+      delivered: () => inspectAt39Delivery(workflowDir, completedSignal.evidenceDirectory,
+        path.join(app.getAppPath(), 'package-lock.json')) });
+    report.passed = report.acceptance.passed;
     return report;
   } catch (error) { report.error = String(error); throw error; }
   finally {
