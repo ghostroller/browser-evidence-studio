@@ -12,6 +12,7 @@ import { verifySoakEvidenceSnapshot, type SoakEvidenceSnapshot } from './soak-ev
 import { EvidenceReader } from '@/evidence/reader';
 import { hashBytes } from '@/evidence/files';
 import type { ReplayPosition } from '@/contracts/recording';
+import { sameStream } from '@/capture/recording-types';
 import { app, webContents } from 'electron';
 
 interface NewArchitectureSoak {schemaVersion:1;processId:number;runId:string;minutes:number;position:ReplayPosition;resourceId:string;resourceUrl:string;frameId:string;blobHash:string;rawFiles:Array<{name:string;sha256:string}>;evidenceSnapshot:SoakEvidenceSnapshot;recovery:{replayRecords:number;resourceReferences:number};}
@@ -43,14 +44,15 @@ async function longSoak(studio:Studio):Promise<Record<string,unknown>>{
     const runDir=path.join(studio.root,'runs',load.runId);
     const recording=new RecordingArchive(runDir),resources=new ResourceArchive(runDir);
     const streams=await recording.streams(1000);assert.ok(streams.items.length>0,'Long load must save format-2 source streams');
-    const stream=[...streams.items].sort((a,b)=>b.events-a.events)[0];
+    const cssCandidate=(await resources.list(1000)).items.find(item=>item.status==='captured'&&item.originalUrl.status==='present'&&item.originalUrl.value===fixture.url+'/soak-resource.css');
+    assert.ok(cssCandidate,'Long load must include an observed CSS response');
+    const stream=streams.items.find(item=>sameStream(item.first,cssCandidate.position));
+    assert.ok(stream&&stream.first.eventSeq<=cssCandidate.position.eventSeq&&stream.last.eventSeq>=cssCandidate.position.eventSeq,'The measured replay stream must contain the observed CSS position');
     let seed=0x51a7e,ordinals=[0,Math.floor((stream.events-1)/2),stream.events-1];
     for(let index=0;index<12;index++){seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;ordinals.push((seed>>>0)%stream.events);}
     const seeks=[];
-    for(const ordinal of ordinals){const item=(await recording.positions(stream.first,1,ordinal)).items[0];assert.ok(item);const window=await recording.window(item.position);assert.deepEqual(window.position,item.position);seeks.push({ordinal,position:item.position,events:window.records.length,readBytes:window.readBytes});}
+    for(const ordinal of ordinals){const item:{position:ReplayPosition;type:number;source:number}=(await recording.positions(stream.first,1,ordinal)).items[0];assert.ok(item);const window=await recording.window(item.position);assert.deepEqual(window.position,item.position);seeks.push({ordinal,position:item.position,events:window.records.length,readBytes:window.readBytes});}
     const position=seeks[2].position;
-    const cssCandidate=(await resources.list(1000)).items.find(item=>item.status==='captured'&&item.originalUrl.status==='present'&&item.originalUrl.value===fixture.url+'/soak-resource.css');
-    assert.ok(cssCandidate,'Long load must include an observed CSS response');
     const css=await resources.resolve(fixture.url+'/soak-resource.css',position,cssCandidate.frameId);
     assert.ok(css&&css.status==='captured','Select the latest observed CSS request version at the replay position');
     const blobHash=hashBytes((await resources.read(css.id)).bytes);
@@ -103,10 +105,12 @@ export async function runRefactorRecoveryScenario(studio:Studio,phase:string):Pr
     await page.capture.flush();
     const recording=new RecordingArchive(run.store.runDir),resources=new ResourceArchive(run.store.runDir);
     const streams=await recording.streams();assert.ok(streams.items.length>0,'Production recorder must save a format-2 stream');
-    const stream=streams.items[0],positions=await recording.positions(stream.first,1000);assert.ok(positions.items.length>0);
-    const position=positions.items.at(-1)!.position;
     const cssCandidate=(await resources.list(1000)).items.find(item=>item.status==='captured'&&item.originalUrl.status==='present'&&item.originalUrl.value===fixture.url+'/soak-resource.css');
     assert.ok(cssCandidate,'Synthetic observed CSS must have a saved manifest and blob');
+    const stream=streams.items.find(item=>sameStream(item.first,cssCandidate.position));
+    assert.ok(stream&&stream.first.eventSeq<=cssCandidate.position.eventSeq&&stream.last.eventSeq>=cssCandidate.position.eventSeq,'The selected replay stream must contain the observed CSS position');
+    const positions=await recording.positions(stream.first,1000);assert.ok(positions.items.length>0);
+    const position=positions.items.at(-1)!.position;
     const css=await resources.resolve(fixture.url+'/soak-resource.css',position,cssCandidate.frameId);
     assert.ok(css&&css.status==='captured','Select the latest observed CSS request version at the replay position');
     const blob=await resources.read(css.id),blobHash=createHash('sha256').update(blob.bytes).digest('hex');
