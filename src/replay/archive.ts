@@ -49,8 +49,9 @@ async function indexPrefix(runDir: string): Promise<string> {
     const bytes=await fs.readFile(file);
     if(bytes.length>4096)throw new EvidenceError('REPLAY_INDEX_BUDGET','Replay generation manifest grew past its 4 KiB read budget',413);
     if(hashBytes(bytes)!==pointer.manifestSha256)throw new EvidenceError('REPLAY_INDEX_CORRUPT','Replay generation manifest hash mismatch',409);
-    const manifest = JSON.parse(bytes.toString('utf8')) as { version: number; generation: string; records: number };
+    const manifest = JSON.parse(bytes.toString('utf8')) as { version: number; generation: string; records: number; verificationBasis?:string };
     if (manifest.version !== 1 || manifest.generation !== pointer.generation || !Number.isSafeInteger(manifest.records)) invalid('Malformed replay index generation manifest');
+    if(manifest.verificationBasis!=='sealed')throw new EvidenceError('REPLAY_ORIGINAL_UNVERIFIED','Replay index has no verified sealed-original basis; directed recovery cannot certify this history',409);
   } catch (error) { if(error instanceof EvidenceError)throw error;throw new EvidenceError((error as NodeJS.ErrnoException).code==='ENOENT'?'REPLAY_INDEX_MISSING':error instanceof SyntaxError?'REPLAY_INDEX_CORRUPT':'REPLAY_INDEX_READ_FAILED', `Published replay index generation is unavailable: ${String(error)}`, 409); }
   return prefix;
 }
@@ -287,7 +288,7 @@ export class RecordingArchive {
     try {
       for(const [key,entry] of previous){const descriptor=checkedStream(JSON.parse(await fs.readFile(await safeFile(this.runDir,`${prefix}/${key}/stream.json`),'utf8')));if(descriptor.events!==entry.ordinal+1||(await fs.stat(await safeFile(this.runDir,`${prefix}/${key}/positions.bin`))).size!==descriptor.events*24)invalid('Rebuilt replay timeline is incomplete');}
       const manifestFile=path.join(this.runDir,prefix,'index-manifest.json');
-      await atomicJson(manifestFile,{version:1,generation,records,streams:previous.size,corruptCount});
+      await atomicJson(manifestFile,{version:1,generation,records,streams:previous.size,corruptCount,verificationBasis});
       await verifySealedOriginals(this.runDir,'replay');
       await atomicJson(path.join(this.runDir,generationFile),{version:1,generation,manifestSha256:hashBytes(await fs.readFile(manifestFile))});
       await atomicJson(path.join(this.runDir,publishedFile),{version:1,generation});

@@ -23,7 +23,7 @@ async function fixture(twoVersions=false,extraResource=false){
   await new RecordingIndexWriter(store).append(record);
   const url='https://synthetic.invalid/a.css',capture=new ResourceCapture(store);
   const resource=await capture.capture({position,frameId:'top',requestId:'request-1',url,mediaType:'text/css',data:Buffer.from('a{color:red}'),availableObservedAt:new Date().toISOString()});
-  const latestResource=twoVersions?await capture.capture({position,frameId:'top',requestId:'request-2',url,mediaType:'text/css',data:Buffer.from('a{color:blue}'),availableObservedAt:new Date().toISOString()}):resource;
+  const latestResource=twoVersions?await capture.capture({position,frameId:'top',requestId:'request-2',url,mediaType:'text/css',data:Buffer.from('a{color:blue}'),availableObservedAt:new Date().toISOString(),source:{fromServiceWorker:true,encodedDataLength:13}}):resource;
   const independent=extraResource?await capture.capture({position,frameId:'top',requestId:'request-3',url:'https://synthetic.invalid/good.css',mediaType:'text/css',data:Buffer.from('body{color:black}'),availableObservedAt:new Date().toISOString()}):undefined;
   await store.seal();await store.close();
   const archive=new RecordingArchive(runDir),resources=new ResourceArchive(runDir);
@@ -73,6 +73,14 @@ describe('directed recording and resource index recovery',()=>{
       const version=await f.resources.resolve(f.url,f.position);
       expect(version?.id).toBe(f.latestResource.id);
       expect(version?.status).toBe('failed');expect(version?.reason).toContain('RESOURCE_INTEGRITY');
+      expect(version?.mediaType).toBe(f.latestResource.mediaType);
+      expect(version?.capturedAt).toBe(f.latestResource.capturedAt);
+      expect(version?.source).toEqual(f.latestResource.source);
+      expect(version?.bytes).toBe(f.latestResource.bytes);
+      expect(version?.recovery).toMatchObject({status:'observed-unavailable',observedStatus:'captured'});
+      const pointer=JSON.parse(await fs.readFile(path.join(f.runDir,'resource-url-index-current.json'),'utf8'));
+      const tombstone=await fs.readFile(path.join(f.runDir,'resource-url-index-generations',pointer.generation,`${hashBytes(f.url)}.jsonl`),'utf8');
+      expect(tombstone).not.toContain(f.url);
       expect((await f.resources.history(f.url,f.position,'top')).map(item=>item.id)).toContain(f.latestResource.id);
       expect((await f.resources.resolve('https://synthetic.invalid/good.css',f.position))?.id).toBe(f.independent?.id);
       expect((await f.resources.read(f.independent!.id)).bytes.toString()).toContain('black');
@@ -126,6 +134,15 @@ describe('directed recording and resource index recovery',()=>{
       await fs.rm(path.join(f.runDir,'integrity.json'));
       expect(await f.archive.rebuild()).toMatchObject({verificationBasis:'unverified'});
       expect(await f.resources.rebuildUrlIndex()).toMatchObject({verificationBasis:'unverified'});
+      for(const [prefix,current] of [['replay-index-generations','replay-index-current.json'],['resource-url-index-generations','resource-url-index-current.json']]){
+        const pointer=JSON.parse(await fs.readFile(path.join(f.runDir,current),'utf8'));
+        const generation=JSON.parse(await fs.readFile(path.join(f.runDir,prefix,pointer.generation,'index-manifest.json'),'utf8'));
+        expect(generation.verificationBasis).toBe('unverified');
+      }
+      await expect(f.archive.window(f.position)).rejects.toMatchObject({code:'REPLAY_ORIGINAL_UNVERIFIED'});
+      await expect(f.resources.resolve(f.url,f.position)).rejects.toMatchObject({code:'RESOURCE_ORIGINAL_UNVERIFIED'});
+      const fake={root:f.root,runs:[{id:'recording',status:'interrupted'}],active:undefined} as unknown as Studio;
+      expect(await inspectRunRecovery(fake,{runId:'recording'})).toMatchObject({indexDiagnostics:{replay:{state:'unverified'},resources:{state:'unverified'}}});
     }finally{await f.cleanup();}
   });
   it('holds the writer kernel guard across index maintenance',async()=>{

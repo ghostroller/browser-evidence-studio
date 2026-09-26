@@ -39,8 +39,9 @@ async function inspectProjection(runDir:string,kind:'replay'|'resource'):Promise
     if((await stat(manifest)).size>(kind==='replay'?4096:2*1024*1024))return{state:'corrupt',reason:'generation-manifest-over-budget'};
     const bytes=await readFile(manifest);
     if(hashBytes(bytes)!==value.manifestSha256)return{state:'corrupt',reason:'generation-manifest-hash-mismatch'};
-    const metadata=JSON.parse(bytes.toString('utf8')) as {version?:unknown;generation?:unknown};
+    const metadata=JSON.parse(bytes.toString('utf8')) as {version?:unknown;generation?:unknown;verificationBasis?:unknown};
     if(metadata.version!==1||metadata.generation!==value.generation)return{state:'corrupt',reason:'generation-manifest-mismatch'};
+    if(metadata.verificationBasis!=='sealed')return{state:'unverified',reason:'generation-has-no-sealed-original-basis'};
     return{state:'published',reason:'generation-manifest-present'};
   }catch(error){
     if(pointerFound&&(error as NodeJS.ErrnoException).code==='ENOENT')return{state:'missing',reason:'published-generation-manifest-missing'};
