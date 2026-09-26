@@ -109,7 +109,8 @@ async function main() {
     return;
   }
   if (process.argv.includes('--refactor-handoff')) {
-    const result = await launchPhase('refactor-handoff', 240000);
+    const timeoutMs = process.env.BES_HANDOFF_LIVE === '1' ? 48 * 60_000 : 240000;
+    const result = await launchPhase('refactor-handoff', timeoutMs);
     const summary = { passed: result.passed, output: root, phase: result };
     fs.writeFileSync(path.join(root, 'refactor-handoff-summary.json'), JSON.stringify(summary, null, 2));
     console.log(JSON.stringify({ passed: result.passed, output: root, error: result.error || result.result?.error }, null, 2));
