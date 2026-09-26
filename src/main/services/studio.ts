@@ -506,7 +506,7 @@ export class Studio {
       if(op){await op.gate.quiesce(Math.min(5000,Math.max(1,deadline-performance.now())));drained=true;}
       task.phase='capturing';this.onChanged();
       const captured=await captureCheckpointMaterials({
-        screenshot:()=>p.view.webContents.capturePage().then(img=>img.toPNG()),
+        screenshot:()=>p.page.screenshot({type:'png',captureBeyondViewport:false}),
         dom:()=>p.page.evaluate(()=>{const clone=document.documentElement.cloneNode(true) as HTMLElement;clone.querySelectorAll('input,textarea').forEach(el=>{el.removeAttribute('value');if(el.tagName==='TEXTAREA')el.textContent='[masked]';});return '<!doctype html>'+clone.outerHTML;}),
         signal:task.abort.signal,timeoutMs:Math.max(1,deadline-performance.now()),
       });

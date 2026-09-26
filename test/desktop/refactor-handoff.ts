@@ -79,6 +79,14 @@ export async function runRefactorHandoffScenario(studio: Studio, siteUrl: string
     await until(() => ui.executeJavaScript(`!![...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='准备交给 Agent'&&!item.disabled)`), Boolean, 'selected fixed revision');
     assert.equal(await ui.executeJavaScript(`(() => {const button=[...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='准备交给 Agent'&&!item.disabled);if(!button)return false;button.click();return true})()`), true);
     await until(() => ui.executeJavaScript(`!![...document.querySelectorAll('[role="status"]')].find(item=>item.textContent?.includes('固定交接已保存'))`), Boolean, 'saved fixed handoff');
+    // The exported task may start while the trusted handoff dialog still
+    // occludes the native page. A checkpoint must retain both channels.
+    await until(async () => !studio.current().view.getVisible(), Boolean, 'native view hidden by handoff overlay');
+    await studio.current().page.goto(siteUrl + '/orders', { waitUntil: 'domcontentloaded' });
+    await studio.current().page.waitForSelector('#ssr-data');
+    const overlayCheckpoint = await dispatch('checkpoint', { key: 'handoff-overlay-capture', title: 'Handoff overlay capture' }, 'ui');
+    assert.equal(overlayCheckpoint.metadata?.artifacts?.[0]?.captureStatus, 'complete', JSON.stringify(overlayCheckpoint.metadata?.artifacts?.[0]));
+    assert.equal(overlayCheckpoint.metadata?.artifacts?.[1]?.captureStatus, 'complete', 'Hidden native page DOM should be captured');
     await ui.executeJavaScript(`([...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='返回工作台'))?.click()`);
     const handoffs = await readdir(path.join(studio.root, 'projects', project.id, 'handoffs'));
     assert.equal(handoffs.length, 1);
