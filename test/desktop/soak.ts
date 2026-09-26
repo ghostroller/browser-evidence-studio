@@ -173,14 +173,22 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
       await page.page.evaluate(async()=>{await new Promise<void>((resolve,reject)=>{const link=document.createElement('link');link.rel='stylesheet';link.href='/soak-resource.css';link.onload=()=>resolve();link.onerror=()=>reject(new Error('Synthetic long-run CSS failed'));document.head.appendChild(link);});});
       await page.capture.flush();
     }
-    await studio.control('agent');
+    const sessionId = studio.state().session!.sessionId;
+    const grant = await studio.authorizeTask({ projectId: project.id, profileId: profile.id, sessionId, leaseEpoch: run.leaseEpoch,
+      pageIds: [page.pageId], origins: [new URL(url).origin], capabilities: ['page-act', 'history-read'],
+      durationMs: minutes * 60_000 + 300_000, maxOperations: 10_000 });
+    const taskIdentity = { authorizationId: grant.authorizationId, projectId: project.id, profileId: profile.id, sessionId };
+    assert.equal(run.controller, 'agent', 'The trusted client must hand the browser lease to the synthetic task');
     studio.window.window.setTitle('Browser Evidence Studio — 合成长录制自动验证，请勿手动导航');
     const connection = JSON.parse(await readFile(studio.connection.file, 'utf8'));
     assert.equal(connection.processId, process.pid); assert.equal(connection.address, studio.connection.address);
-    const request = async (method: string, route: string, body?: unknown) => {
+    const request = async (method: string, route: string, body?: Record<string, unknown>) => {
       const at = performance.now();
-      const response = await fetch(connection.address + route, { method, headers: { Authorization: `Bearer ${connection.token}`, ...(body ? { 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() } : {}) },
-        ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(15000), redirect: 'error' });
+      const endpoint = new URL(route, connection.address);
+      if (method === 'GET') for (const [key, value] of Object.entries(taskIdentity)) endpoint.searchParams.set(key, value);
+      const scopedBody = body ? { ...taskIdentity, ...body } : undefined;
+      const response = await fetch(endpoint, { method, headers: { Authorization: `Bearer ${connection.token}`, ...(scopedBody ? { 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() } : {}) },
+        ...(scopedBody ? { body: JSON.stringify(scopedBody) } : {}), signal: AbortSignal.timeout(15000), redirect: 'error' });
       const text = await response.text(); assert.ok(Buffer.byteLength(text) <= 32768); assert.ok(!text.includes(connection.token));
       return { status: response.status, data: JSON.parse(text), bytes: Buffer.byteLength(text), elapsedMs: performance.now() - at };
     };
