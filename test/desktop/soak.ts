@@ -257,6 +257,11 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
       assert.equal(reply.status, 200); assert.equal(reply.data.pathStatus, 'present'); assert.equal(reply.data.value, 'SOAK-END'); assert.equal(reply.data.outputTruncated, false); assert.ok(reply.bytes <= 1024);
       (report.fieldReads ||= []).push({ phase, artifactId: firstArtifactId, maxBytes: 1024, responseBytes: reply.bytes, elapsedMs: round(reply.elapsedMs), value: reply.data.value });
     };
+    if(options.newArchitecture){
+      await page.capture.flush();
+      report.newArchitectureArchiveGrowth={baseline:await archiveGrowth(run.store.runDir),final:null,delta:null,basis:'durable files before cadence and after seal'};
+      report.newArchitectureSamples.push({elapsedMs:0,queue:page.capture.queueMetrics});
+    }
     started = Date.now(); startedMonotonic = performance.now(); report.startedAt = new Date(started).toISOString(); await save('running');
     const durationMs = minutes * 60000; let slot = 0, nextCheckpoint = 0, nextSummary = 0;
     let previousCycle: (typeof slowCycles)[number] | undefined;
@@ -280,7 +285,7 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
         await measure('largeFetch', () => fetchPayload('large-' + sequence, MiB), cycleStages);
         await measure('checkpoint', () => checkpoint('soak-' + sequence), cycleStages);
         await measure('captureFlush', () => page.capture.flush(), cycleStages);
-        if(options.newArchitecture)report.newArchitectureSamples.push({elapsedMs:round(loadElapsed()),archive:await archiveGrowth(run.store.runDir),queue:page.capture.queueMetrics});
+        if(options.newArchitecture)report.newArchitectureSamples.push({elapsedMs:round(loadElapsed()),queue:page.capture.queueMetrics});
         if (!firstArtifactId) await measure('fieldRead', () => fieldRead('early'), cycleStages);
         console.log(`SOAK ${(loadElapsed() / 60000).toFixed(1)}/${minutes} min; actions=${actions.length}, checkpoint=${checkpointIds.length}`);
         nextCheckpoint += 60000;
@@ -306,9 +311,13 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
     report.elapsedMs = report.load.loadElapsedMs; report.load.completedCycles = actions.length;
     assert.ok(report.elapsedMs >= durationMs); await page.capture.flush(); await summary(); await memory(); await fieldRead('late');
     report.pageAcknowledgedActions = await page.page.$eval('#action-count', element => Number(element.textContent)); assert.equal(report.pageAcknowledgedActions, actions.length);
-    if(options.newArchitecture){report.newArchitectureQueueMetrics=page.capture.queueMetrics;report.newArchitectureSamples.push({elapsedMs:report.elapsedMs,archive:await archiveGrowth(run.store.runDir),queue:page.capture.queueMetrics});}
+    if(options.newArchitecture){report.newArchitectureQueueMetrics=page.capture.queueMetrics;report.newArchitectureSamples.push({elapsedMs:report.elapsedMs,queue:page.capture.queueMetrics});}
     await save('verifying'); const verificationAt = performance.now();
     await studio.seal(); if(studio.state().session)await studio.closeSession(); const reader = studio.reader(run.id);
+    if(options.newArchitecture){
+      const final=await archiveGrowth(run.store.runDir),baseline=report.newArchitectureArchiveGrowth.baseline;
+      report.newArchitectureArchiveGrowth={...report.newArchitectureArchiveGrowth,final,delta:{files:final.files-baseline.files,bytes:final.bytes-baseline.bytes}};
+    }
     report.digests = await verifyExpected(reader, page.pageId, actions, requests);
     report.summary = await reader.summary(); assert.equal(report.summary.gaps, 0, 'This normal fixed load must have no unexplained capture gaps');
     report.evidenceSnapshot = await buildSoakEvidenceSnapshot(reader); assert.deepEqual(report.evidenceSnapshot.checkpointIds, checkpointIds);

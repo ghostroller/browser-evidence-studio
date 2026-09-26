@@ -84,7 +84,7 @@ async function longSoak(studio:Studio):Promise<Record<string,unknown>>{
     const saved:NewArchitectureSoak={schemaVersion:1,processId:process.pid,runId:load.runId,minutes,position,resourceId:css.id,resourceUrl:fixture.url+'/soak-resource.css',frameId:css.frameId,blobHash,rawFiles,evidenceSnapshot:load.evidenceSnapshot,sourceStream,
       recovery:{replayRecords:recovery.replay.records,resourceReferences:recovery.resources.references}};
     await writeFile(path.join(studio.root,'new-architecture-soak.json'),JSON.stringify(saved,null,2));
-    return{passed:true,load:{minutes,cycles:load.load.completedCycles,plannedCycles:load.load.plannedCycles,skippedSlots:load.load.skippedScheduleSlots,performance:load.performanceVerdict,queueMetrics:load.newArchitectureQueueMetrics,memory:load.memory},streams:streams.items.length,sourceStream,seeks,replayMemory:replay,workerMemory:{status:'not-running',reason:'The fixed recording load does not start a runner worker; worker_threads share the main PID.'},recovery:saved.recovery,resourceId:css.id,runId:load.runId};
+    return{passed:true,load:{minutes,cycles:load.load.completedCycles,plannedCycles:load.load.plannedCycles,skippedSlots:load.load.skippedScheduleSlots,performance:load.performanceVerdict,queueMetrics:load.newArchitectureQueueMetrics,archiveGrowth:load.newArchitectureArchiveGrowth,memory:load.memory},streams:streams.items.length,sourceStream,seeks,replayMemory:replay,workerMemory:{status:'not-running',reason:'The fixed recording load does not start a runner worker; worker_threads share the main PID.'},recovery:saved.recovery,resourceId:css.id,runId:load.runId};
   }finally{await fixture.close();}
 }
 
