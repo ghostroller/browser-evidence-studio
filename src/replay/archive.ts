@@ -9,7 +9,8 @@ import { EvidenceError } from '@/evidence/contracts';
 import { EvidenceReader } from '@/evidence/reader';
 import { atomicJson, hashBytes, jsonLines, readSlice, safeFile } from '@/evidence/files';
 import type { EvidenceStore } from '@/evidence/store';
-import { inspectWriterLock } from '@/evidence/writer-lock';
+import { assertIndexMaintenance, claimIndexMaintenance, inspectWriterLock, type IndexMaintenanceHandle } from '@/evidence/writer-lock';
+import { verifySealedOriginals } from '@/evidence/sealed-originals';
 
 export const REPLAY_MAX_EVENT_BYTES = 16 * 1024 * 1024;
 export const REPLAY_MAX_WINDOW_BYTES = 64 * 1024 * 1024;
@@ -35,10 +36,11 @@ function streamKey(position: ReplayPosition): string {
 }
 function entryPath(position: ReplayPosition, prefix = 'replay-index'): string { return `${prefix}/${streamKey(position)}/${position.eventSeq}.json`; }
 const generationFile = 'replay-index-current.json';
+const publishedFile = 'replay-index-published.json';
 async function indexPrefix(runDir: string): Promise<string> {
   let pointer: { version?: number; generation?: string; manifestSha256?: string };
   try { const file=await safeFile(runDir,generationFile);if((await fs.stat(file)).size>4096)throw new EvidenceError('REPLAY_INDEX_BUDGET','Replay generation pointer exceeds its 4 KiB read budget',413);pointer = JSON.parse(await fs.readFile(file, 'utf8')); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT'){try{await fs.stat(path.join(runDir,'replay-index-generations'));throw new EvidenceError('REPLAY_INDEX_MISSING','Replay generation pointer is missing; directed recovery required',409);}catch(problem){if((problem as NodeJS.ErrnoException).code==='ENOENT')return 'replay-index';throw problem;}} if(error instanceof EvidenceError)throw error;throw new EvidenceError(error instanceof SyntaxError?'REPLAY_INDEX_CORRUPT':'REPLAY_INDEX_READ_FAILED', `Cannot read replay index generation: ${String(error)}`, 409); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT'){try{await fs.stat(path.join(runDir,publishedFile));throw new EvidenceError('REPLAY_INDEX_MISSING','Published replay generation pointer is missing; directed recovery required',409);}catch(problem){if((problem as NodeJS.ErrnoException).code==='ENOENT')return 'replay-index';throw problem;}} if(error instanceof EvidenceError)throw error;throw new EvidenceError(error instanceof SyntaxError?'REPLAY_INDEX_CORRUPT':'REPLAY_INDEX_READ_FAILED', `Cannot read replay index generation: ${String(error)}`, 409); }
   if (pointer.version !== 1 || !/^[a-f0-9-]{36}$/.test(pointer.generation ?? '') || !/^[a-f0-9]{64}$/.test(pointer.manifestSha256 ?? ''))throw new EvidenceError('REPLAY_INDEX_CORRUPT','Malformed replay index generation pointer',409);
   const prefix = `replay-index-generations/${pointer.generation}`;
   try {
@@ -236,9 +238,13 @@ export class RecordingArchive {
   }
   /** Maintenance-only streaming rebuild; queries never call this implicitly.
    * Damaged raw tails are reported and never repaired or removed here. */
-  async rebuild(): Promise<{ records: number; corruptCount: number; corrupt: Array<{ file: string; offset: number; reason: string }> }> {
+  async rebuild(guard?:IndexMaintenanceHandle): Promise<{ records: number; corruptCount: number; corrupt: Array<{ file: string; offset: number; reason: string }>; verificationBasis:'sealed'|'unverified' }> {
     const ownership=await inspectWriterLock(this.runDir);
     if(ownership.state!=='unlocked')throw new EvidenceError('ACTIVE_INDEX_REBUILD',`Replay recovery requires an unlocked writer (${ownership.state})`,409);
+    const maintenance=guard??await claimIndexMaintenance(this.runDir);
+    try{
+    assertIndexMaintenance(maintenance,await fs.realpath(this.runDir));
+    const verificationBasis=await verifySealedOriginals(this.runDir,'replay');
     const previous = new Map<string, Entry>(), corrupt: Array<{ file: string; offset: number; reason: string }> = [];
     let records = 0, corruptCount=0;
     const report=(item:{file:string;offset:number;reason:string})=>{corruptCount++;if(corrupt.length<128)corrupt.push(item);};
@@ -282,9 +288,12 @@ export class RecordingArchive {
       for(const [key,entry] of previous){const descriptor=checkedStream(JSON.parse(await fs.readFile(await safeFile(this.runDir,`${prefix}/${key}/stream.json`),'utf8')));if(descriptor.events!==entry.ordinal+1||(await fs.stat(await safeFile(this.runDir,`${prefix}/${key}/positions.bin`))).size!==descriptor.events*24)invalid('Rebuilt replay timeline is incomplete');}
       const manifestFile=path.join(this.runDir,prefix,'index-manifest.json');
       await atomicJson(manifestFile,{version:1,generation,records,streams:previous.size,corruptCount});
+      await verifySealedOriginals(this.runDir,'replay');
       await atomicJson(path.join(this.runDir,generationFile),{version:1,generation,manifestSha256:hashBytes(await fs.readFile(manifestFile))});
-    } catch(error) { throw new EvidenceError('REPLAY_INDEX_WRITE_FAILED',`Replay index generation ${generation} remains unpublished after validation/publication failure: ${String(error)}`,507); }
-    return { records, corruptCount, corrupt };
+      await atomicJson(path.join(this.runDir,publishedFile),{version:1,generation});
+    } catch(error) { if(error instanceof EvidenceError&&error.code==='REPLAY_ORIGINAL_INTEGRITY')throw error;throw new EvidenceError('REPLAY_INDEX_WRITE_FAILED',`Replay index generation ${generation} remains unpublished after validation/publication failure: ${String(error)}`,507); }
+    return { records, corruptCount, corrupt, verificationBasis };
+    }finally{if(!guard)await maintenance.release();}
   }
 }
 function checkedStream(input:unknown):RecordingStream{

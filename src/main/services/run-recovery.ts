@@ -2,7 +2,7 @@ import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { EvidenceStore } from '@/evidence/store';
 import { hashBytes, safeFile } from '@/evidence/files';
-import { inspectWriterLock, recoverWriterLock } from '@/evidence/writer-lock';
+import { claimIndexMaintenance, inspectWriterLock, recoverWriterLock } from '@/evidence/writer-lock';
 import { RecordingArchive } from '@/replay/archive';
 import { ResourceArchive } from '@/resources/archive';
 import { ensure } from '@/shared/errors';
@@ -27,6 +27,7 @@ async function inspectProjection(runDir:string,kind:'replay'|'resource'):Promise
   const pointer=kind==='replay'?'replay-index-current.json':'resource-url-index-current.json';
   const base=kind==='replay'?'replay-index':'resource-url-index';
   const generations=kind==='replay'?'replay-index-generations':'resource-url-index-generations';
+  const published=kind==='replay'?'replay-index-published.json':'resource-url-index-published.json';
   let pointerFound=false;
   try{
     const file=await safeFile(runDir,pointer);
@@ -44,7 +45,7 @@ async function inspectProjection(runDir:string,kind:'replay'|'resource'):Promise
   }catch(error){
     if(pointerFound&&(error as NodeJS.ErrnoException).code==='ENOENT')return{state:'missing',reason:'published-generation-manifest-missing'};
     if((error as NodeJS.ErrnoException).code!=='ENOENT')return{state:error instanceof SyntaxError?'corrupt':'read-failed',reason:String(error)};
-    try{await lstat(path.join(runDir,generations));return{state:'missing',reason:'generation-pointer-missing'};}
+    try{await lstat(path.join(runDir,published));return{state:'missing',reason:'published-generation-pointer-missing'};}
     catch(problem){if((problem as NodeJS.ErrnoException).code!=='ENOENT')return{state:'read-failed',reason:String(problem)};}
     try{
       const baseInfo=await lstat(path.join(runDir,base));
@@ -73,9 +74,12 @@ export async function recoverRunIndexes(studio: Studio, body: { runId?: unknown;
   const inspection = await inspectWriterLock(runDir);
   ensure(body.expectedFingerprint === inspection.lockFingerprint, 'Writer ownership changed; inspect the archive again', 409);
   ensure(inspection.state === 'unlocked', `Index recovery refused (${inspection.state}): ${inspection.message}`, 409);
-  const replay = await new RecordingArchive(runDir).rebuild();
-  const resources = await new ResourceArchive(runDir).rebuildUrlIndex();
-  return { runId: record.id, replay, resources };
+  const guard=await claimIndexMaintenance(runDir);
+  try{
+    const replay = await new RecordingArchive(runDir).rebuild(guard);
+    const resources = await new ResourceArchive(runDir).rebuildUrlIndex(guard);
+    return { runId: record.id, replay, resources };
+  }finally{await guard.release();}
 }
 
 /** Only the trusted UI invokes this after displaying the currently inspected ownership. */
