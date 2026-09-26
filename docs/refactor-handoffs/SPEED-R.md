@@ -16,3 +16,5 @@
 
 - 集成 `410be41` 首次沙箱 Electron 启动在产品代码前因 GPU 子进程 DLL 缺失退出；保留 `output/finish-r-refactor-recovery.log`。获准正常宿主重试后进入真实 fixture，发现同一 CSS URL 有两次合法 captured 请求（source eventSeq 3、5）；fixture 从 `list()` 随机顺序拿第一个 ID，却把它与按历史时间选择的最新 `resolve()` ID 强行相等，导致断言失败。保留 `output/finish-r-refactor-recovery-host.log` 和数据根。
 - 已将短测与长测 fixture 都改为在移除索引前锁定 `resolve()` 返回的实际版本，重建后核对相同 ID/bytes。新增两个同 URL 版本的独立模块回归。`npm.cmd run typecheck` 与 `npm.cmd test -- test/unit/directed-index-recovery.test.ts`（11/11）通过。此修正仍需合并、重建并复跑 Electron；不把此前失败改记通过。
+- 集成 `1a2d992` 的宿主 Electron 短测再次进入 fixture，发现 `streams()[0]` 是较早的 2-event document stream，而 CSS 的保存位置属于稍后的 10-event stream；原选择使 CSS 版本解析断言失败。保留 `output/finish-r-recovery-1a2d992.log` 与 `output/desktop-1790424655521`，Electron PID 28088 已退出。
+- fixture 现按 CSS 保存位置的 recording/page/document/epoch 身份选择 stream，并在 seek 前断言该 stream 的 eventSeq 范围包含 CSS 位置。短测和长测共用这一约束；这是 fixture 选流修正，尚无证据表明产品恢复算法错误。此修正仍需合并、重建并复跑 Electron。
