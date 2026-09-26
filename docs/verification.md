@@ -1,5 +1,13 @@
 # 实际验证记录
 
+## 2026-09-26 Q2 播放意图与资源时序
+
+Node `v24.21.0` / npm `11.19.0`。`npm test` **54 文件 / 326 项通过**（其中 Q3 独立导出模块 3 项尚未接线），日志 `output/q2-full-unit-final.log`；`npm run typecheck`、`npm run build` 通过，日志 `output/q2-typecheck-final.log`、`output/q2-build-cursor2.log`。本批 `git diff --check` 无空白错误。
+
+真实 Electron 的完整未跳 UI 桌面矩阵 `node test/desktop/launch.js` 通过：`output/desktop-1790415946521/desktop-summary.json`、`output/q2-desktop-full-cursor2.log`；包含 UI/原生 ReplayHost、任务授权/结果、profile 新进程、checkpoint 和强杀恢复。首次 UI 拖拽两次受 OS 指针位置产生的额外无按键 hover 干扰，原日志 `output/q2-desktop-full-final.log` 与 `output/q2-desktop-full-final2.log` 保留；测试夹具随后按 Windows 逻辑坐标对齐真实指针和合成按键，原拖拽断言通过，没有放宽产品权限或 UI 断言。
+
+`node test/desktop/launch.js --refactor-recording` 录制/离线 2/2 通过：`output/desktop-1790416165371/refactor-recording-summary.json`、`output/q2-recording-final.log`。真实 producer→consumer 覆盖延迟与重复 URL 资源、跨源重定向/CSS/图片/字体、cache、Service Worker、`data:`/blob；跨源 iframe 的 DOM/source 明确不支持。`node test/desktop/launch.js --refactor-system` 通过：`output/desktop-1790416192731/refactor-system-report.json`、`output/q2-system-final.log`，保留 Q1 JSON/DOM 来源和固定资料判定闭环。资源准备与播放意图的单元回归另见全量日志；完整边界见 [Q2 交接](refactor-handoffs/Q2-20260926.md)。不同物理 DPI/zoom、新格式 30 分钟负载、安装版和真人账号尚未由上述结果证明。
+
 ## 2026-09-26 Q1 生产 JSON 来源与隐私闭环
 
 Node `v24.21.0`、npm `11.19.0`。`npx vitest run test/unit/production-json-source.test.ts test/unit/capture.test.ts test/unit/capture-navigation.test.ts test/unit/project-executions.test.ts test/unit/privacy-channels.test.ts test/unit/checkpoint.test.ts test/unit/refactor-recording.test.ts`：**7 文件 / 39 项通过**，日志 `output/q1-regression-final.log`。`npm run typecheck`、`npm run build` 通过，日志 `output/q1-typecheck2.log`、`output/q1-build2.log`。

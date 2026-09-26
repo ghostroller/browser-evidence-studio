@@ -51,6 +51,7 @@ interface ValidationLaunch {
 }
 export interface ActiveRun {
   id:string; projectId:string; profileId:string; store:EvidenceStore; pages:Map<string,ManagedPage>; selectedPageId:string;
+  foregroundOrdinal?:number;
   session:Session; controller:'human'|'agent'|'none'; leaseEpoch:number; capture:string; execution:string;
   operation?:ManagedOperation; pendingOperation?:PendingOperation; locked:boolean; stopping?:boolean; ending?:boolean; selection?:unknown; handoff?:any;
   pageClosures?:Set<Promise<void>>;
@@ -107,6 +108,7 @@ export class Studio {
     const grant=this.tasks.get(body.authorizationId);ensure(grant.projectId===body.projectId,'Task belongs to another project',403);
     this.tasks.revoke(grant.authorizationId);
     if(this.executingAuthorizationId===grant.authorizationId)await this.stopRunner();
+    if(this.browserAuthorizationId===grant.authorizationId)this.browserAuthorizationId=undefined;
     const r=this.active;if(r&&this.browserSessionId===grant.sessionId){await this.revokeOperation(r);if(r.controller==='agent'&&!this.workflow&&!this.workflowStarting&&!this.workflowSettlement)await this.control('human');await r.store.appendEvent({type:'task-authorization-revoked',source:'ui',data:{authorizationId:grant.authorizationId}});}
     return this.tasks.get(grant.authorizationId);
   }
@@ -169,6 +171,12 @@ export class Studio {
   private live(){ensure(this.browser,'No live browser session',409);return this.browser.runtime;}
   private pageContents(p:ManagedPage){try{const contents=p.view.webContents;return contents&&!contents.isDestroyed()?contents:undefined;}catch{return undefined;}}
   current(){const r=this.live();const p=r.pages.get(r.selectedPageId);ensure(p&&this.pageContents(p),'No live selected page',409);return p;}
+  private recordForeground(r:ActiveRun,previousPageId:string|null,reason:string,observedAtMs=Date.now()){
+    const selectedPageId=r.selectedPageId||null;
+    const transitionOrdinal=(r.foregroundOrdinal??0)+1;r.foregroundOrdinal=transitionOrdinal;
+    return r.store.appendEvent({type:'page-foreground',source:'electron',occurredAt:new Date(observedAtMs).toISOString(),timeBasis:'host-wall-clock',
+      ...(selectedPageId?{pageId:selectedPageId}:{}),data:{version:1,previousPageId,selectedPageId,observedAtMs,transitionOrdinal,reason}});
+  }
   private browserState(){const browser=this.browser;if(!browser)return null;const r=browser.runtime;return {sessionId:browser.id,projectId:r.projectId,profileId:r.profileId,recordingId:browser.recordingId,controller:r.controller,leaseEpoch:r.leaseEpoch,locked:r.locked,selectedPageId:r.selectedPageId,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:!!this.active&&p.capture.inspecting,openerPageId:p.openerPageId,canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward()}]:[];})};}
   state(){const r=this.active;return {instanceId:this.instanceId,session:this.browserState(),validationStarting:this.validationLaunch?{validationId:this.validationLaunch.validationId,validationRunId:this.validationLaunch.validationRunId}:null,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,executionId:result?.executionBinding?.executionId,executionBinding:result?.executionBinding,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:p.capture.inspecting,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,validationStartGrant:this.validationStartGrant({runId:r.id}).grant,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
   async createProject(body:any){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');const p={id:randomUUID(),name:body.name.trim().slice(0,200),objective:String(body.objective||'').slice(0,4000),scriptDirectory:body.scriptDirectory?path.resolve(body.scriptDirectory):undefined,createdAt:now()};this.projects.push(p);await this.save();return p;}
@@ -194,6 +202,7 @@ export class Studio {
       await this.manageDownloads(r);launch?.abort.signal.throwIfAborted();
       let page:ManagedPage;
       if(previous){
+        const recordingForegroundAt=Date.now();
         for(const existing of r.pages.values()){
           existing.capture=this.createCapture(r,existing);await existing.capture.start();await existing.capture.flush();
           await store.appendEvent({type:'page-registered',source:'electron',pageId:existing.pageId,navigationGeneration:existing.navigationGeneration,data:{pageId:existing.pageId,targetId:existing.targetId,webContentsId:existing.webContentsId,navigationGeneration:existing.navigationGeneration,appInstanceId:this.instanceId,browserSessionId:this.browser.id,resumedSession:true}});
@@ -201,6 +210,7 @@ export class Studio {
         if(options.freshPage){page=await this.addPage(r);launch?.abort.signal.throwIfAborted();await this.navigate(String(body.url||'about:blank'),page,true);}
         else page=this.current();
         await store.appendEvent({type:'recording-started-in-existing-session',source:'lifecycle',pageId:page.pageId,navigationGeneration:page.navigationGeneration,data:{browserSessionId:this.browser.id,previousRecordingId:previous.id,historyBeforeStart:'not-recorded'}});
+        if(!options.freshPage)await this.recordForeground(r,null,'recording-started',recordingForegroundAt);
       }else{page=await this.addPage(r);launch?.abort.signal.throwIfAborted();await this.navigate(String(body.url||'about:blank'),page,true);}
       launch?.abort.signal.throwIfAborted();if(launch){launch.target={pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration};ensure(r.selectedPageId===page.pageId,'Validation startup page was replaced',409);}
       r.capture=[...r.pages.values()].some(p=>p.capture.health==='degraded')?'degraded':'recording';r.controller='human';r.locked=!!launch;this.window.lock(!!launch);await store.updateManifest({capture:r.capture,controller:'human',leaseEpoch:r.leaseEpoch});return this.state().active;
@@ -228,11 +238,13 @@ export class Studio {
     // Revocation starts synchronously, before another task can use the old lease.
     const revoked=operationRevoked?this.revokeOperation(r):Promise.resolve();
     this.window.remove(view);
+    let foregroundWrite:Promise<unknown>|undefined;
     if(wasSelected){
       const opener=identity.openerPageId?r.pages.get(identity.openerPageId):undefined;
       const replacement=opener&&this.pageContents(opener)?opener:[...r.pages.values()].reverse().find(page=>this.pageContents(page));
       r.selectedPageId=replacement?.pageId||'';
       if(this.active===r&&!r.ending&&!this.closing){this.window.show(replacement?.view);this.window.lock(r.locked||r.controller!=='human');}
+      if(this.active===r&&!r.ending&&!this.closing)foregroundWrite=this.recordForeground(r,identity.pageId,'page-closed',Date.parse(closedAt));
     }
     if(r.ending||this.closing||this.active!==r){if(!r.pages.size)r.controller='none';this.onChanged();void revoked.catch(error=>console.error('Could not revoke closed-page operation',error));return;}
     if(r.handoff?.pageId===identity.pageId&&r.handoff.status==='waiting'){
@@ -252,7 +264,7 @@ export class Studio {
       r.locked=false;this.window.lock(r.controller!=='human');this.onChanged();
     })():Promise.resolve();
     const cleanup=(async()=>{
-      const outcomes=await Promise.allSettled([revoked,registered?.capture.stop(),checkpointRecovery]);
+      const outcomes=await Promise.allSettled([revoked,registered?.capture.stop(),checkpointRecovery,foregroundWrite]);
       const errors=outcomes.flatMap(outcome=>outcome.status==='rejected'?[String(outcome.reason)]:[]);
       await r.store.appendEvent({type:'page-closed',source:'electron',pageId:identity.pageId,data:{...identity,targetId,wasRegistered:!!registered,selectedPageId,operationRevoked,closedAt,cleanupErrors:errors}});
       if(errors.length){r.capture='degraded';await r.store.appendEvent({type:'gap',source:'electron',pageId:identity.pageId,data:{reason:'closed-page-cleanup-failed',errors}});}
@@ -287,9 +299,9 @@ export class Studio {
     // when there is no recorder. The Puppeteer observer outlives capture CDP.
     page.on('framenavigated',frame=>{if(frame===page.mainFrame()){identity.navigationGeneration++;this.onChanged();}});
     const capture=this.createCapture(r,Object.assign(identity,{page}));
-    const p=Object.assign(identity,{view,page,capture}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);r.selectedPageId=p.pageId;
+    const p=Object.assign(identity,{view,page,capture}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);const previousPageId=r.selectedPageId||null;r.selectedPageId=p.pageId;const foregroundAt=Date.now();
     if(openerPageId&&r.controller==='agent'&&this.browserAuthorizationId)this.tasks.addPage(this.browserAuthorizationId,{pageId:p.pageId,targetId:p.targetId});
-    if(this.active===r){await capture.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{...identity,view:undefined,page:undefined,capture:undefined,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});}this.window.show(view);this.onChanged();return p;
+    if(this.active===r){await capture.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{...identity,view:undefined,page:undefined,capture:undefined,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});await this.recordForeground(r,previousPageId,'page-created',foregroundAt);}this.window.show(view);this.onChanged();return p;
   }
   private createCapture(r:ActiveRun,p:PageIdentity&{page:Page}){return new CaptureCoordinator(p.page,p,r.store,selection=>{if(this.active===r&&r.pages.has(p.pageId)){r.selection=selection;this.onChanged();}},reason=>{if(r.ending||this.active!==r||!r.pages.has(p.pageId))return;r.capture='degraded';this.onChanged();void r.store.updateManifest({capture:'degraded',captureHealthReason:reason}).catch(error=>console.error('Could not persist capture health',error));},false);}
   async navigate(url:string,p=this.current(),initial=false){ensure(/^https?:\/\//.test(url)||url==='about:blank','Only HTTP(S) and about:blank URLs supported');const r=this.live();if(!initial)ensure(!r.locked&&r.controller==='human'&&!r.ending,'Browser is controlled by automation or locked',409);const lease=r.leaseEpoch;return navigateObserved(p.view.webContents,p.page,url,()=>ensure(this.live()===r&&r.pages.get(p.pageId)===p&&p.targetId===(r.pages.get(p.pageId)?.targetId)&&r.leaseEpoch===lease&&!r.ending&&!this.closing,'Navigation target or ownership changed',409));}
@@ -305,7 +317,7 @@ export class Studio {
     ensure(!r.locked&&!r.ending&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Cannot change execution target while running or locked',409);
     ensure(!r.pendingOperation,'Operation connection is still starting',409);
     const operation=r.operation;if(operation){await operation.gate.quiesce();await operation.browser.disconnect();if(r.operation===operation)r.operation=undefined;}
-    ensure(this.browser?.runtime===r&&r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Page selection was cancelled',409);r.selectedPageId=p.pageId;r.leaseEpoch++;this.window.show(p.view);this.onChanged();return this.state();
+    ensure(this.browser?.runtime===r&&r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Page selection was cancelled',409);const previousPageId=r.selectedPageId||null;r.selectedPageId=p.pageId;r.leaseEpoch++;this.window.show(p.view);if(previousPageId!==p.pageId)await this.recordForeground(r,previousPageId,'page-selected');this.onChanged();return this.state();
   }
   async closePage(pageId:string){
     const r=this.live(),p=r.pages.get(pageId);ensure(p,'Unknown page',404);
@@ -352,7 +364,7 @@ export class Studio {
     const browser=this.browser;ensure(browser,'No live browser session',409);ensure(!this.active,'Seal the recording before closing its browser session',409);
     ensure(!this.validationLaunch&&!this.workflow&&!this.workflowStarting&&!this.workflowSettlement,'Stop the runner before closing its browser session',409);
     const r=browser.runtime;r.ending=true;r.locked=true;r.leaseEpoch++;this.window.lock(true);
-    try{await this.revokeOperation(r);for(const p of [...r.pages.values()])await this.closePageContents(p);this.browser=undefined;return {closed:true,sessionId:browser.id};}
+    try{await this.revokeOperation(r);for(const p of [...r.pages.values()])await this.closePageContents(p);this.browser=undefined;this.browserAuthorizationId=undefined;return {closed:true,sessionId:browser.id};}
     finally{r.ending=false;r.locked=false;this.window.lock(false);this.onChanged();}
   }
   private assertOperationOwner(r:ActiveRun,p:ManagedPage,leaseEpoch:number,generation?:number){
@@ -680,8 +692,8 @@ export class Studio {
     let resolve!:()=>void,reject!:(error:Error)=>void;const completion=new Promise<void>((yes,no)=>{resolve=yes;reject=no;});void completion.catch(()=>{});
     const onAbort=()=>{handoff.status='needs-attention';if(this.humanDone===done)this.humanDone=undefined;reject(new Error('Execution stopped while waiting for human'));};
     const done={resolve:()=>{signal?.removeEventListener('abort',onAbort);resolve();},reject:(error:Error)=>{signal?.removeEventListener('abort',onAbort);reject(error);}};this.humanDone=done;signal?.addEventListener('abort',onAbort,{once:true});
-    r.execution='waiting-human';r.controller='human';r.locked=false;r.leaseEpoch++;this.window.show(r.pages.get(pageId)!.view);r.selectedPageId=pageId;this.window.lock(false);
-    try{await r.store.appendEvent({type:'handoff',source:owner==='runner'?'runner':'api',data:handoff});}catch(error){handoff.status='needs-attention';r.execution='paused';done.reject(error instanceof Error?error:new Error(String(error)));throw error;}this.onChanged();return {handoff,completion};
+    r.execution='waiting-human';r.controller='human';r.locked=false;r.leaseEpoch++;const previousPageId=r.selectedPageId||null;this.window.show(r.pages.get(pageId)!.view);r.selectedPageId=pageId;const foregroundAt=Date.now();this.window.lock(false);
+    try{if(previousPageId!==pageId)await this.recordForeground(r,previousPageId,'human-handoff',foregroundAt);await r.store.appendEvent({type:'handoff',source:owner==='runner'?'runner':'api',data:handoff});}catch(error){handoff.status='needs-attention';r.execution='paused';done.reject(error instanceof Error?error:new Error(String(error)));throw error;}this.onChanged();return {handoff,completion};
   }
   async requestHuman(request:HumanRequest,signal?:AbortSignal,pageId=this.current().pageId){const state=await this.beginHuman(request,'runner',pageId,signal);return state.completion;}
   async startHandoff(body:any){

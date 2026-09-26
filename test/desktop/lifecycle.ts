@@ -9,6 +9,9 @@ import { makeDispatch } from '@/main/services/dispatch';
 import type { Artifact, QueryPage } from '@/evidence/contracts';
 import type { EvidenceReader } from '@/evidence/reader';
 import { sameStream } from '@/capture/recording-types';
+import { rewriteReplayEvent } from '@/resources/replay-resources';
+import { ArchiveReplayService } from '@/replay/service';
+import { prepareReplayEvents } from '@/replay/rrweb-player';
 import { clickSyntheticHuman as nativeFixtureClick } from './native-input';
 import { verifySoakEvidenceSnapshot, type SoakEvidenceSnapshot } from './soak-evidence';
 
@@ -36,7 +39,7 @@ async function pages(read: (cursor?: string) => Promise<QueryPage>): Promise<any
 }
 
 async function eventRecords(reader: EvidenceReader, types: string[]): Promise<any[]> {
-  return pages(cursor => reader.events({ cursor, types, limit: 100, maxBytes: 32768, fields: ['type', 'pageId', 'data', 'artifactRefs'] }));
+  return pages(cursor => reader.events({ cursor, types, limit: 100, maxBytes: 32768, fields: ['type', 'pageId', 'data', 'artifactRefs', 'occurredAt', 'timeBasis'] }));
 }
 
 async function responseArtifact(studio: Studio, url: string): Promise<Artifact> {
@@ -167,6 +170,11 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
   assert.equal(studio.state().active?.pages.some(page=>page.pageId===child.pageId),false,'State queries must never dereference or return the destroyed WebContents');
   const closed=await eventRecords(studio.reader(run.id),['page-closed']);
   assert.ok(closed.some(event=>event.pageId===child.pageId&&event.data.targetId===child.targetId&&event.data.operationRevoked===true),'Closure evidence preserves page/target identity and operation revocation');
+  const foreground=await eventRecords(studio.reader(run.id),['page-foreground']);
+  assert.deepEqual(foreground.map(event=>event.data.selectedPageId),[parent.pageId,child.pageId,parent.pageId,child.pageId,parent.pageId],
+    'Trusted foreground events follow initial page, popup, explicit switches and close restoration');
+  assert.deepEqual(foreground.map(event=>event.data.transitionOrdinal),[1,2,3,4,5]);
+  assert.ok(foreground.every(event=>event.timeBasis==='host-wall-clock'&&Date.parse(event.occurredAt)===event.data.observedAtMs));
   await assert.rejects(dispatch('selectPage',{pageId:child.pageId},'ui'),/Unknown page/);
   await action(studio,{type:'click',selector:'#increment'});
   assert.equal(await parent.page.$eval('#action-count',element=>element.textContent),'3','Parent operations continue after popup self-close');
@@ -190,10 +198,13 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
   assert.ok(raw.every(record => record.isTop === true), 'Only top-document recorder streams may be saved; nested independent rrweb snapshots would corrupt playback');
   assert.ok(topFrames.length < 500, 'A single static iframe must not recursively inflate recording');
   const replay = await studio.replay({ runId: run.id, pageId: parent.pageId });
-  const replaySources = (await rrwebRecords(run.store.runDir)).filter(record => record.pageId === parent.pageId && record.isTop);
-  const parentEventSet = new Set(replaySources.map(record => JSON.stringify(record.event)));
-  assert.ok(replay.events.length > 0 && replay.events.length <= replaySources.length);
-  assert.ok(replay.events.every(event => parentEventSet.has(JSON.stringify(event))), 'Replay must include only the requested business page top-document stream');
+  assert.equal(replay.position.pageId, parent.pageId);
+  const sourceWindow = await new ArchiveReplayService(run.store.runDir).window(replay.position);
+  assert.ok(sourceWindow.records.length > 0 && sourceWindow.records.every(record => sameStream(record.position, replay.position)), 'Replay window contains only the requested top-document stream');
+  // The bounded legacy API emits a disposable presentation clock and one
+  // synthetic metadata event, then removes live URLs. Compare that exact
+  // window without treating its presentation events as new source records.
+  assert.deepEqual(replay.events, prepareReplayEvents(sourceWindow).events.map(event => rewriteReplayEvent(event, () => 'about:blank')), 'Replay must include only the requested business page top-document stream');
   assert.equal(parent.capture.health, 'recording');
 
   await action(studio, { type: 'navigate', url: `${origin}/lab` });

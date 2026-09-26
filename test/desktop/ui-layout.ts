@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -8,6 +9,18 @@ import type { Studio } from '@/main/services/studio';
 type Rect = { x: number; y: number; width: number; height: number };
 const separator = '[role="separator"][aria-label="调整工作台与浏览器宽度"]';
 const unavailableWindowCapture = new WeakMap<BrowserWindow, string>();
+
+function alignDesktopCursor(window: BrowserWindow, point: { x: number; y: number }): void {
+  if (process.platform !== 'win32') return;
+  // sendInputEvent does not move the OS pointer. When the native view hides,
+  // Chromium emits a hover move at the real pointer position; align it with
+  // the synthetic press so that move cannot cancel the active resize.
+  const bounds = window.getContentBounds();
+  // PowerShell's process uses Windows logical coordinates for SetCursorPos.
+  const desktop = { x: bounds.x + point.x, y: bounds.y + point.y };
+  const script = `$source='using System.Runtime.InteropServices; public static class BesTestCursor { [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y); }'; Add-Type -TypeDefinition $source; if (-not [BesTestCursor]::SetCursorPos(${desktop.x},${desktop.y})) { exit 1 }`;
+  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true });
+}
 
 async function until<T>(read: () => T | Promise<T>, accept: (value: T) => boolean, label: string): Promise<T> {
   const deadline = Date.now() + 12000;
@@ -128,6 +141,8 @@ export async function runUiLayoutScenarios(studio: Studio): Promise<void> {
   const beginDrag = async () => {
     await focusUi();
     const point = await handlePoint();
+    alignDesktopCursor(host, point);
+    await delay(75);
     ui.sendInputEvent({ type: 'mouseMove', ...point });
     ui.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point });
     await until(() => managed.view.getVisible(), value => !value, 'layout drag hides the native input surface');

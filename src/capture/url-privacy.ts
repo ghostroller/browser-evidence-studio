@@ -5,7 +5,9 @@ export function credentialUrl(value: string, base = 'https://capture.invalid/'):
   const credential = /password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key/i;
   const candidates = [value, ...(value.match(/(?:https?|wss?):\/\/[^\s"'<>]+/gi) ?? [])];
   for (const candidate of candidates) try {
-    const url = new URL(candidate, base);
+    // A relative candidate must be judged by its own spelling. Inheriting a
+    // private document's query would redact unrelated CSS/text such as #id.
+    const url = new URL(candidate, new URL('/', base));
     if (url.username || url.password || [...url.searchParams.keys()].some(key => credential.test(key))) return true;
     const fragment = url.hash.slice(1), query = fragment.includes('?') ? fragment.slice(fragment.indexOf('?') + 1) : fragment;
     if ([...new URLSearchParams(query).keys()].some(key => credential.test(key))) return true;

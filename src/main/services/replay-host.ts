@@ -7,11 +7,11 @@ import type { RecordingEnvelope } from '@/capture/recording-types';
 import { SourceModel } from '@/replay/source-model';
 import { prepareReplayEvents } from '@/replay/rrweb-player';
 import { ResourceArchive } from '@/resources/archive';
-import { OfflineResourceService, prepareArchivedReplay } from '@/resources/replay-resources';
+import { OfflineResourceService, prepareArchivedReplay, type ReplayResourceDiagnostic } from '@/resources/replay-resources';
 import { OFFLINE_CSP } from '@/resources/rewrite';
 import { ensure } from '@/shared/errors';
 import { captureError } from '@/capture/url-privacy';
-import { replayHit, waitReplayPresentation } from './replay-presentation';
+import { fitReplayViewport, replayHit, waitReplayPresentation } from './replay-presentation';
 import type { StudioWindow } from '../window';
 import type { ProjectMaterials } from './project-materials';
 import type { ReplayHostState, ReplayOpenInput, ReplaySeekInput, ReplayPlayInput } from './client-types';
@@ -20,7 +20,10 @@ import rrwebSource from '../../../node_modules/rrweb/dist/rrweb.umd.cjs?raw';
 interface ActiveReplay {
   view: WebContentsView; partition: Electron.Session; state: ReplayHostState; abort?: AbortController;
   source?: SourceModel; resource?: OfflineResourceService; ready: Promise<void>; bridgeSequence: number; selectionGeneration:number;
+  commandSequence:number; playIntent:boolean;
   resourcePositions: Map<number, ReplayPosition>; records?: RecordingEnvelope[];
+  resourceDiagnostics?: ReplayResourceDiagnostic[]; reportedResourceDiagnostics?: Set<number>;
+  protocolPending?: Map<string,Map<number,number>>;
   playback?: { end: ReplayPosition; offsets: Array<{ position: ReplayPosition; offset: number }>; gaps: RecordingGap[] };
 }
 /** The replay has its own ephemeral session and no preload or business profile.
@@ -43,7 +46,7 @@ export class ReplayHost {
     view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     view.webContents.on('will-navigate', event => event.preventDefault());
     view.webContents.on('will-frame-navigate', event => { if(event.url !== 'about:blank')event.preventDefault(); });
-    const active: ActiveReplay = { view, partition, state: { replayId, projectId: body.projectId, generation: 0, status: 'loading', selecting: false, selectionSequence: 0,playing:false,rebuilds:0,resources:{status:'loading',blockedRequests:0,failures:[]} }, bridgeSequence: 0, selectionGeneration:0, ready: Promise.resolve(),resourcePositions:new Map() };
+    const active: ActiveReplay = { view, partition, state: { replayId, projectId: body.projectId, generation: 0, commandSequence:0, status: 'loading', selecting: false, selectionSequence: 0,playing:false,rebuilds:0,resources:{status:'loading',blockedRequests:0,failures:[]} }, bridgeSequence: 0, selectionGeneration:0, commandSequence:0,playIntent:false,ready: Promise.resolve(),resourcePositions:new Map() };
     this.active = active;
     partition.protocol.handle('bes-resource', async request => {
       const url = new URL(request.url), generation = Number(url.searchParams.get('seek')), at = Number(url.searchParams.get('at')), id = url.pathname.slice(1);
@@ -53,7 +56,10 @@ export class ReplayHost {
       try {
         const result = await resource.response(id, position, resourceId => this.resourceUrl(resourceId, generation, position));
         if(this.active!==active || generation!==active.state.generation)return new Response('', { status: 409 });
-        for(const diagnostic of result.diagnostics)this.resourceFailure(active,generation,diagnostic.status,diagnostic.reason,diagnostic.url);
+        const byPosition=active.protocolPending??=new Map<string,Map<number,number>>();
+        const pending=byPosition.get(id)??new Map<number,number>();
+        pending.set(at,result.diagnostics.filter(diagnostic=>diagnostic.status==='pending').length);byPosition.set(id,pending);
+        for(const diagnostic of result.diagnostics)if(diagnostic.status!=='pending')this.resourceFailure(active,generation,diagnostic.status,diagnostic.reason,diagnostic.url);
         return new Response(result.bytes as BodyInit, { headers: result.headers });
       } catch(error) {
         const details=captureError(error),missing=['ENOENT','RESOURCE_NOT_FOUND'].includes(details.code??'');
@@ -70,7 +76,7 @@ export class ReplayHost {
     active.ready = (async () => {
       await view.webContents.loadURL('about:blank');
       if(this.active!==active||view.webContents.isDestroyed())return;
-      await view.webContents.executeJavaScript(`document.head.innerHTML=${JSON.stringify(`<meta http-equiv="Content-Security-Policy" content="${OFFLINE_CSP.replace(/"/g, '&quot;')}"><style>html,body{margin:0;height:100%;overflow:auto;background:white}#replay{position:relative}#selection{position:fixed;inset:0;z-index:2147483647;display:none;cursor:crosshair;background:transparent}#selected{position:fixed;pointer-events:none;border:2px solid #2563eb;z-index:2147483646;display:none}</style>`)};document.body.innerHTML='<div id="replay"></div><div id="selected"></div><div id="selection" tabindex="0" aria-label="选择历史元素；Escape 退出"></div>';true`);
+      await view.webContents.executeJavaScript(`document.head.innerHTML=${JSON.stringify(`<meta http-equiv="Content-Security-Policy" content="${OFFLINE_CSP.replace(/"/g, '&quot;')}"><style>html,body{margin:0;height:100%;overflow:auto;background:white}#replay-stage{position:relative;overflow:hidden}#replay{position:absolute;left:0;top:0;transform-origin:top left}#selection{position:fixed;inset:0;z-index:2147483647;display:none;cursor:crosshair;background:transparent}#selected{position:fixed;pointer-events:none;border:2px solid #2563eb;z-index:2147483646;display:none}</style>`)};document.body.innerHTML='<div id="replay-stage"><div id="replay"></div></div><div id="selected"></div><div id="selection" tabindex="0" aria-label="选择历史元素；Escape 退出"></div>';true`);
       if(this.active!==active||view.webContents.isDestroyed())return;
       await view.webContents.executeJavaScript(rrwebSource);
       if(this.active!==active||view.webContents.isDestroyed())return;
@@ -87,7 +93,22 @@ export class ReplayHost {
     active.state.error='归档资源缺失或读取失败；查看资源诊断';
     if(resources.failures.length<16)resources.failures.push({resourceId,generation,name:'ReplayResourceUnavailable',code,message:message.slice(0,256)});
   }
+  private updateResourceDiagnostics(active: ActiveReplay, generation: number, position: ReplayPosition) {
+    const resources=active.state.resources, diagnostics=active.resourceDiagnostics;if(!resources||!diagnostics)return;
+    const reported=active.reportedResourceDiagnostics??=new Set<number>();
+    let pending=0;
+    for(const versions of active.protocolPending?.values()??[]){const latest=[...versions].filter(([at])=>at<=position.eventSeq).sort(([a],[b])=>b-a)[0];pending+=latest?.[1]??0;}
+    diagnostics.forEach((diagnostic,index)=>{
+      if(diagnostic.position.eventSeq>position.eventSeq)return;
+      if(diagnostic.status==='pending') {
+        if(!diagnostic.resolvedAt||position.eventSeq<diagnostic.resolvedAt.eventSeq)pending++;
+      } else if(!reported.has(index)) {reported.add(index);this.resourceFailure(active,generation,diagnostic.status,diagnostic.reason,diagnostic.url);}
+    });
+    resources.pendingCount=pending;
+    if(resources.status!=='partial'&&resources.status!=='loading')resources.status=pending?'pending':'ready';
+  }
   private require(id: string) { ensure(this.active?.state.replayId===id, 'Replay view is no longer active', 409); return this.active; }
+  private command(active:ActiveReplay,playIntent:boolean){active.playIntent=playIntent;active.state.commandSequence=++active.commandSequence;return active.commandSequence;}
   async seek(body: ReplaySeekInput): Promise<ReplayHostState> {
     const active = this.require(body.replayId), position = parseReplayPosition(body.position);
     ensure(active.state.projectId===body.projectId, 'Replay belongs to another project', 403);
@@ -100,19 +121,20 @@ export class ReplayHost {
     ensure([0.5,1,2,4].includes(body.speed),'Unsupported replay speed',400);
     ensure(start.recordingId===end.recordingId&&start.pageId===end.pageId&&start.documentId===end.documentId&&start.streamEpoch===end.streamEpoch&&start.eventSeq<end.eventSeq,'Playback end must follow the current position in the same source stream',409);
     if(active.playback&&sameReplayPosition(active.playback.end,end)){
-      const generation=active.state.generation;
-      await active.view.webContents.executeJavaScript(`(()=>{if(window.__besGeneration!==${generation})return false;window.__besPlayer.setConfig({speed:${body.speed}});window.__besPlaybackEnded=false;window.__besPlayer.play(window.__besPlayer.getCurrentTime());return true;})()`);
-      if(this.active===active&&active.state.generation===generation)active.state.playing=true;
+      const generation=active.state.generation,command=this.command(active,true),selection=++active.selectionGeneration;
+      const started=await active.view.webContents.executeJavaScript(`(()=>{window.__besCommand=Math.max(window.__besCommand||0,${command});if(window.__besGeneration!==${generation}||window.__besCommand!==${command})return false;window.__besSelectSequence=Math.max(window.__besSelectSequence||0,${selection});document.querySelector('#selection').style.display='none';window.__besPlayer.setConfig({speed:${body.speed}});window.__besPlaybackEnded=false;window.__besPlayer.play(window.__besPlayer.getCurrentTime());return true;})()`);
+      if(this.active===active&&active.state.generation===generation&&active.commandSequence===command){active.state.playing=started===true;active.playIntent=started===true;}
       return structuredClone(active.state);
     }
     return this.render(active,end,start,body.speed);
   }
   async pause(id: string, projectId: string): Promise<ReplayHostState> {
     const active=this.require(id);ensure(active.state.projectId===projectId,'Replay belongs to another project',403);
-    if(active.state.status!=='ready'||!active.state.playing)return structuredClone(active.state);
-    const generation=active.state.generation;
-    const clock=await active.view.webContents.executeJavaScript(`(()=>{if(window.__besGeneration!==${generation})return null;window.__besPlayer.pause();return window.__besPlayer.getCurrentTime();})()`);
-    if(this.active===active&&active.state.generation===generation&&typeof clock==='number')this.updatePlayback(active,clock,false);
+    const generation=active.state.generation,command=this.command(active,false);
+    active.state.playing=false;
+    if(active.state.status==='failed')return structuredClone(active.state);
+    const clock=await active.view.webContents.executeJavaScript(`(()=>{window.__besCommand=Math.max(window.__besCommand||0,${command});if(window.__besGeneration!==${generation}||!window.__besPlayer)return null;window.__besPlayer.pause();return window.__besPlayer.getCurrentTime();})()`);
+    if(this.active===active&&active.state.generation===generation&&active.commandSequence===command&&typeof clock==='number')this.updatePlayback(active,clock,false);
     return structuredClone(active.state);
   }
   private updatePlayback(active: ActiveReplay, clock: number, playing: boolean) {
@@ -120,19 +142,20 @@ export class ReplayHost {
     let low=0,high=playback.offsets.length;
     while(low<high){const middle=Math.floor((low+high)/2);if(playback.offsets[middle].offset<=clock+0.0001)low=middle+1;else high=middle;}
     const position=playback.offsets[Math.max(0,low-1)].position;
-    active.state.position=position;active.state.playing=playing;
+    active.state.position=position;active.state.playing=playing;active.playIntent=playing;
+    this.updateResourceDiagnostics(active,active.state.generation,position);
     const gaps=playback.gaps.filter(gap=>gap.from.eventSeq<=position.eventSeq);
     if(active.state.state)active.state.state={...active.state.state,position,gaps,reliability:gaps.some(gap=>gap.category==='structure'||gap.category==='metadata')?'gap':'reliable'};
     if(!playing&&active.records)active.source=new SourceModel(active.records.filter(record=>record.position.eventSeq<=position.eventSeq));
   }
   private async render(active: ActiveReplay, end: ReplayPosition, start: ReplayPosition, speed?: number): Promise<ReplayHostState> {
-    const generation = ++active.state.generation; active.selectionGeneration++;active.abort?.abort(); const abort = new AbortController(); active.abort=abort;
-    active.state={...active.state,status:'loading',position:start,playing:false,selection:undefined,selecting:false,error:undefined,selectionError:undefined,resources:{status:'loading',blockedRequests:0,failures:[]}};active.source=undefined;active.playback=undefined;active.resourcePositions.clear();
+    const generation = ++active.state.generation,command=this.command(active,speed!==undefined); active.selectionGeneration++;active.abort?.abort(); const abort = new AbortController(); active.abort=abort;
+    active.state={...active.state,status:'loading',position:start,playing:false,selection:undefined,selecting:false,error:undefined,selectionError:undefined,resources:{status:'loading',blockedRequests:0,failures:[]}};active.source=undefined;active.playback=undefined;active.resourcePositions.clear();active.resourceDiagnostics=undefined;active.reportedResourceDiagnostics=undefined;active.protocolPending=new Map();
     if(speed===undefined)this.window.showReplay(active.view,false);
     try {
       await active.ready; abort.signal.throwIfAborted();
       // Destroy the previous mirror before allocating another bounded reconstruction.
-      await active.view.webContents.executeJavaScript(`window.__besGeneration=${generation};window.__besPlayer?.destroy();window.__besPlayer=null;document.querySelector('#selection').style.display='none';document.querySelector('#selected').style.display='none';true`);
+      await active.view.webContents.executeJavaScript(`if((window.__besGeneration||0)<=${generation}){window.__besCommand=Math.max(window.__besCommand||0,${command});window.__besGeneration=${generation};window.__besFitReplay?.();window.__besFitReplay=null;window.__besPlayer?.destroy();window.__besPlayer=null;document.querySelector('#selection').style.display='none';document.querySelector('#selected').style.display='none';}true`);
       const service=await this.materials.replay(end.recordingId,active.state.projectId),window=await service.window(end,abort.signal);
       ensure(window.records.some(record=>sameReplayPosition(record.position,start)),'Playback start is outside the bounded source window',409);
       const archive=new ResourceArchive(path.join(this.root,'runs',end.recordingId));
@@ -140,18 +163,19 @@ export class ReplayHost {
       const prepared=prepareReplayEvents({...window,records:resolved.records});
       abort.signal.throwIfAborted(); if(this.active!==active||active.state.generation!==generation)return structuredClone(active.state);
       active.resource=new OfflineResourceService(archive);active.records=window.records;
+      active.resourceDiagnostics=resolved.diagnostics;active.reportedResourceDiagnostics=new Set();
       active.resourcePositions=new Map(window.records.map(record=>[record.position.eventSeq,record.position]));
       const offsets=window.records.map((record,index)=>({position:record.position,offset:prepared.events[index+1].timestamp-prepared.events[0].timestamp+0.001}));
       const startOffset=offsets.find(item=>sameReplayPosition(item.position,start))!.offset;
       active.playback=speed===undefined?undefined:{end,offsets,gaps:window.gaps};
       active.source=new SourceModel(window.records.filter(record=>record.position.eventSeq<=start.eventSeq));
-      for(const diagnostic of resolved.diagnostics)this.resourceFailure(active,generation,diagnostic.status,diagnostic.reason,diagnostic.url);
-      const assetErrors:string[]=await active.view.webContents.executeJavaScript(`(async()=>{if(window.__besGeneration!==${generation})return [];const player=new rrweb.Replayer(${JSON.stringify(prepared.events)},{root:document.querySelector('#replay'),speed:${speed??1},showWarning:false,showDebug:false,UNSAFE_replayCanvas:false});window.__besPlayer=player;window.__besPlaybackEnded=false;player.on('finish',()=>{if(window.__besGeneration===${generation}&&window.__besPlayer===player)window.__besPlaybackEnded=true});player.pause(${startOffset});window.__besReplay={sequence:0,nodeId:null};const failures=await (${waitReplayPresentation.toString()})(document.querySelector('#replay iframe').contentDocument,${generation});${speed!==undefined?`player.play(${startOffset});`:''}return failures;})()`);
+      const assetErrors:string[]=await active.view.webContents.executeJavaScript(`(async()=>{if(window.__besGeneration!==${generation})return [];const player=new rrweb.Replayer(${JSON.stringify(prepared.events)},{root:document.querySelector('#replay'),speed:${speed??1},showWarning:false,showDebug:false,UNSAFE_replayCanvas:false});window.__besPlayer=player;window.__besPlaybackEnded=false;player.on('finish',()=>{if(window.__besGeneration===${generation}&&window.__besPlayer===player)window.__besPlaybackEnded=true});player.pause(${startOffset});window.__besFitReplay=(${fitReplayViewport.toString()})(document.querySelector('#replay-stage'),document.querySelector('#replay'));window.__besReplay={sequence:0,nodeId:null};const failures=await (${waitReplayPresentation.toString()})(document.querySelector('#replay iframe').contentDocument,${generation});${speed!==undefined?`if(window.__besGeneration===${generation}&&window.__besCommand===${command})player.play(${startOffset});`:''}return failures;})()`);
       abort.signal.throwIfAborted();
       if(this.active!==active||active.state.generation!==generation)return structuredClone(active.state);
       for(const message of assetErrors)if(active.state.resources!.failures.length<16)active.state.resources!.failures.push({generation,name:'AssetReadinessError',message});
       active.state.resources!.status=active.state.resources!.failures.length?'partial':'ready';
-      active.bridgeSequence=0;active.state={...active.state,status:'ready',playing:speed!==undefined,rebuilds:(active.state.rebuilds??0)+1,state:{position:start,reliability:window.gaps.some(gap=>gap.from.eventSeq<=start.eventSeq&&(gap.category==='structure'||gap.category==='metadata'))?'gap':'reliable',gaps:window.gaps.filter(gap=>gap.from.eventSeq<=start.eventSeq),viewport:window.records.at(-1)!.viewport}};
+      this.updateResourceDiagnostics(active,generation,start);
+      active.bridgeSequence=0;active.state={...active.state,status:'ready',playing:speed!==undefined&&active.playIntent&&active.commandSequence===command,rebuilds:(active.state.rebuilds??0)+1,state:{position:start,reliability:window.gaps.some(gap=>gap.from.eventSeq<=start.eventSeq&&(gap.category==='structure'||gap.category==='metadata'))?'gap':'reliable',gaps:window.gaps.filter(gap=>gap.from.eventSeq<=start.eventSeq),viewport:window.records.at(-1)!.viewport}};
       if(active.state.resources!.status==='partial')active.state.error='历史结构已重建，但部分归档资源缺失、读取失败或未就绪';
       this.window.showReplay(active.view);
       return structuredClone(active.state);
@@ -161,14 +185,14 @@ export class ReplayHost {
     }
   }
   async status(id: string): Promise<ReplayHostState> {
-    const active=this.require(id),generation=active.state.generation;
+    const active=this.require(id),generation=active.state.generation,command=active.commandSequence;
     if(active.state.status==='ready'&&active.state.playing&&active.playback){
       const sampled=await active.view.webContents.executeJavaScript(`(()=>{if(window.__besGeneration!==${generation})return null;return {clock:window.__besPlayer.getCurrentTime(),ended:window.__besPlaybackEnded===true};})()`);
-      if(this.active===active&&generation===active.state.generation&&sampled&&Number.isFinite(sampled.clock))this.updatePlayback(active,sampled.ended?Number.POSITIVE_INFINITY:sampled.clock,!sampled.ended);
+      if(this.active===active&&generation===active.state.generation&&command===active.commandSequence&&active.state.playing&&sampled&&Number.isFinite(sampled.clock))this.updatePlayback(active,sampled.ended?Number.POSITIVE_INFINITY:sampled.clock,!sampled.ended);
     }
     if(active.state.status==='ready'&&active.state.selecting){
       const selected=await active.view.webContents.executeJavaScript('window.__besReplay');
-      if(this.active===active&&generation===active.state.generation&&Number.isSafeInteger(selected?.sequence)&&selected.sequence>active.bridgeSequence){
+      if(this.active===active&&generation===active.state.generation&&command===active.commandSequence&&active.state.selecting&&Number.isSafeInteger(selected?.sequence)&&selected.sequence>active.bridgeSequence){
         active.bridgeSequence=selected.sequence;
         active.state.selectionError=typeof selected.error==='string'?selected.error:undefined;
         const node=active.source?.nodes.get(selected.nodeId);
@@ -179,10 +203,10 @@ export class ReplayHost {
   }
   async select(id: string, enabled: boolean): Promise<ReplayHostState> {
     const active=this.require(id);ensure(typeof enabled==='boolean','Selection flag must be boolean');
-    ensure(active.state.status==='ready'&&!active.state.playing,'Pause at an exact historical position before selecting',409);
-    const generation=active.state.generation,selection=++active.selectionGeneration;
-    const applied=await active.view.webContents.executeJavaScript(`(()=>{if(window.__besGeneration!==${generation}||(window.__besSelectSequence||0)>${selection})return false;window.__besSelectSequence=${selection};document.querySelector('#selection').style.display=${JSON.stringify(enabled?'block':'none')};${enabled?"document.querySelector('#selection').focus();":"document.querySelector('#selected').style.display='none';"}return true;})()`);
-    if(!applied||this.active!==active||active.state.generation!==generation||active.selectionGeneration!==selection||active.state.status!=='ready')return structuredClone(active.state);
+    ensure(active.state.status==='ready'&&!active.state.playing&&!active.playIntent,'Pause at an exact historical position before selecting',409);
+    const generation=active.state.generation,selection=++active.selectionGeneration,command=this.command(active,false);
+    const applied=await active.view.webContents.executeJavaScript(`(()=>{window.__besCommand=Math.max(window.__besCommand||0,${command});if(window.__besGeneration!==${generation}||window.__besCommand!==${command}||(window.__besSelectSequence||0)>${selection})return false;window.__besSelectSequence=${selection};document.querySelector('#selection').style.display=${JSON.stringify(enabled?'block':'none')};${enabled?"document.querySelector('#selection').focus();":"document.querySelector('#selected').style.display='none';"}return true;})()`);
+    if(!applied||this.active!==active||active.state.generation!==generation||active.selectionGeneration!==selection||active.commandSequence!==command||active.state.status!=='ready')return structuredClone(active.state);
     active.state.selecting=enabled;
     if(enabled)active.view.webContents.focus();else this.window.window.webContents.focus();
     return structuredClone(active.state);
@@ -192,8 +216,8 @@ export class ReplayHost {
   }
   private closeActive(id?:string):ReplayHostState|undefined{
     const active=id?this.require(id):this.active;if(!active)return;
-    this.active=undefined;active.abort?.abort();active.state={...active.state,status:'closed',playing:false,selecting:false,selection:undefined};
-    this.window.hideReplay(active.view);active.source=undefined;active.resource=undefined;active.records=undefined;active.playback=undefined;active.resourcePositions.clear();
+    this.active=undefined;this.command(active,false);active.abort?.abort();active.state={...active.state,status:'closed',playing:false,selecting:false,selection:undefined};
+    this.window.hideReplay(active.view);active.source=undefined;active.resource=undefined;active.records=undefined;active.playback=undefined;active.resourceDiagnostics=undefined;active.reportedResourceDiagnostics=undefined;active.protocolPending=undefined;active.resourcePositions.clear();
     if(!active.view.webContents.isDestroyed())active.view.webContents.close();
     active.partition.webRequest.onBeforeRequest(null);active.partition.protocol.unhandle('bes-resource');
     return structuredClone(active.state);

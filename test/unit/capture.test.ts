@@ -34,6 +34,19 @@ test('pause/reset cannot attach a stale body to a newly reused CDP request id', 
   assert.equal(next.hop, 0);
 });
 
+test('cache and Service Worker provenance stays on its observed response hop', () => {
+  const ledger = new RequestLedger('capture-session', 'business-target');
+  const redirected = ledger.begin({ requestId: '42', url: '/redirect', redirect: false }).current;
+  ledger.response('42', 'text/css', undefined, { fromCache: true });
+  const final = ledger.begin({ requestId: '42', url: '/final.css', redirect: true }).current;
+  ledger.response('42', 'text/css', undefined, { fromServiceWorker: true });
+  ledger.servedFromCache('42');
+  assert.equal(redirected.fromCache, true);
+  assert.equal(redirected.fromServiceWorker, undefined);
+  assert.equal(final.fromServiceWorker, true);
+  assert.equal(final.fromCache, true);
+});
+
 test('incomplete streams are classified at headers and remain available for stop gaps', () => {
   const ledger = new RequestLedger('capture-session', 'business-target');
   ledger.begin({ requestId: 'stream', url: '/events', redirect: false });

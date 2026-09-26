@@ -6,6 +6,7 @@ import { parseReplayPosition, sameReplayPosition } from '@/contracts/recording';
 import type { RecordingEnvelope, RawReceipt } from '@/capture/recording-types';
 import { sameStream } from '@/capture/recording-types';
 import { EvidenceError } from '@/evidence/contracts';
+import { EvidenceReader } from '@/evidence/reader';
 import { atomicJson, hashBytes, jsonLines, readSlice, safeFile } from '@/evidence/files';
 import type { EvidenceStore } from '@/evidence/store';
 
@@ -20,6 +21,7 @@ interface Entry {
   monotonicTime: boolean;
 }
 export interface RecordingStream { first: ReplayPosition; last: ReplayPosition; events: number; monotonicTime: boolean }
+export interface ForegroundTransition { sequence: number; pageId: string | null; observedAtMs: number; transitionOrdinal: number; reason: string }
 export interface ReplayWindow {
   position: ReplayPosition;
   records: RecordingEnvelope[];
@@ -101,6 +103,24 @@ async function writeTimeline(runDir:string,entry:Entry,record:RecordingEnvelope)
 
 export class RecordingArchive {
   constructor(readonly runDir: string) {}
+  /** Host-owned page selection history. Legacy recordings have no such history;
+   * rrweb stream timestamps alone cannot identify the foreground page. */
+  async foreground(limit=50,cursor?:string):Promise<{status:'recorded'|'legacy';items:ForegroundTransition[];nextCursor?:string}>{
+    if(!Number.isSafeInteger(limit)||limit<1||limit>100)invalid('Foreground transition limit must be 1..100');
+    const page=await new EvidenceReader(this.runDir).events({types:['page-foreground'],limit,cursor,maxBytes:28672});
+    const items=page.items.map(value=>{
+      const event=value as {sequence?:unknown;pageId?:unknown;source?:unknown;occurredAt?:unknown;timeBasis?:unknown;data?:unknown};
+      const data=event.data as Record<string,unknown>|undefined;
+      if(!Number.isSafeInteger(event.sequence)||event.source!=='electron'||event.timeBasis!=='host-wall-clock'||!data||data.version!==1||
+        !Number.isSafeInteger(data.observedAtMs)||Number(data.observedAtMs)<0||!Number.isSafeInteger(data.transitionOrdinal)||Number(data.transitionOrdinal)<1||
+        (data.selectedPageId!==null&&typeof data.selectedPageId!=='string')||
+        (event.pageId!==undefined&&event.pageId!==data.selectedPageId)||typeof data.reason!=='string'||
+        typeof event.occurredAt!=='string'||Date.parse(event.occurredAt)!==data.observedAtMs)invalid('Malformed foreground transition');
+      return {sequence:event.sequence as number,pageId:data.selectedPageId as string|null,observedAtMs:data.observedAtMs as number,transitionOrdinal:data.transitionOrdinal as number,reason:data.reason as string};
+    });
+    for(let index=1;index<items.length;index++)if(items[index].transitionOrdinal<=items[index-1].transitionOrdinal||items[index].observedAtMs<items[index-1].observedAtMs)invalid('Foreground transitions are out of order');
+    return {status:items.length?'recorded':'legacy',items,...(page.nextCursor?{nextCursor:page.nextCursor}:{})};
+  }
   async streams(limit=100,after?:string):Promise<{items:RecordingStream[];nextCursor?:string}>{
     if(!Number.isSafeInteger(limit)||limit<1||limit>1000)invalid('Stream limit must be 1..1000');
     if(after&&!/^[a-f0-9]{64}$/.test(after))invalid('Invalid stream cursor');

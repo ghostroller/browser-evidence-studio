@@ -111,6 +111,7 @@ export class CaptureCoordinator {
       url:request.url,pageId:request.pageId,targetId:this.identity.targetId,recordingId:request.recordingId,
       frameId:request.frameId,loaderId:request.loaderId,navigationGeneration:request.navigationGeneration,
       requestStartedAt:request.startedAt,
+      ...(request.fromCache?{fromCache:true}:{}),...(request.fromServiceWorker?{fromServiceWorker:true}:{}),
       ...(request.responseObservedAt?{responseObservedAt:request.responseObservedAt}:{responseObservationStatus:'missing' as const})};
   }
   async start() {
@@ -125,6 +126,7 @@ export class CaptureCoordinator {
     cdp.on('Runtime.consoleAPICalled',(event:any)=>{if(!this.paused)this.task(()=>this.event('console',{type:event.type,args:event.args.map((x:any)=>({type:x.type,value:x.value,description:x.description?.slice(0,4000)}))}));});
     cdp.on('Runtime.bindingCalled',(event:any)=>{
       if(event.name!==this.binding||this.paused||this.stopped) return;
+      const observedAt=new Date().toISOString();
       const payloadBytes=Buffer.byteLength(event.payload);if(payloadBytes>16*1024*1024){this.drops++;this.droppedChannels.set('structure',(this.droppedChannels.get('structure')||0)+1);this.unknownStructuralLoss=true;this.recoveryNeeded=true;this.fail('Recorder event exceeds 16 MiB; exact source boundary unavailable');this.recoverSnapshot();return;}
       let data;try{data=JSON.parse(event.payload);}catch{this.fail('Malformed recorder payload');return;}
       const source=data.event?.type===3?data.event.data?.source:undefined;
@@ -134,7 +136,7 @@ export class CaptureCoordinator {
         if(data.kind==='rrweb'){
           const losses=[...this.losses].map(([category,range])=>({id:randomUUID(),from:range.from,to:range.to,category:category==='network'?'resource':category,reason:'capture-channel-budget',count:range.count}));this.losses.clear();
           if(this.unknownStructuralLoss){losses.push({id:randomUUID(),from:this.lastPosition??data.position,to:data.position,category:'structure',reason:'oversized-recorder-event-unknown-boundary',count:1});this.unknownStructuralLoss=false;}
-          const record:RecordingEnvelope={...data,receivedAt:new Date().toISOString(),gaps:[...losses,...(data.errors??[]).map((reason:string)=>({id:randomUUID(),from:data.position,category:'metadata',reason}))]};
+          const record:RecordingEnvelope={...data,observedAt,receivedAt:new Date().toISOString(),gaps:[...losses,...(data.errors??[]).map((reason:string)=>({id:randomUUID(),from:data.position,category:'metadata',reason}))]};
           await this.recording.append(record);if(this.documentMatches(document)){this.sourceFrameScopes.append(record);this.lastPosition=record.position;if(data.event?.type===2)this.pendingMainBaseline=false;}
           if(data.event?.type===2){this.fullSnapshots.set(event.executionContextId,(this.fullSnapshots.get(event.executionContextId)||0)+1);await this.event('rrweb-full-snapshot',{frameId,isTop:data.isTop===true,contextId:event.executionContextId,timestamp:data.event.timestamp,position:record.position});if(this.archivedDocument!==record.position.documentId){this.archivedDocument=record.position.documentId;this.bodyTask(()=>this.captureLoadedResources(record.position,document),256,'resource');}}}
         else { await this.event(data.kind,{...data,frameId,actor:'unknown',source:'isolated-world-observer'}); if(data.kind==='element-selected') {await this.recording.flush();this.onSelection(captureMetadata({...data,frameId,pageId:this.identity.pageId,generation:this.identity.navigationGeneration}));} }
@@ -162,19 +164,20 @@ export class CaptureCoordinator {
         if(['missing','truncated','read-failed','unknown'].includes(artifact.captureStatus))await this.event('gap',{reason:artifact.reason||'request-body-incomplete',requestKey:current.key,captureStatus:artifact.captureStatus},[artifact.id],navigationGeneration);
       },Buffer.byteLength(JSON.stringify(data))+(typeof e.request.postData==='string'?Math.min(Buffer.byteLength(e.request.postData),REQUEST_BODY_LIMIT):e.request.hasPostData||e.request.postDataEntries?.length?REQUEST_BODY_LIMIT:0));
     });
-    cdp.on('Network.responseReceived',(e:any)=>{if(this.paused||this.stopped)return;const responseObservedAt=new Date().toISOString(),r=this.requests.response(e.requestId,e.response.mimeType,responseObservedAt);this.task(async()=>{
+    cdp.on('Network.requestServedFromCache',(e:any)=>{if(!this.paused&&!this.stopped)this.requests.servedFromCache(e.requestId);});
+    cdp.on('Network.responseReceived',(e:any)=>{if(this.paused||this.stopped)return;const responseObservedAt=new Date().toISOString(),r=this.requests.response(e.requestId,e.response.mimeType,responseObservedAt,{fromCache:!!(e.response.fromDiskCache||e.response.fromPrefetchCache),fromServiceWorker:!!e.response.fromServiceWorker});this.task(async()=>{
       await this.event('network-response',{requestKey:r?.key,response:{...e.response,headers:redact(e.response.headers)}});
       if(!r)await this.event('gap',{reason:'response-without-observed-request',requestId:e.requestId,url:e.response.url});
       if(r?.streaming){const artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:'unknown',reason:'SSE payload completeness unsupported; connection may remain open',source:this.responseSource(r)});await this.event('network-stream',{requestKey:r.key,url:r.url,completeness:'unsupported'},[artifact.id]);}
     });});
-    cdp.on('Network.loadingFinished',(e:any)=>{if(this.paused||this.stopped)return;const responseRead=this.requests.acquireResponseRead(e.requestId),r=this.requests.finish(e.requestId),document=r?.frameId&&r.loaderId&&this.frameLoaders.get(r.frameId)===r.loaderId?this.currentDocument():undefined;const accepted=this.bodyTask(async()=>{try{
+    cdp.on('Network.loadingFinished',(e:any)=>{if(this.paused||this.stopped)return;const completionObservedAt=new Date().toISOString(),responseRead=this.requests.acquireResponseRead(e.requestId),r=this.requests.complete(e.requestId,completionObservedAt),document=r?.frameId&&r.loaderId&&this.frameLoaders.get(r.frameId)===r.loaderId?this.currentDocument():undefined;const accepted=this.bodyTask(async()=>{try{
       if(!r){await this.event('gap',{reason:'completion-without-observed-request',requestId:e.requestId});return;}
       if(r.streaming){await this.event('network-stream-ended',{requestKey:r.key,encodedDataLength:e.encodedDataLength,completeness:'unsupported'});return;}
       let artifact;
       const resource=isArchivableResource(r.mime);let position:ReplayPosition|undefined;
       if(resource){try{position=await this.currentSourcePosition(document);}catch(error){await this.event('gap',{category:'resource',reason:'resource-source-baseline-unavailable',requestKey:r.key,cause:captureError(error)});}if(!position)await this.event('gap',{category:'resource',reason:'resource-source-document-changed',requestKey:r.key});}
       const resourceFrameId=resource&&position?await this.resourceFrame(r.frameId,position,r.loaderId):undefined;
-      const resourceInput=position?{position,frameId:resourceFrameId??'unmapped',requestId:r.key,url:r.url,mediaType:r.mime,...(!resourceFrameId?{status:'unsupported' as const,reason:'frame-source-scope-unavailable'}:{}),source:{encodedDataLength:e.encodedDataLength,cdpFrameId:r.frameId}}:undefined;
+      const resourceInput=position?{position,frameId:resourceFrameId??'unmapped',requestId:r.key,url:r.url,mediaType:r.mime,requestStartedAt:r.startedAt,availableObservedAt:completionObservedAt,...(!resourceFrameId?{status:'unsupported' as const,reason:'frame-source-scope-unavailable'}:{}),source:{encodedDataLength:e.encodedDataLength,cdpFrameId:r.frameId,...(r.fromCache?{fromCache:true}:{}),...(r.fromServiceWorker?{fromServiceWorker:true}:{}),...(r.initialUrl!==r.url?{requestUrl:r.initialUrl}:{})}}:undefined;
       if(!resource&&!/json|text|html|xml|javascript|svg|x-www-form-urlencoded/i.test(r.mime)) artifact=await this.artifact({kind:'response-body',mediaType:r.mime||'application/octet-stream',captureStatus:'excluded',reason:'Binary response metadata only',source:this.responseSource(r)});
       else if(privateResourceUrl(r.url)){
         if(resource&&resourceInput)await this.resources.capture({...resourceInput,status:'redacted',reason:'credential-bearing-resource-url'});
@@ -222,11 +225,11 @@ export class CaptureCoordinator {
     await this.event('capture-ready',{capabilities:{mainDocument:true,rrweb:true,recordingFormat:2,sourceAdapter:RRWEB_ADAPTER_VERSION,networkBodies:true,crossOriginFrames:'unsupported',openShadowRoots:'captured-unverified',canvas:'unsupported',media:'unsupported',nodeHttp:'unobserved'},targetId:this.identity.targetId});
   }
   private async captureLoadedResources(position:ReplayPosition,document:ResourceDocument|undefined){
-    const current=()=>this.documentMatches(document)&&!this.pendingMainBaseline&&!!this.lastPosition&&sameStream(position,this.lastPosition);
+    const current=()=>!this.documentGone&&this.documentMatches(document)&&!this.pendingMainBaseline&&!!this.lastPosition&&sameStream(position,this.lastPosition);
     const skipped=async(stage:string,cdpFrameId=document?.frameId)=>this.event('resource-cache-probe-skipped',{reason:'source-document-or-loader-changed',from:position,cdpFrameId,loaderId:document?.loaderId,stage});
     if(!current()){await skipped('queued');return;}
     let frameTree;
-    try{({frameTree}=await this.cdp.send('Page.getResourceTree'));}catch(error){if(!current()){await skipped('resource-tree-error');return;}throw error;}
+    try{({frameTree}=await this.cdp.send('Page.getResourceTree',undefined, {timeout:5000}));}catch(error){if(!current()){await skipped('resource-tree-error');return;}throw error;}
     if(!current()||frameTree.frame.id!==document!.frameId||frameTree.frame.loaderId!==document!.loaderId){await skipped('resource-tree');return;}
     let count=0;
     const visit=async(tree:typeof frameTree):Promise<void>=>{

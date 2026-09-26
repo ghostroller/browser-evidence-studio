@@ -3,6 +3,8 @@ export interface CapturedRequest {
   key: string;
   occurrence: number;
   url: string;
+  /** First URL in this observed redirect chain; url is the current/final hop. */
+  initialUrl: string;
   mime: string;
   hop: number;
   frameId?: string;
@@ -12,6 +14,9 @@ export interface CapturedRequest {
   recordingId?: string;
   navigationGeneration?: number;
   responseObservedAt?: string;
+  completionObservedAt?: string;
+  fromCache?: boolean;
+  fromServiceWorker?: boolean;
   streaming?: boolean;
 }
 
@@ -42,7 +47,7 @@ export class RequestLedger {
     const current: CapturedRequest = {
       requestId: input.requestId,
       key: `${this.sessionId}/${this.targetId}/${input.requestId}/${occurrence}/${hop}`,
-      occurrence, hop, url: input.url, mime: '', frameId: input.frameId, loaderId: input.loaderId, startedAt: new Date().toISOString(),
+      occurrence, hop, url: input.url, initialUrl: previous && input.redirect ? previous.initialUrl : input.url, mime: '', frameId: input.frameId, loaderId: input.loaderId, startedAt: new Date().toISOString(),
       pageId: input.scope?.pageId, recordingId: input.scope?.recordingId, navigationGeneration: input.scope?.navigationGeneration,
     };
     let evicted: CapturedRequest | undefined;
@@ -56,11 +61,13 @@ export class RequestLedger {
     return { current, previous, evicted };
   }
 
-  response(requestId: string, mime: string, observedAt?: string): CapturedRequest | undefined {
+  response(requestId: string, mime: string, observedAt?: string, origin?: { fromCache?: boolean; fromServiceWorker?: boolean }): CapturedRequest | undefined {
     const current = this.active.get(requestId);
-    if (current) this.observeResponse(current, mime, observedAt);
+    if (current) { this.observeResponse(current, mime, observedAt); current.fromCache ||= origin?.fromCache; current.fromServiceWorker ||= origin?.fromServiceWorker; }
     return current;
   }
+
+  servedFromCache(requestId: string): void { const current = this.active.get(requestId); if (current) current.fromCache = true; }
 
   /** Redirect headers belong to the old hop, even after begin() installs the next hop. */
   observeRedirect(previous: CapturedRequest, mime: string, observedAt: string): void {
@@ -76,6 +83,13 @@ export class RequestLedger {
     const current = this.active.get(requestId);
     this.active.delete(requestId);
     return current;
+  }
+
+  /** Set at the CDP callback, before a body read can wait behind other work. */
+  complete(requestId: string, observedAt: string): CapturedRequest | undefined {
+    const current = this.active.get(requestId);
+    if (current) current.completionObservedAt = observedAt;
+    return this.finish(requestId);
   }
 
   /** A completed request can still return its body, until its ID is reused or capture resets. */

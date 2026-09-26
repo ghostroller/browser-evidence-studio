@@ -250,36 +250,44 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
     await waitFor(() => studio.current().view.getVisible(), Boolean, 'dark archive close restores native view');
     await setUiTheme(studio, 'light');
 
-    await click('DOM 回放');
-    await waitFor(() => evaluate<string>(`document.querySelector('.overlay-heading h2')?.textContent || ''`), text => text === 'DOM 基础回放', 'real rrweb replay overlay');
+    await click('打开历史回放');
+    await waitFor(() => evaluate<boolean>(`!!document.querySelector('.replay-workspace')`), Boolean, 'production replay workspace');
     await waitFor(() => studio.current().view.getVisible(), value => !value, 'replay hides live business view');
-    await waitFor(() => evaluate<boolean>(`!!document.querySelector('.replay-stage iframe')?.contentDocument`), Boolean, 'rrweb sandbox iframe constructed');
-    const readReplay = () => evaluate<{ sandbox: string; bridgeType: string; hasFixture: boolean; tick: string | null }>(`(() => {
-      const iframe=document.querySelector('.replay-stage iframe');
+    const currentPosition = studio.current().capture.recordingPosition;
+    assert.ok(currentPosition, 'The active synthetic document has a recorded source position');
+    const streamIndex = await waitFor(() => evaluate<number>(`Array.from(document.querySelector('select[aria-label="历史页面流"]')?.options || []).findIndex(option => option.textContent.includes(${JSON.stringify(currentPosition.documentId.slice(0, 12))}))`), index => index >= 0, 'active synthetic document stream listed');
+    await evaluate<void>(`(() => { const select=document.querySelector('select[aria-label="历史页面流"]'); select.value=${JSON.stringify(String(streamIndex))}; select.dispatchEvent(new Event('change',{bubbles:true})); })()`);
+    await waitFor(() => Promise.resolve((studio as any).replayHost.active?.state), value => value?.status === 'ready' && value.position?.documentId === currentPosition.documentId, 'active synthetic document selected');
+    const replay = await waitFor(() => Promise.resolve((studio as any).replayHost.active), value => value?.state?.status === 'ready', 'production ReplayHost ready');
+    const readReplay = () => replay.view.webContents.executeJavaScript(`(() => {
+      const iframe=document.querySelector('#replay iframe');
       const doc=iframe?.contentDocument;
       return { sandbox:iframe?.getAttribute('sandbox') || '', bridgeType:typeof iframe?.contentWindow?.studio,
         hasFixture:!!doc?.querySelector('#orders [data-order-id="SYN-001"]') && doc?.querySelector('h1')?.textContent === '合成订单',
         tick:doc?.querySelector('#tick')?.textContent ?? null };
-    })()`);
+    })()`, true) as Promise<{ sandbox: string; bridgeType: string; hasFixture: boolean; tick: string | null }>;
+    await waitFor(readReplay, value => value.hasFixture, 'rrweb sandbox iframe constructed with the synthetic page');
     const sandbox = await readReplay();
     assert.ok(sandbox.sandbox.split(/\s+/).includes('allow-same-origin'), 'The trusted renderer can inspect the isolated replay DOM');
     assert.equal(sandbox.sandbox.split(/\s+/).includes('allow-scripts'), false, 'Recorded site scripts must not execute in the replay iframe');
     assert.equal(sandbox.bridgeType, 'undefined', 'The replay iframe must not receive the trusted window.studio preload bridge');
-    await click('播放', `document.querySelector('.replay-toolbar')`);
-    await waitFor(() => evaluate<boolean>(`!!document.querySelector('.replay-toolbar .badge.running')`), Boolean, 'replay play control state');
+    await click('播放', `document.querySelector('.replay-controls')`);
+    await waitFor(() => Promise.resolve(replay.state.playing), Boolean, 'production replay play control state');
     const firstReplay = await waitFor(readReplay, value => value.hasFixture && value.tick !== null, 'recorded synthetic order DOM reconstructed', 15000);
     const changedReplay = await waitFor(readReplay, value => value.hasFixture && value.tick !== null && value.tick !== firstReplay.tick, 'rrweb applies recorded tick mutations during playback', 8000);
     assert.equal(changedReplay.bridgeType, 'undefined');
     assert.equal(changedReplay.sandbox.split(/\s+/).includes('allow-scripts'), false);
-    await click('暂停', `document.querySelector('.replay-toolbar')`);
-    await waitFor(() => evaluate<boolean>(`!!document.querySelector('.replay-toolbar .badge.paused')`), Boolean, 'replay pause control state');
+    await click('暂停', `document.querySelector('.replay-controls')`);
+    await waitFor(() => Promise.resolve(replay.state.playing), value => !value, 'production replay pause control state');
     await delay(100);
     const pausedReplay = await readReplay();
     await delay(250);
     assert.deepEqual(await readReplay(), pausedReplay, 'Paused playback must stop recorded DOM mutation while site scripts remain disabled');
-    await captureUi('replay.png', `document.querySelector('.overlay-heading h2')?.textContent==='DOM 基础回放' && !!document.querySelector('.replay-toolbar .badge.paused') && !!document.querySelector('.replay-stage iframe')?.contentDocument?.querySelector('#orders [data-order-id="SYN-001"]')`);
-    await click('返回工作台');
-    await waitFor(() => evaluate<boolean>(`!document.querySelector('[role="dialog"]') && !document.querySelector('.replay-stage iframe')`), Boolean, 'replayer and sandbox iframe removed on close');
+    assert.equal(replay.state.status, 'ready', 'Paused ReplayHost keeps its source position');
+    await captureUi('replay.png', `!!document.querySelector('.replay-workspace') && document.querySelector('.replay-controls')?.textContent.includes('播放') && !!document.querySelector('.replay-timeline')`);
+    await click('返回实时页面', `document.querySelector('.replay-controls')`);
+    await waitFor(() => evaluate<boolean>(`!document.querySelector('.replay-workspace')`), Boolean, 'replay workspace removed on close');
+    await waitFor(() => Promise.resolve((studio as any).replayHost.active), value => !value, 'native replayer and sandbox iframe destroyed on close');
     await waitFor(() => studio.current().view.getVisible(), Boolean, 'replay close restores live business view');
   }
   console.log('UI PASS: real React/IPC, native bounds, explicit control, archive screenshot, sandboxed rrweb play/pause and replay screenshot');

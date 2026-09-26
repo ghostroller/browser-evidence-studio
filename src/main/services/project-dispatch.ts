@@ -4,9 +4,9 @@ import { MATERIAL_COLLECTIONS, materialBudget, materialSummary } from './project
 import { parseReplayPosition } from '@/contracts/recording';
 import { ensure } from '@/shared/errors';
 
-export const PROJECT_METHODS = new Set(['taskAuthorizations', 'authorizeTask', 'revokeTask', 'taskChanges', 'materialDrafts', 'materialRevisions', 'materialDraft', 'materialRevision', 'materialCollection', 'createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft', 'materialDiff', 'recordingStreams', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators', 'execution', 'executionItems', 'datasetBatches', 'datasetRecords', 'assessExecution', 'executionReport', 'executionReportItems', 'reviewExecution']);
+export const PROJECT_METHODS = new Set(['taskAuthorizations', 'authorizeTask', 'revokeTask', 'taskChanges', 'materialDrafts', 'materialRevisions', 'materialDraft', 'materialRevision', 'materialCollection', 'createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft', 'materialDiff', 'recordingStreams', 'recordingForeground', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators', 'execution', 'executionItems', 'datasetBatches', 'datasetRecords', 'assessExecution', 'executionReport', 'executionReportItems', 'reviewExecution']);
 const EDIT = new Set(['createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft']);
-const HISTORY = new Set(['recordingStreams', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators']);
+const HISTORY = new Set(['recordingStreams', 'recordingForeground', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators']);
 const RESULTS = new Set(['execution','executionItems','datasetBatches','datasetRecords','assessExecution','executionReport','executionReports','executionReportItems','reviewExecution']);
 for(const method of RESULTS)PROJECT_METHODS.add(method);
 
@@ -58,6 +58,7 @@ export async function dispatchProject(studio: Studio, method: string, body: any,
       }
       case 'materialDiff': return service.diff(body.projectId, body.fromRevisionId, body.toRevisionId, budget);
       case 'recordingStreams': return (await studio.materials.replay(body.recordingId, body.projectId)).archive.streams(budget.limit, body.cursor);
+      case 'recordingForeground': return (await studio.materials.replay(body.recordingId, body.projectId)).archive.foreground(budget.limit, body.cursor);
       case 'recordingPositions': {
         const position = parseReplayPosition(body.position);
         return (await studio.materials.replay(position.recordingId, body.projectId)).archive.positions(position, budget.limit, body.ordinal ?? 0);

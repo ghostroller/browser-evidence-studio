@@ -91,7 +91,9 @@ export async function runCheckpointScenarios(studio:Studio,url:string){
       try{
         child.page.evaluate=(()=>new Promise<string>(resolve=>{late=resolve;})) as typeof childEvaluate;
         childContents.capturePage=(async(...args:Parameters<typeof childCapture>)=>{const image=await childCapture.apply(childContents,args);finishImage();return image;}) as typeof childCapture;
-        const capturing=dispatch('checkpoint',{key:'closed-'+controller,runId:run.id,pageId:child.pageId,generation:child.navigationGeneration,leaseEpoch:run.leaseEpoch},controller==='agent'?'api':'ui');
+        // This legacy lifecycle probe is driven by the trusted client; HTTP
+        // checkpoint access requires a separate scoped task authorization.
+        const capturing=dispatch('checkpoint',{key:'closed-'+controller,runId:run.id,pageId:child.pageId,generation:child.navigationGeneration,leaseEpoch:run.leaseEpoch},'ui');
         await imageReady;await delay(0);const leaseBeforeClosure=run.leaseEpoch;
         childContents.close();
         const retained=await capturing;

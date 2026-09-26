@@ -1,5 +1,7 @@
 # 当前进度与接续
 
+2026-09-26 Q2 已完成并继续 Q3：生产 ReplayHost 的播放准备可被暂停/切流/关闭废止；录制请求版本与资源可用时序用于离线回放，真实跨源、延迟、cache、Service Worker、`data:`/blob 资源和前台多文档转换经过生产录制→消费。完整未跳 UI 桌面与强杀恢复矩阵、record/offline 专项、系统专项通过；全量单元 54 文件/326 项（包含 Q3 独立模块 3 项）、类型检查与构建通过。跨源 iframe DOM、不同物理 DPI/zoom、新架构长测、安装包仍未验收。完整命令、原始报告与限制见 [Q2 交接](refactor-handoffs/Q2-20260926.md)。下段 Q1 状态保留为批次历史。
+
 2026-09-26 Q1 已完成并进入 Q2。正常生产 JSON 响应正文现在带 CDP 回调时记录的响应时间、固定 request/hop、page/recording/frame/loader 身份；独立判定同时核对请求开始与响应观测均在真实 host attempt 范围内。旧档缺身份保持来源不足。旧 checkpoint DOM 与实时 snapshot 执行遮罩；完整原始截图保留，但普通 Agent 二进制接口拒绝读取（旧未标记截图同样拒绝），可信 UI 仍可查看。真实 Electron/Puppeteer producer→consumer：JSON 正确/错误分别 pass/fail、缺失身份 inconclusive；普通 DOM 来源和 241 事件 React UI 回归通过。具体命令和限制见 [Q1 交接](refactor-handoffs/Q1-20260926.md)。以下 R1–R8 暂停说明是历史状态。
 
 2026-09-26 本次按 [R1–R8 限界修复交接](refactor-handoffs/G-R1-R8-20260926.md) 收拢 A/D/E 待合成果并完成指定闭环，实现提交 `f62e5f4`，现按用户要求暂停。当前主树 `npm test` **50 文件 / 298 项**、类型检查和构建通过；真实 Electron 录制后关闭源站，新进程生产 ReplayHost 离线资源状态 `ready`，真实 React UI 完成 241 事件连续播放/暂停/定位、移动节点源属性、注释与需求编辑、固定版本、任务授权与完整/部分/坏目录结果查看。范围限本机合成页面；安装包、新架构长测、跨源资源及真实账号仍未验收。旧暂停点及历史执行记录保留如下，不作为当前 HEAD 状态。

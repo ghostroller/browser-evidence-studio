@@ -27,6 +27,8 @@ export interface RecordingEnvelope {
   gaps: RecordingGap[];
   sourceClock: { timeOrigin: number; monotonicMs: number };
   receivedAt: string;
+  /** Host observation at Runtime.bindingCalled, before persistence waits. */
+  observedAt?: string;
 }
 export interface RawReceipt {
   id: string;

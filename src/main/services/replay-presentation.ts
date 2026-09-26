@@ -1,5 +1,16 @@
 /** Browser-only helpers serialized into the isolated replay shell. They receive
  * only replay DOM, never a business page or a host capability. */
+export function fitReplayViewport(stage:HTMLElement,root:HTMLElement):()=>void{
+  const frame=root.querySelector('iframe');if(!frame)throw new Error('Replay viewport is unavailable');
+  const fit=()=>{
+    const width=Math.max(1,frame.offsetWidth),height=Math.max(1,frame.offsetHeight);
+    const scale=Math.min(1,Math.max(1,window.innerWidth-1)/width,Math.max(1,window.innerHeight-1)/height);
+    root.style.width=`${width}px`;root.style.height=`${height}px`;root.style.transform=`scale(${scale})`;
+    stage.style.width=`${Math.ceil(width*scale)}px`;stage.style.height=`${Math.ceil(height*scale)}px`;
+  };
+  const observer=new ResizeObserver(fit);observer.observe(frame);window.addEventListener('resize',fit);fit();
+  return()=>{observer.disconnect();window.removeEventListener('resize',fit);};
+}
 export function replayHit(frame:HTMLIFrameElement,x:number,y:number):{node:Element;rect:{x:number;y:number;width:number;height:number}}|undefined{
   let document=frame.contentDocument;if(!document)return;
   const box=frame.getBoundingClientRect();
@@ -40,7 +51,7 @@ export async function waitReplayPresentation(document:Document,generation:number
   };
   while(true){
     current();
-    const {links,images,documents}=assets();
+    const collected=assets(),links=collected.links.filter(link=>link.href!=='about:blank'),images=collected.images.filter(image=>image.src!=='about:blank'),documents=collected.documents;
     for(const child of documents)void child.body?.offsetHeight;
     const pending=links.some(link=>!link.sheet)||images.some(image=>!image.complete)||documents.some(child=>child.fonts.status==='loading');
     if(!pending){for(const image of images)if(image.src&&image.naturalWidth===0&&errors.length<64)errors.push('Archived image failed to decode');for(const child of documents)child.fonts.forEach(face=>{if(face.status==='error'&&errors.length<64)errors.push('Archived font failed to decode');});break;}

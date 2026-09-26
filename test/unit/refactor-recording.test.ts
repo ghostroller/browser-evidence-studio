@@ -22,7 +22,7 @@ import { captureRequestBody, requestMetadata } from '@/capture/request-body';
 import { prepareResponseBody, RESPONSE_CAPTURE_BYTES } from '@/capture/response-body';
 import { EvidenceReader } from '@/evidence/reader';
 import { SourceFrameScopes } from '@/capture/frame-scopes';
-import { prepareArchivedReplay, rewriteReplayRecords } from '@/resources/replay-resources';
+import { OfflineResourceService, prepareArchivedReplay, rewriteReplayRecords } from '@/resources/replay-resources';
 
 const stores: EvidenceStore[] = [], windows: JSDOM[] = [];
 afterEach(async () => { for (const store of stores.splice(0)) await store.close(); for (const window of windows.splice(0)) window.window.close(); });
@@ -35,7 +35,7 @@ async function source(html = '<main id="main"><a data-key="订单\'&quot;" href=
   const dom = new JSDOM(`<!doctype html><html><head></head><body>${html}</body></html>`, { url: 'https://source.invalid/catalog/', runScripts: 'dangerously', pretendToBeVisual: true });
   windows.push(dom); const records: RecordingEnvelope[] = [];
   Object.defineProperty(dom.window.crypto,'randomUUID',{value:undefined});
-  Object.assign(dom.window, { syntheticBinding: (payload: string) => { const parsed = JSON.parse(payload); records.push({ ...parsed, receivedAt: new Date().toISOString(), gaps: parsed.errors.map((reason: string) => ({ id: randomUUID(), from: parsed.position, category: 'metadata', reason })) }); } });
+  Object.assign(dom.window, { syntheticBinding: (payload: string) => { const parsed = JSON.parse(payload); const observedAt=new Date().toISOString();records.push({ ...parsed, observedAt, receivedAt: observedAt, gaps: parsed.errors.map((reason: string) => ({ id: randomUUID(), from: parsed.position, category: 'metadata', reason })) }); } });
   const bundle = await fs.readFile(path.resolve('node_modules/rrweb/dist/rrweb.umd.cjs'), 'utf8');
   if(fixedTime)dom.window.Date.now=()=>fixedTime;
   dom.window.eval(instrumentRecorder(bundle));
@@ -111,6 +111,31 @@ describe('format-2 production recorder and bounded archive', () => {
     expect((await archive.resolve(input.url,{...position,eventSeq:6}))?.id).toBe(changed.id);
     expect((await archive.reference(probe.id)).status).toBe('failed');await expect(archive.read(changed.id)).rejects.toThrow('failed');
   });
+  it('resolves an observed redirect by its requested URL while retaining final CSS base and private-chain exclusion',async()=>{
+    const evidence=await store(),capture=new ResourceCapture(evidence),archive=new ResourceArchive(evidence.runDir);
+    const position:ReplayPosition={recordingId:'recording',pageId:'page',documentId:'document',streamEpoch:'epoch',sourceTimeMs:10,eventSeq:5};
+    const requested='https://cross.invalid/redirect.css',final='https://cross.invalid/final/styles.css';
+    const reference=await capture.capture({position,frameId:'top',requestId:'observed-hop',url:final,mediaType:'text/css',data:Buffer.from('a{background:url("../cross.png")}'),source:{requestUrl:requested}});
+    expect((await archive.resolve(requested,position))?.id).toBe(reference.id);
+    expect((await archive.resolve(final,position))?.id).toBe(reference.id);
+    expect((await archive.reference(reference.id)).originalUrl).toEqual({status:'present',value:final});
+    const excluded=await capture.capture({position:{...position,eventSeq:6},frameId:'top',url:final,mediaType:'text/css',data:Buffer.from('safe'),source:{requestUrl:'https://cross.invalid/redirect.css?access_token=private-chain'}});
+    expect(excluded.status).toBe('redacted');expect(excluded.source.requestUrl).toBe('[redacted]');
+    expect(JSON.stringify(excluded)).not.toContain('private-chain');
+  });
+  it('keeps bounded source data images offline and excludes executable inline media',async()=>{
+    const png='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY9sAAAAASUVORK5CYII=';
+    const svg='data:image/svg+xml;base64,'+Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>throw 1</script></svg>').toString('base64');
+    const {records}=await source(`<img id="safe" src="${png}"><img id="excluded" src="${svg}">`);
+    const evidence=await store(),baseline=records.findIndex(record=>record.event.type===2);
+    const prepared=await prepareArchivedReplay(records.slice(baseline),new ResourceArchive(evidence.runDir),id=>`bes-resource://archive/${id}`);
+    const urls:Array<{url:string;nodeId:number}>=[];
+    rewriteReplayRecords(prepared.records,(url,_frame,_position,site)=>{urls.push({url,nodeId:site?.nodeId??-1});return url;});
+    expect(urls.some(item=>item.url===png)).toBe(true);
+    expect(urls.some(item=>item.url==='about:blank')).toBe(true);
+    expect(prepared.diagnostics).toContainEqual(expect.objectContaining({url:'[data-url omitted]',status:'unsupported',reason:'inline-data-media-or-byte-budget'}));
+    expect(JSON.stringify(prepared.records)).not.toContain('<script>');
+  });
   it('persists a 9 MiB observed response as an 8 MiB prefix with measured original bytes and checks its private tail',async()=>{
     const bytes=9*1024*1024,text='{"rows":"'+'x'.repeat(bytes-11)+'"}';expect(Buffer.byteLength(text)).toBe(bytes);
     const prepared=prepareResponseBody({body:text,base64Encoded:false},'application/json');
@@ -143,6 +168,21 @@ describe('format-2 production recorder and bounded archive', () => {
     const resourceCapture = new ResourceCapture(evidence), position = records.at(-1)!.position;
     const resource = await resourceCapture.capture({position,frameId:'top',url:'https://source.invalid/public.css',mediaType:'text/css',data:Buffer.from(`a{background:url("${privateUrl}")}`)});
     expect(resource.status).toBe('redacted');expect(resource.blobHash).toBeUndefined();
+  });
+  it('keeps public incremental CSS text after a private page URL while redacting a credential CSS URL', async () => {
+    const { dom, records } = await source('<style id="changing-style">#fixture {outline:1px solid blue}</style><main id="fixture">public</main>');
+    dom.window.history.replaceState(null, '', '/privacy?access_token=synthetic-page-private');
+    const text = dom.window.document.querySelector('#changing-style')!.firstChild as Text;
+    const publicCss = '#fixture {background-image:url("/assets/style-background.png")}';
+    text.data = publicCss;
+    await new Promise<void>(resolve => dom.window.setTimeout(resolve, 20));
+    const changes = () => records.flatMap(record => record.event.type === 3 && record.event.data.source === 0 ? record.event.data.texts.map(change => change.value) : []);
+    expect(changes()).toContain(publicCss);
+    text.data = '#fixture {background-image:url("https://source.invalid/private.png?access_token=synthetic-css-private")}';
+    await new Promise<void>(resolve => dom.window.setTimeout(resolve, 20));
+    expect(JSON.stringify(records)).not.toContain('synthetic-page-private');
+    expect(JSON.stringify(records)).not.toContain('synthetic-css-private');
+    expect(changes()).toContain('[redacted credential URL]');
   });
   it('invalidates queued and in-flight response reads when a request ID is reused',async()=>{
     const ledger=new RequestLedger('session','target'),queue=new DeferredBodyReads();let unblock!:()=>void;const blocker=new Promise<void>(resolve=>{unblock=resolve;});
@@ -200,6 +240,22 @@ describe('format-2 production recorder and bounded archive', () => {
       }
     }
   });
+  it('rewrites incremental style text in its recorded frame but leaves ordinary text alone',async()=>{
+    const {dom,records}=await source('<style id="theme">body{color:black}</style><p id="ordinary">plain</p>');
+    const style=dom.window.document.querySelector<HTMLStyleElement>('#theme')!;
+    style.firstChild!.textContent='body{background:url(/late-bg.png)}';
+    dom.window.document.querySelector('#ordinary')!.firstChild!.textContent='url(/ordinary.png)';
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,30));
+    const added=dom.window.document.createElement('style');added.textContent='p{color:red}';dom.window.document.head.append(added);
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,30));
+    added.firstChild!.textContent='p{background:url(/added-bg.png)}';
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,30));
+    const rewritten=rewriteReplayRecords(records,(url,frame)=>`offline:${frame}:${url}`);
+    const changes=rewritten.filter(record=>record.event.type===3&&record.event.data.source===0).flatMap(record=>record.event.type===3&&record.event.data.source===0?record.event.data.texts.map(item=>item.value):[]);
+    expect(changes.join('|')).toContain('offline:top:/late-bg.png');
+    expect(changes.join('|')).toContain('offline:top:/added-bg.png');
+    expect(changes).toContain('url(/ordinary.png)');
+  });
   it('prepares production resource URLs by frame and source event and reports missing CSS assets',async()=>{
     const {dom,records}=await source('<img src="/shared.png"><div style="background:url(/missing.png)"></div><iframe></iframe>');
     dom.window.document.querySelector('iframe')!.contentDocument!.body.innerHTML='<img src="/shared.png">';
@@ -215,6 +271,78 @@ describe('format-2 production recorder and bounded archive', () => {
     expect(serialized).toContain(`offline:${child.id}:`);
     expect(prepared.diagnostics).toContainEqual(expect.objectContaining({url:'https://source.invalid/missing.png',frameId:'top',status:'missing'}));
     expect(serialized).toContain('about:blank');
+  });
+  it('activates a response observed after an image URL was inserted without another src mutation',async()=>{
+    const {dom,records}=await source('<main id="host"></main>');
+    const image=dom.window.document.createElement('img');image.id='late-image';image.src='https://source.invalid/late.png';dom.window.document.querySelector('#host')!.append(image);
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,20));
+    const use=records.at(-1)!.position;
+    dom.window.document.querySelector('#host')!.setAttribute('data-before-response','1');
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,20));
+    const available=records.at(-1)!.position;
+    const evidence=await store(),capture=new ResourceCapture(evidence),archive=new ResourceArchive(evidence.runDir);
+    const resource=await capture.capture({position:available,frameId:'top',url:image.src,mediaType:'image/png',requestId:'request-one',requestStartedAt:records.find(record=>record.position.eventSeq===use.eventSeq)!.observedAt,availableObservedAt:records.at(-1)!.observedAt,data:Buffer.from('observed-image')});
+    dom.window.document.querySelector('#host')!.setAttribute('data-after-response','1');
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,20));
+    const target=records.at(-1)!.position;
+    expect(use.eventSeq).toBeLessThan(available.eventSeq);expect(available.eventSeq).toBeLessThan(target.eventSeq);
+    const before=await prepareArchivedReplay(records.filter(record=>record.position.eventSeq<=use.eventSeq),archive,(id,position)=>`offline:${id}:${position.eventSeq}`);
+    expect(JSON.stringify(before.records)).not.toContain(`offline:${resource.id}:`);
+    expect(before.diagnostics).toContainEqual(expect.objectContaining({url:image.src,status:'pending'}));
+    const prepared=await prepareArchivedReplay(records,archive,(id,position)=>`offline:${id}:${position.eventSeq}`);
+    expect(JSON.stringify(prepared.records)).toContain(`offline:${resource.id}:`);
+    expect(prepared.diagnostics).not.toContainEqual(expect.objectContaining({url:image.src,status:'missing'}));
+    const changed=await capture.capture({position:target,frameId:'top',url:image.src,mediaType:'image/png',requestId:'request-two',requestStartedAt:records.at(-1)!.observedAt,availableObservedAt:records.at(-1)!.observedAt,data:Buffer.from('different-image')});
+    dom.window.document.querySelector('#host')!.setAttribute('data-after-second-response','1');
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,20));
+    const retained=await prepareArchivedReplay(records,archive,id=>`offline:${id}`);
+    expect(JSON.stringify(retained.records)).toContain(`offline:${resource.id}`);
+    expect(JSON.stringify(retained.records)).not.toContain(`offline:${changed.id}`);
+  });
+  it('binds repeated stylesheet uses and CSS dependencies to their own request intervals',async()=>{
+    const {dom,records}=await source('<main id="host"></main>');
+    const addStyle=()=>{const link=dom.window.document.createElement('link');link.rel='stylesheet';link.href='https://source.invalid/main.css';dom.window.document.head.append(link);return link;};
+    const first=addStyle();await new Promise<void>(resolve=>dom.window.setTimeout(resolve,20));
+    const firstUse=records.at(-1)!,firstTime=Date.parse(firstUse.observedAt!);
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,10));
+    dom.window.document.querySelector('#host')!.setAttribute('data-first-loaded','1');await new Promise<void>(resolve=>dom.window.setTimeout(resolve,20));
+    const early=records.at(-1)!.position;
+    first.remove();addStyle();await new Promise<void>(resolve=>dom.window.setTimeout(resolve,20));
+    const secondUse=records.at(-1)!,secondTime=Date.parse(secondUse.observedAt!);
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,10));
+    dom.window.document.querySelector('#host')!.setAttribute('data-second-loaded','1');await new Promise<void>(resolve=>dom.window.setTimeout(resolve,20));
+    const target=records.at(-1)!.position;
+    dom.window.eval('rrweb.record.takeFullSnapshot()');await new Promise<void>(resolve=>dom.window.setTimeout(resolve,20));
+    const snapshot=records.at(-1)!.position;
+    const evidence=await store(),capture=new ResourceCapture(evidence),archive=new ResourceArchive(evidence.runDir);
+    const at=(ms:number)=>new Date(ms).toISOString();
+    const captureVersion=async(version:number,useTime:number)=>{
+      const css=await capture.capture({position:target,frameId:'top',url:'https://source.invalid/main.css',mediaType:'text/css',requestId:`main-${version}`,requestStartedAt:at(useTime-1),availableObservedAt:at(useTime+2),data:Buffer.from(`/*v${version}*/@import url('/nested.css');@font-face{src:url('/font.ttf')}`)});
+      const nested=await capture.capture({position:target,frameId:'top',url:'https://source.invalid/nested.css',mediaType:'text/css',requestId:`nested-${version}`,requestStartedAt:at(useTime+1),availableObservedAt:at(useTime+3),data:Buffer.from(`/*nested-v${version}*/`)});
+      const font=await capture.capture({position:target,frameId:'top',url:'https://source.invalid/font.ttf',mediaType:'font/ttf',requestId:`font-${version}`,requestStartedAt:at(useTime+1),availableObservedAt:at(useTime+4),data:Buffer.from(`font-v${version}`)});
+      return{css,nested,font};
+    };
+    const v1=await captureVersion(1,firstTime),v2=await captureVersion(2,secondTime);
+    const writer=new RecordingIndexWriter(evidence);for(const record of records)await writer.append(record);await writer.flush();
+    const earlyReplay=await prepareArchivedReplay(records.filter(record=>record.position.eventSeq<=early.eventSeq),archive,id=>`offline:${id}`);
+    expect(JSON.stringify(earlyReplay.records)).toContain(`offline:${v1.css.id}`);
+    expect(JSON.stringify(earlyReplay.records)).not.toContain(`offline:${v2.css.id}`);
+    const laterReplay=await prepareArchivedReplay(records,archive,id=>`offline:${id}`);
+    expect(JSON.stringify(laterReplay.records)).toContain(`offline:${v1.css.id}`);
+    expect(JSON.stringify(laterReplay.records)).toContain(`offline:${v2.css.id}`);
+    const snapshotReplay=await prepareArchivedReplay(records.filter(record=>record.position.eventSeq>=snapshot.eventSeq),archive,id=>`offline:${id}`);
+    expect(JSON.stringify(snapshotReplay.records)).toContain(`offline:${v2.css.id}`);
+    expect(JSON.stringify(snapshotReplay.records)).not.toContain(`offline:${v1.css.id}`);
+    const service=new OfflineResourceService(archive);
+    const earlyCss=Buffer.from((await service.response(v1.css.id,early,id=>`offline:${id}`)).bytes).toString();
+    const laterCss=Buffer.from((await service.response(v2.css.id,target,id=>`offline:${id}`)).bytes).toString();
+    expect(earlyCss).toContain(`offline:${v1.nested.id}`);expect(earlyCss).toContain(`offline:${v1.font.id}`);
+    expect(earlyCss).not.toContain(`offline:${v2.nested.id}`);
+    expect(laterCss).toContain(`offline:${v2.nested.id}`);expect(laterCss).toContain(`offline:${v2.font.id}`);
+    expect(laterCss).not.toContain(`offline:${v1.nested.id}`);
+    await capture.capture({position:target,frameId:'top',url:'https://source.invalid/main.css',mediaType:'text/css',requestId:'main-ambiguous',requestStartedAt:at(secondTime-1),availableObservedAt:at(secondTime+2),data:Buffer.from('/*ambiguous*/')});
+    const ambiguous=await prepareArchivedReplay(records,archive,id=>`offline:${id}`);
+    expect(ambiguous.diagnostics).toContainEqual(expect.objectContaining({url:'https://source.invalid/main.css',status:'unsupported',reason:'same-url-request-version-ambiguous'}));
   });
   it('does not report navigation links or iframe hosts as missing replay assets',async()=>{
     const {dom,records}=await source('<a href="/orders/43">open</a><img src="/missing-image.png"><iframe src="/frame-target"></iframe>');

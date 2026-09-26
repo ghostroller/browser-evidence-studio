@@ -18,11 +18,16 @@ export function privateResourceUrl(value: string): boolean {
 }
 export interface ArchivedResource extends ResourceReference {
   capturedAt: string;
+  /** CDP loadingFinished callback time. Distinct from the later body read/write. */
+  availableObservedAt?: string;
+  /** CDP requestWillBeSent callback time for this exact request hop. */
+  requestStartedAt?: string;
   bytes: number;
-  source: { fromCache?: boolean; fromServiceWorker?: boolean; encodedDataLength?: number; redirectUrl?: string; cdpFrameId?: string; byteRepresentation: 'decoded-response' };
+  source: { fromCache?: boolean; fromServiceWorker?: boolean; encodedDataLength?: number; redirectUrl?: string; requestUrl?: string; cdpFrameId?: string; byteRepresentation: 'decoded-response' };
 }
 export interface CaptureResourceInput {
   position: ReplayPosition; frameId: string; requestId?: string; url: string; mediaType: string;
+  availableObservedAt?: string; requestStartedAt?: string;
   data?: Uint8Array; status?: ResourceReference['status']; reason?: string;
   source?: Omit<ArchivedResource['source'], 'byteRepresentation'>;
 }
@@ -57,17 +62,17 @@ export class ResourceCapture {
       if (this.store.manifest.status === 'sealed' || this.store.manifest.status === 'sealing') throw new EvidenceError('RUN_SEALED', 'Resources cannot be appended after sealing.', 409);
       if(this.writer.references>=10000)throw new EvidenceError('RESOURCE_COUNT_BUDGET','Offline resource reference budget reached; recording is degraded.',429);
       let status: ResourceReference['status'] = input.status ?? (data ? 'captured' : 'missing'), reason = input.reason;
-      const privateUrl = privateResourceUrl(input.url);
-      if (privateUrl) { status = 'redacted'; reason = 'credential-bearing-resource-url'; }
+      const privateUrl = privateResourceUrl(input.url), privateRequestUrl = !!input.source?.requestUrl && privateResourceUrl(input.source.requestUrl);
+      if (privateUrl || privateRequestUrl) { status = 'redacted'; reason = 'credential-bearing-resource-url'; }
       else if (!isArchivableResource(input.mediaType)) { status = 'unsupported'; reason = 'resource-media-type-not-supported'; }
       else if ((suppliedBytes ?? 0) > RESOURCE_MAX_BYTES || this.writer.totalBytes + (suppliedBytes ?? 0) > RESOURCE_TOTAL_BYTES) { status = 'missing'; reason = 'resource-byte-budget'; }
       else if (data && responsePrivacy(data, input.mediaType).redacted) { status = 'redacted'; reason = 'credential-url-in-resource-body'; }
       if ((status === 'captured' || status === 'late-fetched') && !data) throw new EvidenceError('RESOURCE_BYTES_MISSING', 'Captured resources require their observed bytes');
       const originalUrl: SourceValue<string> = privateUrl ? { status: 'redacted', reason: reason! } : { status: 'present', value: input.url };
       const captured = status === 'captured' || status === 'late-fetched';
-      const reference: ArchivedResource = { id: randomUUID(), position: { ...input.position }, frameId: input.frameId, ...(input.requestId ? { requestId: input.requestId } : {}), originalUrl,
+      const reference: ArchivedResource = { id: randomUUID(), position: { ...input.position }, frameId: input.frameId, ...(input.requestId ? { requestId: input.requestId } : {}), ...(input.availableObservedAt ? { availableObservedAt: input.availableObservedAt } : {}), ...(input.requestStartedAt ? { requestStartedAt: input.requestStartedAt } : {}), originalUrl,
         mediaType: input.mediaType, status, ...(reason ? { reason } : {}), ...(captured ? { blobHash: hashBytes(data!) } : {}), capturedAt: new Date().toISOString(), bytes: captured ? data!.length : 0,
-        source: { ...input.source, ...(input.source?.redirectUrl && privateResourceUrl(input.source.redirectUrl) ? { redirectUrl: '[redacted]' } : {}), byteRepresentation: 'decoded-response' } };
+        source: { ...input.source, ...(privateRequestUrl ? { requestUrl: '[redacted]' } : {}), ...(input.source?.redirectUrl && privateResourceUrl(input.source.redirectUrl) ? { redirectUrl: '[redacted]' } : {}), byteRepresentation: 'decoded-response' } };
       if (captured) {
         const directory = await ensureLocalDirectory(this.dataRoot, 'blobs');
         const filename = path.join(directory, reference.blobHash!);
@@ -79,7 +84,8 @@ export class ResourceCapture {
       await this.store.appendEvent({ type: 'resource-reference', source: 'resource-archive', pageId: input.position.pageId, data: reference });
       if(reference.originalUrl.status==='present'){
         const directory=await ensureLocalDirectory(this.store.runDir,'resource-url-index');
-        await fs.appendFile(path.join(directory,hashBytes(reference.originalUrl.value)+'.jsonl'),JSON.stringify({id:reference.id,position:reference.position,frameId:reference.frameId})+'\n');
+        const indexedUrls=new Set([reference.originalUrl.value,...(reference.source.requestUrl&&reference.source.requestUrl!=='[redacted]'?[reference.source.requestUrl]:[])]);
+        for(const url of indexedUrls)await fs.appendFile(path.join(directory,hashBytes(url)+'.jsonl'),JSON.stringify({id:reference.id,position:reference.position,frameId:reference.frameId})+'\n');
       }
       this.writer.totalBytes += reference.bytes;this.writer.references++; return reference;
     });
@@ -95,7 +101,7 @@ export class ResourceArchive {
     if ((await fs.stat(file)).size > 32 * 1024) throw new EvidenceError('RESOURCE_METADATA_BUDGET', 'Resource metadata exceeds budget');
     const reference = JSON.parse(await fs.readFile(file, 'utf8')) as ArchivedResource;
     parseReplayPosition(reference.position);
-    if (reference.id !== id || typeof reference.frameId!=='string'||!reference.frameId||reference.frameId.length>512||!Number.isSafeInteger(reference.bytes)||reference.bytes<0||reference.bytes>RESOURCE_MAX_BYTES||typeof reference.mediaType!=='string'||reference.mediaType.length>200||!/^[\w.+-]+\/[\w.+-]+(?:;[^\r\n]*)?$/.test(reference.mediaType)||!['captured','late-fetched','missing','redacted','unsupported','failed'].includes(reference.status)||!reference.originalUrl||!['present','redacted','absent','missing','unsupported'].includes(reference.originalUrl.status)||reference.originalUrl.status==='present'&&(typeof reference.originalUrl.value!=='string'||reference.originalUrl.value.length>16384)||reference.blobHash && !/^[a-f0-9]{64}$/.test(reference.blobHash)||(reference.status==='captured'||reference.status==='late-fetched')&&!reference.blobHash) throw new EvidenceError('INVALID_RESOURCE', 'Malformed resource reference');
+    if (reference.id !== id || typeof reference.frameId!=='string'||!reference.frameId||reference.frameId.length>512||!Number.isSafeInteger(reference.bytes)||reference.bytes<0||reference.bytes>RESOURCE_MAX_BYTES||typeof reference.mediaType!=='string'||reference.mediaType.length>200||!/^[\w.+-]+\/[\w.+-]+(?:;[^\r\n]*)?$/.test(reference.mediaType)||!['captured','late-fetched','missing','redacted','unsupported','failed'].includes(reference.status)||!reference.originalUrl||!['present','redacted','absent','missing','unsupported'].includes(reference.originalUrl.status)||reference.originalUrl.status==='present'&&(typeof reference.originalUrl.value!=='string'||reference.originalUrl.value.length>16384)||reference.blobHash && !/^[a-f0-9]{64}$/.test(reference.blobHash)||(reference.status==='captured'||reference.status==='late-fetched')&&!reference.blobHash||[reference.availableObservedAt,reference.requestStartedAt].some(value=>value!==undefined&&(!Number.isFinite(Date.parse(value))||typeof value!=='string'))) throw new EvidenceError('INVALID_RESOURCE', 'Malformed resource reference');
     return reference;
   }
   async read(id: string): Promise<{ reference: ArchivedResource; bytes: Buffer }> {
@@ -121,7 +127,7 @@ export class ResourceArchive {
     let probeFailure:ArchivedResource|undefined;
     for(const selected of candidates.reverse().sort((a,b)=>b.position.eventSeq-a.position.eventSeq)){
       const reference=await this.reference(selected.id);
-      if(reference.originalUrl.status!=='present'||reference.originalUrl.value!==url||!sameReplayPosition(reference.position,selected.position)||reference.frameId!==selected.frameId||reference.frameId!==frameId)throw new EvidenceError('RESOURCE_INDEX_MISMATCH','Resource URL index does not match its immutable manifest',409);
+      if(reference.originalUrl.status!=='present'||reference.originalUrl.value!==url&&reference.source.requestUrl!==url||!sameReplayPosition(reference.position,selected.position)||reference.frameId!==selected.frameId||reference.frameId!==frameId)throw new EvidenceError('RESOURCE_INDEX_MISMATCH','Resource URL index does not match its immutable manifest',409);
       // A cache probe returning no bytes is an observation failure, not a new
       // resource version. Keep its original, but never let it erase an actual
       // request's captured OR failed version at this historical position.
@@ -129,6 +135,24 @@ export class ResourceArchive {
       return reference;
     }
     return probeFailure;
+  }
+  /** All observed versions in one source stream. Position is a storage anchor,
+   * not an availability clock; replay must inspect availableObservedAt. */
+  async history(url:string,position:ReplayPosition,frameId:string):Promise<ArchivedResource[]>{
+    const relative=`resource-url-index/${hashBytes(url)}.jsonl`;
+    if(!await exists(path.join(this.runDir,relative)))return [];
+    const found:ArchivedResource[]=[];let count=0;
+    for await(const line of jsonLines(await safeFile(this.runDir,relative))){
+      if(++count>10000)throw new EvidenceError('RESOURCE_INDEX_BUDGET','Resource URL history exceeds bounded scan budget',413);
+      if(line.invalid)throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Resource URL index is incomplete; rebuild from resource-reference events',409);
+      const entry=line.value as unknown as {id:string;position:ReplayPosition;frameId:string};
+      parseReplayPosition(entry.position);
+      if(entry.frameId!==frameId||entry.position.recordingId!==position.recordingId||entry.position.pageId!==position.pageId||entry.position.documentId!==position.documentId||entry.position.streamEpoch!==position.streamEpoch)continue;
+      const reference=await this.reference(entry.id);
+      if(reference.originalUrl.status!=='present'||reference.originalUrl.value!==url&&reference.source.requestUrl!==url||!sameReplayPosition(reference.position,entry.position)||reference.frameId!==frameId)throw new EvidenceError('RESOURCE_INDEX_MISMATCH','Resource URL index does not match its immutable manifest',409);
+      found.push(reference);
+    }
+    return found;
   }
   /** Manifest listing is bounded by count; callers use the next ID as cursor. */
   async list(limit = 128, after?: string): Promise<{ items: ArchivedResource[]; nextCursor?: string }> {
