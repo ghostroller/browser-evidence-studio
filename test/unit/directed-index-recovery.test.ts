@@ -107,6 +107,19 @@ describe('directed recording and resource index recovery',()=>{
       expect((await f.resources.resolve(f.url,f.position))?.id).toBe(f.resource.id);
     }finally{await f.cleanup();}
   });
+  it('rejects oversized index inputs before reading them into memory',async()=>{
+    const f=await fixture();try{
+      await fs.truncate(path.join(f.runDir,'resource-url-index','url-census.jsonl'),1024*1024+1);
+      await expect(f.resources.history('https://synthetic.invalid/never.css',f.position,'top')).rejects.toMatchObject({code:'RESOURCE_INDEX_BUDGET'});
+      await f.archive.rebuild();await f.resources.rebuildUrlIndex();
+      const pointer=JSON.parse(await fs.readFile(path.join(f.runDir,'resource-url-index-current.json'),'utf8'));
+      const urlIndex=path.join(f.runDir,'resource-url-index-generations',pointer.generation,`${hashBytes(f.url)}.jsonl`);
+      await fs.truncate(urlIndex,4*1024*1024+1);
+      await expect(f.resources.resolve(f.url,f.position)).rejects.toMatchObject({code:'RESOURCE_INDEX_BUDGET'});
+      await fs.truncate(path.join(f.runDir,'replay-index-current.json'),4097);
+      await expect(f.archive.window(f.position)).rejects.toMatchObject({code:'REPLAY_INDEX_BUDGET'});
+    }finally{await f.cleanup();}
+  });
   it('keeps corrupt original bytes visible and rejects a live writer',async()=>{
     const f=await fixture();try{
       const live=await EvidenceStore.open(f.runDir);

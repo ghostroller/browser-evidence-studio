@@ -45,6 +45,12 @@ export async function ensureLocalDirectory(root: string, relative: string): Prom
   return current;
 }
 function checkedId(value: string): string { if (!/^[a-f0-9-]{36}$/.test(value)) throw new EvidenceError('INVALID_RESOURCE_ID', 'Invalid archived resource ID'); return value; }
+async function boundedIndexBytes(file:string,maxBytes:number):Promise<Buffer>{
+  if((await fs.stat(file)).size>maxBytes)throw new EvidenceError('RESOURCE_INDEX_BUDGET',`Resource index file exceeds its ${maxBytes} byte read budget`,413);
+  const bytes=await fs.readFile(file);
+  if(bytes.length>maxBytes)throw new EvidenceError('RESOURCE_INDEX_BUDGET',`Resource index file grew past its ${maxBytes} byte read budget`,413);
+  return bytes;
+}
 
 /** Consumes observed response bytes only. It has no fetch capability and never
  * reacquires a missing response from the network. Content deduplication does not
@@ -106,12 +112,12 @@ export class ResourceArchive {
     const urlHash=hashBytes(url);
     let relative=`resource-url-index/${urlHash}.jsonl`,expectedHash:string|undefined,pointerFound=false;
     try {
-      const pointer=JSON.parse(await fs.readFile(await safeFile(this.runDir,'resource-url-index-current.json'),'utf8')) as {version?:number;generation?:string;manifestSha256?:string};
+      const pointer=JSON.parse((await boundedIndexBytes(await safeFile(this.runDir,'resource-url-index-current.json'),4096)).toString('utf8')) as {version?:number;generation?:string;manifestSha256?:string};
       pointerFound=true;
       if(pointer.version!==1||!/^[a-f0-9-]{36}$/.test(pointer.generation??'')||!/^[a-f0-9]{64}$/.test(pointer.manifestSha256??''))throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Malformed resource index generation pointer',409);
       const prefix=`resource-url-index-generations/${pointer.generation}`;
-      const manifestBytes=await fs.readFile(await safeFile(this.runDir,`${prefix}/index-manifest.json`));
-      if(manifestBytes.length>2*1024*1024||hashBytes(manifestBytes)!==pointer.manifestSha256)throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Resource generation manifest hash or budget mismatch',409);
+      const manifestBytes=await boundedIndexBytes(await safeFile(this.runDir,`${prefix}/index-manifest.json`),2*1024*1024);
+      if(hashBytes(manifestBytes)!==pointer.manifestSha256)throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Resource generation manifest hash mismatch',409);
       const manifest=JSON.parse(manifestBytes.toString('utf8')) as {version?:number;generation?:string;urls?:Record<string,string>};
       if(manifest.version!==1||manifest.generation!==pointer.generation||!manifest.urls||typeof manifest.urls!=='object')throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Malformed resource index generation manifest',409);
       expectedHash=manifest.urls[urlHash];if(!expectedHash)return [];
@@ -130,22 +136,21 @@ export class ResourceArchive {
       if((error as NodeJS.ErrnoException).code!=='ENOENT')throw new EvidenceError('RESOURCE_INDEX_READ_FAILED',`Cannot open URL index: ${String(error)}`,409);
       if(expectedHash)throw new EvidenceError('RESOURCE_INDEX_MISSING','Published URL index file is missing; directed recovery required',409);
       let census:Buffer;
-      try{census=await fs.readFile(await safeFile(this.runDir,'resource-url-index/url-census.jsonl'));}
+      try{census=await boundedIndexBytes(await safeFile(this.runDir,'resource-url-index/url-census.jsonl'),1024*1024);}
       catch(issue){
+        if(issue instanceof EvidenceError)throw issue;
         if((issue as NodeJS.ErrnoException).code!=='ENOENT')throw new EvidenceError('RESOURCE_INDEX_READ_FAILED',`Cannot read URL census: ${String(issue)}`,409);
         const resources=await fs.readdir(path.join(this.runDir,'resources')).catch(problem=>{if((problem as NodeJS.ErrnoException).code==='ENOENT')return [];throw problem;});
         if(resources.some(name=>/^[a-f0-9-]{36}\.json$/.test(name)))throw new EvidenceError('RESOURCE_INDEX_MISSING','Resource URL census is missing; directed recovery required',409);
         return [];
       }
-      if(census.length>1024*1024)throw new EvidenceError('RESOURCE_INDEX_BUDGET','Resource URL census exceeds 1 MiB; directed recovery required',413);
       const hashes=census.toString('utf8').trim().split('\n');
       if(hashes.some(hash=>!/^[a-f0-9]{64}$/.test(hash)))throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Resource URL census is malformed; directed recovery required',409);
       if(hashes.includes(urlHash))throw new EvidenceError('RESOURCE_INDEX_MISSING','Observed resource URL index is missing; directed recovery required',409);
       return [];
     }
     let bytes:Buffer;
-    try{bytes=await fs.readFile(file);}catch(error){throw new EvidenceError('RESOURCE_INDEX_READ_FAILED',`Cannot read URL index: ${String(error)}`,409);}
-    if(bytes.length>4*1024*1024)throw new EvidenceError('RESOURCE_INDEX_BUDGET','Resource URL index exceeds the 4 MiB read budget',413);
+    try{bytes=await boundedIndexBytes(file,4*1024*1024);}catch(error){if(error instanceof EvidenceError)throw error;throw new EvidenceError('RESOURCE_INDEX_READ_FAILED',`Cannot read URL index: ${String(error)}`,409);}
     if(expectedHash&&hashBytes(bytes)!==expectedHash)throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Resource URL index hash mismatch; directed recovery required',409);
     const entries:Array<{id:string;position:ReplayPosition;frameId:string}>=[];
     for(const line of bytes.toString('utf8').split('\n')){
