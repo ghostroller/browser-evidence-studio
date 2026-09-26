@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { ReplayPosition, ResourceReference, SourceValue } from '@/contracts/recording';
 import { parseReplayPosition, sameReplayPosition } from '@/contracts/recording';
 import { EvidenceError } from '@/evidence/contracts';
-import { atomicFile, atomicJson, exists, hashBytes, safeFile } from '@/evidence/files';
+import { atomicFile, atomicJson, exists, hashBytes, readSlice, safeFile } from '@/evidence/files';
 import { jsonLines } from '@/evidence/files';
 import type { EvidenceStore } from '@/evidence/store';
 import { credentialUrl } from '@/capture/url-privacy';
@@ -12,7 +12,7 @@ import { responsePrivacy } from '@/capture/privacy';
 import { assertIndexMaintenance, claimIndexMaintenance, inspectWriterLock, type IndexMaintenanceHandle } from '@/evidence/writer-lock';
 import { verifySealedOriginals } from '@/evidence/sealed-originals';
 
-interface UrlEntry { id:string;position:ReplayPosition;frameId:string;unavailableReason?:string;requestId?:string;requestStartedAt?:string;availableObservedAt?:string }
+interface UrlEntry { id:string;position:ReplayPosition;frameId:string;unavailableReason?:string;eventFile?:string;eventOffset?:number;eventBytes?:number;eventSha256?:string }
 const publishedFile='resource-url-index-published.json';
 
 export const RESOURCE_MAX_BYTES = 8 * 1024 * 1024;
@@ -29,6 +29,8 @@ export interface ArchivedResource extends ResourceReference {
   requestStartedAt?: string;
   bytes: number;
   source: { fromCache?: boolean; fromServiceWorker?: boolean; encodedDataLength?: number; redirectUrl?: string; requestUrl?: string; cdpFrameId?: string; byteRepresentation: 'decoded-response' };
+  /** Derived recovery state; source metadata remains the confirmed event's values. */
+  recovery?: { status:'observed-unavailable';reason:string;observedStatus:ResourceReference['status'];observedReason?:string };
 }
 export interface CaptureResourceInput {
   position: ReplayPosition; frameId: string; requestId?: string; url: string; mediaType: string;
@@ -122,8 +124,9 @@ export class ResourceArchive {
       const prefix=`resource-url-index-generations/${pointer.generation}`;
       const manifestBytes=await boundedIndexBytes(await safeFile(this.runDir,`${prefix}/index-manifest.json`),2*1024*1024);
       if(hashBytes(manifestBytes)!==pointer.manifestSha256)throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Resource generation manifest hash mismatch',409);
-      const manifest=JSON.parse(manifestBytes.toString('utf8')) as {version?:number;generation?:string;urls?:Record<string,string>};
+      const manifest=JSON.parse(manifestBytes.toString('utf8')) as {version?:number;generation?:string;urls?:Record<string,string>;verificationBasis?:string};
       if(manifest.version!==1||manifest.generation!==pointer.generation||!manifest.urls||typeof manifest.urls!=='object')throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Malformed resource index generation manifest',409);
+      if(manifest.verificationBasis!=='sealed')throw new EvidenceError('RESOURCE_ORIGINAL_UNVERIFIED','Resource URL index has no verified sealed-original basis; directed recovery cannot certify this history',409);
       expectedHash=manifest.urls[urlHash];if(!expectedHash)return [];
       if(!/^[a-f0-9]{64}$/.test(expectedHash))throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Malformed resource index file hash',409);
       relative=`${prefix}/${urlHash}.jsonl`;
@@ -161,7 +164,7 @@ export class ResourceArchive {
       if(!line)continue;
       if(entries.length>=10000)throw new EvidenceError('RESOURCE_INDEX_BUDGET','Resource URL history exceeds bounded scan budget',413);
       let entry:UrlEntry;
-      try{entry=JSON.parse(line);checkedId(entry.id);parseReplayPosition(entry.position);if(typeof entry.frameId!=='string'||!entry.frameId||entry.unavailableReason!==undefined&&(typeof entry.unavailableReason!=='string'||entry.unavailableReason.length>512))throw new Error('Invalid frame or diagnostic');}
+      try{entry=JSON.parse(line);checkedId(entry.id);parseReplayPosition(entry.position);if(typeof entry.frameId!=='string'||!entry.frameId||entry.unavailableReason!==undefined&&(typeof entry.unavailableReason!=='string'||entry.unavailableReason.length>512||typeof entry.eventFile!=='string'||!/^journal\/events-\d{6}\.jsonl$/.test(entry.eventFile)||!Number.isSafeInteger(entry.eventOffset)||entry.eventOffset!<0||!Number.isSafeInteger(entry.eventBytes)||entry.eventBytes!<1||entry.eventBytes!>65536||!/^[a-f0-9]{64}$/.test(entry.eventSha256??'')))throw new Error('Invalid frame or diagnostic');}
       catch(error){throw new EvidenceError('RESOURCE_INDEX_CORRUPT',`Malformed resource URL index row: ${String(error)}`,409);}
       entries.push(entry);
     }
@@ -203,8 +206,17 @@ export class ResourceArchive {
     }
     return probeFailure;
   }
-  private unavailable(url:string,entry:UrlEntry):ArchivedResource{
-    return {id:entry.id,position:entry.position,frameId:entry.frameId,...(entry.requestId?{requestId:entry.requestId}:{}),...(entry.requestStartedAt?{requestStartedAt:entry.requestStartedAt}:{}),...(entry.availableObservedAt?{availableObservedAt:entry.availableObservedAt}:{}),originalUrl:{status:'present',value:url},mediaType:'application/octet-stream',status:'failed',reason:`observed-unavailable: ${entry.unavailableReason}`,capturedAt:'',bytes:0,source:{byteRepresentation:'decoded-response'}};
+  private async unavailable(url:string,entry:UrlEntry):Promise<ArchivedResource>{
+    let bytes:Buffer;
+    try{bytes=await readSlice(this.runDir,entry.eventFile!,entry.eventOffset!,entry.eventBytes!);}
+    catch(error){throw new EvidenceError('RESOURCE_ORIGINAL_READ_FAILED',`Cannot reread confirmed resource event ${entry.id}: ${String(error)}`,409);}
+    if(bytes.length!==entry.eventBytes||hashBytes(bytes)!==entry.eventSha256)throw new EvidenceError('RESOURCE_ORIGINAL_INTEGRITY',`Confirmed resource event ${entry.id} changed after URL recovery`,409);
+    let record:{type?:string;data?:ArchivedResource};
+    try{record=JSON.parse(bytes.toString('utf8'));}
+    catch(error){throw new EvidenceError('RESOURCE_ORIGINAL_CORRUPT',`Confirmed resource event ${entry.id} cannot be parsed: ${String(error)}`,409);}
+    const original=record.data;
+    if(record.type!=='resource-reference'||!original||original.id!==entry.id||!sameReplayPosition(original.position,entry.position)||original.frameId!==entry.frameId||original.originalUrl.status!=='present'||original.originalUrl.value!==url&&original.source.requestUrl!==url)throw new EvidenceError('RESOURCE_INDEX_MISMATCH','Unavailable URL entry does not match its confirmed resource event',409);
+    return {...original,status:'failed',reason:`observed-unavailable: ${entry.unavailableReason}`,recovery:{status:'observed-unavailable',reason:entry.unavailableReason!,observedStatus:original.status,...(original.reason?{observedReason:original.reason}:{})}};
   }
   /** All observed versions in one source stream. Position is a storage anchor,
    * not an availability clock; replay must inspect availableObservedAt. */
@@ -213,7 +225,7 @@ export class ResourceArchive {
     for(const entry of await this.urlEntries(url)){
       if(++count>10000)throw new EvidenceError('RESOURCE_INDEX_BUDGET','Resource URL history exceeds bounded scan budget',413);
       if(entry.frameId!==frameId||entry.position.recordingId!==position.recordingId||entry.position.pageId!==position.pageId||entry.position.documentId!==position.documentId||entry.position.streamEpoch!==position.streamEpoch)continue;
-      if(entry.unavailableReason){found.push(this.unavailable(url,entry));continue;}
+      if(entry.unavailableReason){found.push(await this.unavailable(url,entry));continue;}
       const reference=await this.reference(entry.id);
       if(reference.originalUrl.status!=='present'||reference.originalUrl.value!==url&&reference.source.requestUrl!==url||!sameReplayPosition(reference.position,entry.position)||reference.frameId!==frameId)throw new EvidenceError('RESOURCE_INDEX_MISMATCH','Resource URL index does not match its immutable manifest',409);
       found.push(reference);
@@ -241,7 +253,7 @@ export class ResourceArchive {
     let eventFiles:string[];
     try{eventFiles=(await fs.readdir(path.join(this.runDir,'journal'))).filter(name=>/^events-\d{6}\.jsonl$/.test(name)).sort();}
     catch(error){throw new EvidenceError('RESOURCE_ORIGINAL_READ_FAILED',`Cannot enumerate original resource events: ${String(error)}`,409);}
-    const orderedIds:string[]=[],confirmed=new Map<string,ArchivedResource>();let scanned=0;
+    const orderedIds:string[]=[],confirmed=new Map<string,{event:ArchivedResource;file:string;offset:number;bytes:number}>();let scanned=0;
     try{for(const name of eventFiles){
       const relative=`journal/${name}`;
       for await(const line of jsonLines(await safeFile(this.runDir,relative))){
@@ -251,12 +263,12 @@ export class ResourceArchive {
         const data=line.value.data as ArchivedResource|undefined,id=data?.id;
         if(!data||typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)||!data.originalUrl||!data.source||typeof data.frameId!=='string'||!data.frameId||confirmed.has(id))throw new EvidenceError('RESOURCE_ORIGINAL_CORRUPT',`Resource event ${relative}:${line.offset} has missing, invalid, or duplicate identity`,409);
         parseReplayPosition(data.position);
-        confirmed.set(id,data);orderedIds.push(id);
+        confirmed.set(id,{event:data,file:relative,offset:line.offset,bytes:line.bytes});orderedIds.push(id);
       }
     }}catch(error){if(error instanceof EvidenceError)throw error;throw new EvidenceError('RESOURCE_ORIGINAL_READ_FAILED',`Cannot scan original resource events: ${String(error)}`,409);}
     for(const name of names)if(!confirmed.has(name.slice(0,-5))){corruptCount++;if(corrupt.length<128)corrupt.push({id:name.slice(0,-5),reason:'manifest-without-confirmed-resource-event'});}
     for(const id of orderedIds){
-      const event=confirmed.get(id)!;
+      const origin=confirmed.get(id)!,event=origin.event;
       let reason:string|undefined;
       try{
         const reference=await this.reference(id);
@@ -270,10 +282,18 @@ export class ResourceArchive {
       }
       references++;
       if(event.originalUrl.status!=='present')continue;
+      let eventAnchor:Pick<UrlEntry,'eventFile'|'eventOffset'|'eventBytes'|'eventSha256'>|undefined;
+      if(reason){
+        let bytes:Buffer;
+        try{bytes=await readSlice(this.runDir,origin.file,origin.offset,origin.bytes);}
+        catch(error){throw new EvidenceError('RESOURCE_ORIGINAL_READ_FAILED',`Cannot anchor confirmed resource event ${id}: ${String(error)}`,409);}
+        if(bytes.length!==origin.bytes)throw new EvidenceError('RESOURCE_ORIGINAL_READ_FAILED',`Confirmed resource event ${id} was truncated during recovery`,409);
+        eventAnchor={eventFile:origin.file,eventOffset:origin.offset,eventBytes:origin.bytes,eventSha256:hashBytes(bytes)};
+      }
       const urls=new Set([event.originalUrl.value,...(event.source.requestUrl&&event.source.requestUrl!=='[redacted]'?[event.source.requestUrl]:[])]);
       for(const url of urls){
         const hash=hashBytes(url),rows=byUrl.get(hash)??[];
-        rows.push(JSON.stringify({id,position:event.position,frameId:event.frameId,...(reason?{unavailableReason:reason,requestId:event.requestId,requestStartedAt:event.requestStartedAt,availableObservedAt:event.availableObservedAt}:{})}));byUrl.set(hash,rows);
+        rows.push(JSON.stringify({id,position:event.position,frameId:event.frameId,...(reason?{unavailableReason:reason,...eventAnchor}:{})}));byUrl.set(hash,rows);
       }
     }
     const hashes:Record<string,string>={};
@@ -287,7 +307,7 @@ export class ResourceArchive {
         hashes[hash]=hashBytes(bytes);
       }
       const manifestFile=path.join(staged,'index-manifest.json');
-      await atomicJson(manifestFile,{version:1,generation,references,corruptCount,urls:hashes});
+      await atomicJson(manifestFile,{version:1,generation,references,corruptCount,verificationBasis,urls:hashes});
       await verifySealedOriginals(this.runDir,'resource');
       await atomicJson(path.join(this.runDir,'resource-url-index-current.json'),{version:1,generation,manifestSha256:hashBytes(await fs.readFile(manifestFile))});
       await atomicJson(path.join(this.runDir,publishedFile),{version:1,generation});
