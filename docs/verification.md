@@ -1,5 +1,13 @@
 # 实际验证记录
 
+## 2026-09-26 Q3 固定交接与公开接口
+
+Node `v24.21.0` / npm `11.19.0`。`npm test` **54 文件 / 326 项通过**，`output/q3-unit-commit.log`；`npm run typecheck`、`npm run build` 通过，`output/q3-typecheck-commit.log`、`output/q3-build-commit.log`。
+
+真实 Electron `node test/desktop/launch.js --refactor-handoff` 通过，`output/desktop-1790419527902/refactor-handoff-report.json`、`output/q3-handoff-commit.log`。合成项目由可信 React UI 固定 V1 并导出当前授权交接，空白客户端只读导出文件和公开 API：核对实例、分页资料和历史、候选 V2/diff、越域建页拒绝、后台页真实点击计数及前台页不切换、固定 V1 试跑、撤销后拒读。`node test/desktop/launch.js --refactor-system` 也通过，`output/desktop-1790419148739/refactor-system-report.json`、`output/q3-system-final.log`。失败复现和具体边界见 [Q3 交接](refactor-handoffs/Q3-20260926.md)。
+
+当前 Q3 代码的完整旧桌面矩阵 **未通过**：`output/q3-desktop-full.log`、`output/q3-desktop-full2.log`、`output/q3-desktop-full3.log` 分别在人工原生视图可见性、回放关闭恢复可见性、API 点击 job 限时处停止，后续 profile/恢复阶段未运行。Q2 通过记录属于 Q2 当时源码，不能迁移成 Q3 当前完整矩阵通过。Q4 需定位这些 UI/ReplayHost 生命周期与点击状态，再执行完整矩阵和新架构长测。不同物理 DPI/zoom、安装包、全新模型接续、真人账号未测。
+
 ## 2026-09-26 Q2 播放意图与资源时序
 
 Node `v24.21.0` / npm `11.19.0`。`npm test` **54 文件 / 326 项通过**（其中 Q3 独立导出模块 3 项尚未接线），日志 `output/q2-full-unit-final.log`；`npm run typecheck`、`npm run build` 通过，日志 `output/q2-typecheck-final.log`、`output/q2-build-cursor2.log`。本批 `git diff --check` 无空白错误。

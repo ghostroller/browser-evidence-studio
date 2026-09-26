@@ -90,7 +90,7 @@ export async function runApiScenarios(studio: Studio, siteUrl: string): Promise<
       }
       await delay(100);
     }
-    throw new Error(`API job ${accepted.jobId} did not settle within the bounded poll window`);
+    throw new Error(`API job ${accepted.jobId} did not settle within the bounded poll window; presentation=${JSON.stringify(studio.window.presentationStatus())}`);
   }
 
   try {

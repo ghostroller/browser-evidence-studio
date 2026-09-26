@@ -116,6 +116,9 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
   await studio.startRun({ projectId: project.id, profileId: profile.id, url: `${origin}/orders` });
   const run = studio.required(), parent = studio.current(), dispatch = makeDispatch(studio);
   await parent.page.waitForFunction(() => document.querySelector('#api-state')?.textContent === '已就绪');
+  await waitFor(() => parent.view.getVisible(), Boolean, 'native view restored after the preceding React overlay').catch(error => {
+    throw new Error(`${String(error)}; presentation=${JSON.stringify(studio.window.presentationStatus())}`);
+  });
 
   const beforeClicks = await parent.page.$eval('#action-count', element => element.textContent);
   await parent.capture.inspect(true);

@@ -271,10 +271,10 @@ export class Studio {
     })().catch(error=>{r.capture='degraded';console.error('Could not persist business page closure',error);}).finally(()=>{closures.delete(cleanup);this.onChanged();});
     closures.add(cleanup);this.onChanged();
   }
-  private async addPage(r:ActiveRun,openerPageId?:string,existingView?:WebContentsView){
+  private async addPage(r:ActiveRun,openerPageId?:string,existingView?:WebContentsView,activate=true){
     const owner=this.browser!;
     const view=existingView||new WebContentsView({webPreferences:{session:r.session,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true,backgroundThrottling:false}});
-    this.window.add(view);this.window.lock(true);
+    this.window.add(view,activate);this.window.lock(true);
     const wc=view.webContents,pageId=randomUUID(),webContentsId=wc.id;let registered:ManagedPage|undefined;
     wc.once('destroyed',()=>this.pageDestroyed(owner.runtime,view,{pageId,webContentsId,openerPageId},registered));
     wc.on('before-input-event',(e)=>{const live=owner.runtime;if(live.locked||live.controller!=='human')e.preventDefault();});wc.on('will-navigate',(e,url)=>{if(!/^https?:|^about:blank$/.test(url)||!this.navigationAllowed(url))e.preventDefault();});
@@ -299,11 +299,35 @@ export class Studio {
     // when there is no recorder. The Puppeteer observer outlives capture CDP.
     page.on('framenavigated',frame=>{if(frame===page.mainFrame()){identity.navigationGeneration++;this.onChanged();}});
     const capture=this.createCapture(r,Object.assign(identity,{page}));
-    const p=Object.assign(identity,{view,page,capture}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);const previousPageId=r.selectedPageId||null;r.selectedPageId=p.pageId;const foregroundAt=Date.now();
+    const p=Object.assign(identity,{view,page,capture}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);const previousPageId=r.selectedPageId||null;if(activate)r.selectedPageId=p.pageId;const foregroundAt=Date.now();
     if(openerPageId&&r.controller==='agent'&&this.browserAuthorizationId)this.tasks.addPage(this.browserAuthorizationId,{pageId:p.pageId,targetId:p.targetId});
-    if(this.active===r){await capture.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{...identity,view:undefined,page:undefined,capture:undefined,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});await this.recordForeground(r,previousPageId,'page-created',foregroundAt);}this.window.show(view);this.onChanged();return p;
+    if(this.active===r){await capture.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{...identity,view:undefined,page:undefined,capture:undefined,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});if(activate)await this.recordForeground(r,previousPageId,'page-created',foregroundAt);}if(activate)this.window.show(view);this.onChanged();return p;
   }
   private createCapture(r:ActiveRun,p:PageIdentity&{page:Page}){return new CaptureCoordinator(p.page,p,r.store,selection=>{if(this.active===r&&r.pages.has(p.pageId)){r.selection=selection;this.onChanged();}},reason=>{if(r.ending||this.active!==r||!r.pages.has(p.pageId))return;r.capture='degraded';this.onChanged();void r.store.updateManifest({capture:'degraded',captureHealthReason:reason}).catch(error=>console.error('Could not persist capture health',error));},false);}
+  async createTaskPage(body:any,signal?:AbortSignal){
+    signal?.throwIfAborted();
+    const r=this.required(),anchor=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;
+    ensure(anchor&&anchor.navigationGeneration===body.generation&&body.leaseEpoch===leaseEpoch,'Task page identity or lease is stale',409);
+    ensure(r.controller==='agent'&&!r.locked&&!r.ending&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Agent does not own an idle browser',409);
+    ensure(this.browserAuthorizationId===body.authorizationId,'This task does not own the browser lease',403);
+    ensure(typeof body.startUrl==='string'&&body.startUrl.length<=4096&&/^https?:\/\//.test(body.startUrl),'An HTTP(S) startUrl is required',422);
+    const destination=new URL(body.startUrl);
+    ensure(!destination.username&&!destination.password&&this.navigationAllowed(destination.href),'Task page destination is outside authorized origins',403);
+    const previousPageId=r.selectedPageId;
+    const page=await this.addPage(r,undefined,undefined,false);
+    try{
+      signal?.throwIfAborted();
+      ensure(this.active===r&&r.leaseEpoch===leaseEpoch&&r.selectedPageId===previousPageId,'Task page creation lost its browser lease',409);
+      await this.navigate(destination.href,page,true);
+      signal?.throwIfAborted();
+      ensure(this.active===r&&r.leaseEpoch===leaseEpoch&&r.selectedPageId===previousPageId&&r.pages.get(page.pageId)===page,'Task page creation lost its browser lease',409);
+      this.tasks.addPage(body.authorizationId,{pageId:page.pageId,targetId:page.targetId});
+      return {runId:r.id,sessionId:this.browserSessionId,profileId:r.profileId,pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration,selectedPageId:r.selectedPageId};
+    }catch(error){
+      if(r.pages.get(page.pageId)===page){await this.closePageContents(page);await Promise.all([...(r.pageClosures??[])]);}
+      throw error;
+    }finally{if(this.active===r)this.window.lock(r.locked||this.active.controller!=='human');this.onChanged();}
+  }
   async navigate(url:string,p=this.current(),initial=false){ensure(/^https?:\/\//.test(url)||url==='about:blank','Only HTTP(S) and about:blank URLs supported');const r=this.live();if(!initial)ensure(!r.locked&&r.controller==='human'&&!r.ending,'Browser is controlled by automation or locked',409);const lease=r.leaseEpoch;return navigateObserved(p.view.webContents,p.page,url,()=>ensure(this.live()===r&&r.pages.get(p.pageId)===p&&p.targetId===(r.pages.get(p.pageId)?.targetId)&&r.leaseEpoch===lease&&!r.ending&&!this.closing,'Navigation target or ownership changed',409));}
   async navigateHistory(direction:'back'|'forward'|'reload'){
     const r=this.live(),p=this.current();ensure(!r.locked&&r.controller==='human'&&!r.ending,'Browser is controlled by automation or locked',409);
@@ -369,7 +393,7 @@ export class Studio {
   }
   private assertOperationOwner(r:ActiveRun,p:ManagedPage,leaseEpoch:number,generation?:number){
     ensure(this.active===r&&!this.closing&&!r.ending&&r.controller==='agent'&&!r.locked&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Agent no longer owns this browser',409);
-    ensure(r.leaseEpoch===leaseEpoch&&r.selectedPageId===p.pageId&&r.pages.get(p.pageId)===p,'Control lease or operation page changed',409);
+    ensure(r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Control lease or operation page changed',409);
     if(generation!==undefined)ensure(p.navigationGeneration===generation,'Stale navigation generation',409);
   }
   private async revokeOperation(r:ActiveRun){
@@ -414,13 +438,22 @@ export class Studio {
     r.controller=controller;r.locked=false;this.window.lock(controller!=='human');
     await r.store.appendEvent({type:'control',source:'studio',data:{controller,leaseEpoch:r.leaseEpoch}});return this.state().active;
   }
-  async action(body:any,signal?:AbortSignal){signal?.throwIfAborted();const r=this.required(),p=this.current(),leaseEpoch=r.leaseEpoch;ensure(Number.isSafeInteger(body.generation)&&body.generation>=0,'Navigation generation is required',409);this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(body.leaseEpoch===leaseEpoch&&body.pageId===p.pageId,'Stale lease or wrong page identity',409);
+  async action(body:any,signal?:AbortSignal){signal?.throwIfAborted();const r=this.required(),p=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;ensure(p,'Unknown managed page',409);ensure(Number.isSafeInteger(body.generation)&&body.generation>=0,'Navigation generation is required',409);this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(body.leaseEpoch===leaseEpoch,'Stale lease or wrong page identity',409);
     let stopping:Promise<void>|undefined;const abort=()=>{r.leaseEpoch++;stopping=this.revokeOperation(r);};signal?.addEventListener('abort',abort,{once:true});
     try{
     const op=await this.operation(r,p,leaseEpoch);this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(op.targetId===p.targetId&&r.operation===op,'Target mismatch',409);
     const commandId=randomUUID();await r.store.appendEvent({type:'command',source:'api',pageId:p.pageId,data:{commandId,type:body.type,selector:body.selector,controller:r.controller}});
     this.assertOperationOwner(r,p,leaseEpoch,body.generation);
-    switch(body.type){case 'navigate':ensure(/^https?:\/\//.test(body.url),'HTTP(S) URL required');await op.page.goto(body.url);break;case 'click':await op.page.click(String(body.selector));break;case 'fill':await op.page.$eval(String(body.selector),(el:any)=>{el.value='';el.dispatchEvent(new Event('input',{bubbles:true}));});await op.page.type(String(body.selector),String(body.value));break;case 'press':await op.page.keyboard.press(body.key);break;case 'scroll':await op.page.evaluate(({x,y})=>window.scrollBy(x,y),{x:Number(body.x)||0,y:Number(body.y)||0});break;case 'select':await op.page.select(String(body.selector),String(body.value));break;default:ensure(false,'Unsupported action');}
+    switch(body.type){case 'navigate':ensure(/^https?:\/\//.test(body.url),'HTTP(S) URL required');await op.page.goto(body.url);break;case 'click':{
+      if(p.pageId===r.selectedPageId){ensure(p.view.getVisible(),'Page is not presented for native input; close the covering view and retry',409);await op.page.click(String(body.selector));break;}
+      // A hidden native view does not advance IntersectionObserver, which
+      // Puppeteer's click() waits for. Use its target-scoped mouse input after
+      // an explicit scroll and geometry check, without changing the UI page.
+      const element=await op.page.$(String(body.selector));ensure(element,'Click target was not found',404);
+      try{await this.window.withBackgroundInteraction(p.view,async()=>{ensure(p.view.getVisible(),'Page is not presented for native input; close the covering view and retry',409);await element.scrollIntoView();const point=await element.clickablePoint();await op.page.mouse.click(point.x,point.y);});}
+      finally{await element.dispose();}
+      break;
+    }case 'fill':await op.page.$eval(String(body.selector),(el:any)=>{el.value='';el.dispatchEvent(new Event('input',{bubbles:true}));});await op.page.type(String(body.selector),String(body.value));break;case 'press':await op.page.keyboard.press(body.key);break;case 'scroll':await op.page.evaluate(({x,y})=>window.scrollBy(x,y),{x:Number(body.x)||0,y:Number(body.y)||0});break;case 'select':await op.page.select(String(body.selector),String(body.value));break;default:ensure(false,'Unsupported action');}
     signal?.throwIfAborted();return {commandId,generation:p.navigationGeneration};
     }finally{signal?.removeEventListener('abort',abort);await stopping;}
   }

@@ -1,6 +1,6 @@
 # API 使用
 
-完整路由和字段见项目 [docs/api.md](../../../docs/api.md)。需要精确路由时读取它，不把整套设计文档加载进每个请求。首次使用先调用 `/v1/capabilities` 核对当前实例。
+完整路由和字段见项目 [docs/api.md](../../../docs/api.md)。需要精确路由时读取它，不把整套设计文档加载进每个请求。固定交接先按 [handoff.md](handoff.md) 核对实例与授权，再调用 `/v1/capabilities`。
 
 从客户端显示的 `connection/agent-connection.json` 读取 `address/token`，请求统一带 `Authorization: Bearer ...`。连接每次启动变化。不要打印连接对象、认证头或寻找内部 CDP 端口。401 时重读已知连接文件一次；连接失效时检查客户端是否启动，不改 profile 或锁文件。
 

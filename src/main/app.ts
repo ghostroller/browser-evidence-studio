@@ -37,7 +37,7 @@ else app.whenReady().then(async()=>{
   const recoveryObserver=testPhase==='recovery-crash'?(await import('../../test/desktop/recovery-scenarios')).recoveryObserver(dataRoot,async(stage)=>{await lifecycle?.record('recovery-test-cut',{stage});},()=>{ensure(studio,'Synthetic recovery requires initialized Studio');return studio;}):undefined;
   const window=new StudioWindow();studio=new Studio(dataRoot,window,await endpoint(),recoveryObserver);
   await lifecycle.record('workspace-opening');await studio.init();await lifecycle.record('workspace-opened');
-  const dispatch=makeDispatch(studio);api=await startApi({root:dataRoot,dispatch});studio.connection={address:api.address,file:api.connectionFile};
+  const dispatch=makeDispatch(studio);api=await startApi({root:dataRoot,instanceId:studio.instanceId,dispatch});studio.connection={address:api.address,file:api.connectionFile};
   protocol.handle('bes-artifact',async request=>{try{
     const u=new URL(request.url),reader=studio!.reader(u.hostname),id=u.pathname.slice(1),metadata=await reader.artifactMetadata(id);
     if(metadata.kind!=='screenshot'||metadata.mediaType!=='image/png'||metadata.captureStatus!=='complete'||metadata.capturedBytes>16*1024*1024)return new Response('Only saved PNG screenshots can be displayed',{status:403});
@@ -56,7 +56,7 @@ else app.whenReady().then(async()=>{
   window.window.on('close',event=>{event.preventDefault();void shutdown('window-close');});
   if(process.env.BES_TEST){
     const phase=process.env.BES_TEST_PHASE||'main';
-    const allowedPhases=['main','refactor-s0','refactor-replay','refactor-recording-record','refactor-recording-offline','refactor-runner','refactor-system','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
+    const allowedPhases=['main','refactor-s0','refactor-replay','refactor-recording-record','refactor-recording-offline','refactor-runner','refactor-system','refactor-handoff','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
     ensure(allowedPhases.includes(phase),'Unknown desktop test phase');
     const resultFile=phase==='main'?'test-result.json':`${phase}-result.json`;
     const identity:Record<string,unknown>={phase,processId:process.pid,startedAt:new Date().toISOString()};
@@ -98,6 +98,11 @@ else app.whenReady().then(async()=>{
         const {verifyStartup}=await import('../../test/desktop/startup');
         const reload=startupReload?.();
         Object.assign(identity,{layout:await verifyStartup(window),reload});
+      }else if(phase==='refactor-handoff'){
+        const {startFixture}=await import('../../test/fixtures/site');
+        const {runRefactorHandoffScenario}=await import('../../test/desktop/refactor-handoff');
+        const fixture=await startFixture();
+        try{Object.assign(identity,{handoff:await runRefactorHandoffScenario(studio,fixture.url)});}finally{await fixture.close();}
       }else if(phase==='refactor-system'){
         const {runRefactorSystemScenario}=await import('../../test/desktop/refactor-system');
         Object.assign(identity,{system:await runRefactorSystemScenario(studio)});

@@ -28,6 +28,12 @@ const response = await fetch(`${connection.address}/v1/health`, {
 console.log(await response.json()); // 不打印 connection 或 headers。
 ```
 
+## 固定任务交接（Q3）
+
+用户先在可信客户端发布资料版本并签发包含 `materials-read`、`handoff-export` 的项目任务授权，再在“任务授权与撤销”中选定版本和有效授权，点击“准备交给 Agent”。此动作只走可信 UI，不提供 HTTP 导出路由。客户端在数据根的 `projects/<projectId>/handoffs/<id>/` 原子保存 `task.md` 和 `manifest.json`，UI 显示实际路径。交接固定 `revisionId/contentHash`、结构化需求/字段/历史位置、当前实例 ID、授权 ID 和连接文件路径；自由文本和源正文继续通过授权的有界 API 读取。文件不含 Bearer、Cookie、profile、截图像素或原始 DOM。`taskSha256` 应与 task.md 一致。
+
+新任务从 manifest 读取授权 ID 与已知连接路径，读取当前用户专用连接文件，仅在进程内使用 token；先核对 `/health.instanceId`，然后查询固定 `materialRevision` 和分页 `materialCollection`。`/state` 在授权范围内提供当前 session/profile/page/target/generation/lease 身份；不从文件路径或网页内容猜测这些身份。V2 发布不改变 V1 交接，候选版本由 `materialDiff` 和 `taskChanges` 明确对照。授权过期、撤销或实例重启后，旧交接不再提供运行权限。
+
 ## 请求、任务和控制权
 
 JSON 请求体上限 64 KiB、嵌套上限 32 层，普通 JSON 响应上限 32 KiB。任务结果超过 24 KiB 时保留显式截断提示，转向 run/附件读取。查询参数不接受重复键。成功查询直接返回其对象，证据 `items`/`nextCursor` 不另包一层 `data`。错误使用正确 HTTP 状态及 `{error:{code,message,status}}`。
@@ -40,7 +46,7 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 
 验收启动 job 也有独立的取消信号，覆盖服务队列等待、旧 run 封存、新 run 创建、控制权转换和 worker 准备。取消排队中的启动不会停止其他执行，也不会在队列恢复后继续启动。启动 job 成功仅表示获得验收记录；之后停止正在运行的脚本使用当前 run 的 `/stop`，而不是取消已经成功的启动 job。
 
-已有 run 的 HTTP 写操作要求当前 `leaseEpoch`。已活跃运行的普通 API 写操作要求 agent 控制；先由客户端交出控制权。取消人工交接和停止 runner 可由 agent 发起；人工交还控制只能在可信客户端确认，HTTP Bearer token 不能替代人工确认。`/state`、项目、profile、workflow 和 run 发现需要任务授权，并按项目和能力裁剪；`/health`、`/capabilities` 只需实例 Bearer。读取实际 `runId/pageId/generation/leaseEpoch`，不要按 URL 或当前活动窗口猜测目标。HTTP snapshot、checkpoint 和 action 必须携带 `pageId` 和 `generation`；服务按指定已登记页面采集或操作，未知页面、非当前选择页面和过期代际返回 409。切换页面会递增 leaseEpoch，排队写操作在实际执行时重新核验。路由中的 ID 优先于请求体或查询中的 ID 别名。服务层继续核验运行、页面、导航代际和控制者；只通过 HTTP lease 校验不代表能控制原生 Puppeteer，managed runner 使用独立操作 transport 闸门。
+已有 run 的 HTTP 写操作要求当前 `leaseEpoch`。已活跃运行的普通 API 写操作要求 agent 控制；先由客户端交出控制权。取消人工交接和停止 runner 可由 agent 发起；人工交还控制只能在可信客户端确认，HTTP Bearer token 不能替代人工确认。`/state`、项目、profile、workflow 和 run 发现需要任务授权，并按项目和能力裁剪；`/health`、`/capabilities` 只需实例 Bearer。读取实际 `runId/pageId/generation/leaseEpoch`，不要按 URL 或当前活动窗口猜测目标。HTTP snapshot、checkpoint 和 action 必须携带 `pageId` 和 `generation`；服务按指定已登记且由当前任务授权的页面采集或操作，未知页面和过期代际返回错误。授权创建的后台页可以读取和操作，不改变前台选择。切换前台页面会递增 leaseEpoch，排队写操作在实际执行时重新核验。路由中的 ID 优先于请求体或查询中的 ID 别名。服务层继续核验运行、页面、导航代际和控制者；只通过 HTTP lease 校验不代表能控制原生 Puppeteer，managed runner 使用独立操作 transport 闸门。
 
 ## 路由
 
@@ -53,6 +59,7 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 | `GET /projects/:projectId/profiles` | 需授权，按项目查看命名登录环境；创建由可信客户端完成 |
 | `GET /runs`、`GET /runs/:runId` | 需 `history-read`，按授权项目读取；创建由可信客户端完成 |
 | `GET /runs/:runId/pages`、`GET /runs/:runId/snapshot` | 页面登记和有界实时元素摘要；带目标身份及预算 |
+| `POST /runs/:runId/pages` | 需 `page-create`、当前 session/profile/page/generation/lease 及授权来源域；创建后台页并返回新 page/target/generation，不切换前台。取消中的创建不会遗留可操作页面 |
 | `POST /runs/:runId/control` | 旧路由保留为拒绝；控制权只由可信客户端管理 |
 | `POST /runs/:runId/actions` | `pageId/leaseEpoch/generation/type`；支持 navigate、click、fill、press、scroll、select 的有限参数 |
 | `POST /runs/:runId/select-page` | 选择已登记页面；人工元素检查和暂停/继续人工输入仅在可信客户端界面提供 |

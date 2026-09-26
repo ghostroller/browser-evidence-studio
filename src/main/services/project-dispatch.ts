@@ -1,10 +1,11 @@
 import type { Studio } from './studio';
+import { exportFixedTaskHandoff } from './fixed-task-handoff';
 import type { TaskCapability } from './task-authorization';
 import { MATERIAL_COLLECTIONS, materialBudget, materialSummary } from './project-materials';
 import { parseReplayPosition } from '@/contracts/recording';
 import { ensure } from '@/shared/errors';
 
-export const PROJECT_METHODS = new Set(['taskAuthorizations', 'authorizeTask', 'revokeTask', 'taskChanges', 'materialDrafts', 'materialRevisions', 'materialDraft', 'materialRevision', 'materialCollection', 'createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft', 'materialDiff', 'recordingStreams', 'recordingForeground', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators', 'execution', 'executionItems', 'datasetBatches', 'datasetRecords', 'assessExecution', 'executionReport', 'executionReportItems', 'reviewExecution']);
+export const PROJECT_METHODS = new Set(['taskAuthorizations', 'authorizeTask', 'revokeTask', 'exportFixedTaskHandoff', 'taskChanges', 'materialDrafts', 'materialRevisions', 'materialDraft', 'materialRevision', 'materialCollection', 'createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft', 'materialDiff', 'recordingStreams', 'recordingForeground', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators', 'execution', 'executionItems', 'datasetBatches', 'datasetRecords', 'assessExecution', 'executionReport', 'executionReportItems', 'reviewExecution']);
 const EDIT = new Set(['createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft']);
 const HISTORY = new Set(['recordingStreams', 'recordingForeground', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators']);
 const RESULTS = new Set(['execution','executionItems','datasetBatches','datasetRecords','assessExecution','executionReport','executionReports','executionReportItems','reviewExecution']);
@@ -16,6 +17,21 @@ export async function dispatchProject(studio: Studio, method: string, body: any,
   ensure(typeof body.projectId === 'string' && studio.projects.some(project => project.id === body.projectId), 'Unknown project', 404);
   if (method === 'authorizeTask') { ensure(source === 'ui', 'Only the trusted client can authorize a task', 403); return studio.authorizeTask(body); }
   if (method === 'revokeTask') { ensure(source === 'ui', 'Only the trusted client can revoke task authorization', 403); return studio.revokeTask(body); }
+  if (method === 'exportFixedTaskHandoff') {
+    ensure(source === 'ui', 'A fixed task handoff must be prepared in the trusted client', 403);
+    ensure(typeof body.authorizationId === 'string' && typeof body.revisionId === 'string' && typeof body.contentHash === 'string', 'Choose a task authorization and fixed revision', 422);
+    ensure(typeof studio.connection?.file === 'string', 'The current local API connection is unavailable', 409);
+    const grant = studio.tasks.get(body.authorizationId);
+    const scriptDirectory = studio.projects.find(project => project.id === body.projectId)?.scriptDirectory;
+    if (grant.directory) ensure(scriptDirectory, 'The registered workflow directory is unavailable', 409);
+    return exportFixedTaskHandoff(studio.root, studio.materials.service, studio.tasks, {
+      projectId: body.projectId, revisionId: body.revisionId, contentHash: body.contentHash,
+      authorizationId: body.authorizationId, instanceId: studio.instanceId,
+      connectionFile: studio.connection.file,
+      ...(grant.directory ? { scriptDirectory } : {}),
+      signal,
+    });
+  }
   // Discovery reveals scope and status, never a browser credential or API token.
   if (method === 'taskAuthorizations') return { instanceId: studio.instanceId, items: studio.tasks.list(body.projectId) };
   const capability: TaskCapability = EDIT.has(method) ? 'materials-edit' : HISTORY.has(method) ? 'history-read' : RESULTS.has(method) ? 'results-read' : 'materials-read';

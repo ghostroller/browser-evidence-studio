@@ -45,7 +45,7 @@ function ordersPage(url: URL): string {
   const variant = url.searchParams.get('variant') || 'normal';
   const first = fixtureOrders.slice(0, 3);
   return document('合成订单', `<p class="muted">首屏 SSR 数据与 API 返回重叠；完整范围包含 7 条订单、3 页及各自详情。</p>
-    <section><div class="actions"><label>筛选文字 <input id="filter" aria-label="筛选文字"></label><button id="increment">测试点击</button><span>点击次数 <output id="action-count">0</output></span><span>后台计时 <output id="tick">0</output></span></div></section>
+    <section><div class="actions"><label>筛选文字 <input id="filter" aria-label="筛选文字"></label><button id="increment">测试点击</button><span>点击次数 <output id="action-count" role="status">0</output></span><span>后台计时 <output id="tick">0</output></span></div></section>
     <section><h2>订单列表 <span id="page-label">第 ${page} 页</span></h2><table><thead><tr><th>订单 ID</th><th>商品</th><th>金额（分）</th><th>状态</th><th>操作</th></tr></thead><tbody id="orders">${first.map((order) => `<tr data-order-id="${order.id}"><td>${order.id}</td><td>${order.title}</td><td>${order.amountCents}</td><td>${order.status}</td><td><a href="/orders/${order.id}">详情</a></td></tr>`).join('')}</tbody></table><div class="actions"><button id="previous">上一页</button><button id="next">下一页</button><output id="pagination" data-total="7"></output></div><p id="api-state" role="status">加载中</p></section>
     <section><h2>时间相关证据</h2><button id="flash">显示短暂弹层（800ms）</button><button id="open-popup">打开业务弹窗</button><a id="download" href="/download">下载合成 CSV</a><div id="transient-root"></div></section>
     <script id="ssr-data" type="application/json">${scriptJson({ source: 'ssr', items: first, total: fixtureOrders.length })}</script>`, `

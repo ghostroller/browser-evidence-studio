@@ -1,5 +1,7 @@
 # 当前进度与接续
 
+2026-09-26 Q3 在此暂停复盘：可信 UI 的固定资料/授权交接、`task.md`/`manifest.json`、实例发现、公开范围查询、后台页创建/真实点击、候选差异、固定版试跑与撤销自动客户端已完成，真实 Electron `--refactor-handoff` 和 `--refactor-system` 通过；全量单元 54 文件/326 项、类型检查与构建通过。当前 Q3 代码的完整旧桌面矩阵三次未通过，原始日志和接续见 [Q3 交接](refactor-handoffs/Q3-20260926.md)；Q4 恢复/长测、Q5 分发/独立脚本、Q6 全新 Agent/真人业务未执行。按用户要求在此暂停，保留所有分支、worktree、原件和失败日志。下段 Q2 状态保留为批次历史。
+
 2026-09-26 Q2 已完成并继续 Q3：生产 ReplayHost 的播放准备可被暂停/切流/关闭废止；录制请求版本与资源可用时序用于离线回放，真实跨源、延迟、cache、Service Worker、`data:`/blob 资源和前台多文档转换经过生产录制→消费。完整未跳 UI 桌面与强杀恢复矩阵、record/offline 专项、系统专项通过；全量单元 54 文件/326 项（包含 Q3 独立模块 3 项）、类型检查与构建通过。跨源 iframe DOM、不同物理 DPI/zoom、新架构长测、安装包仍未验收。完整命令、原始报告与限制见 [Q2 交接](refactor-handoffs/Q2-20260926.md)。下段 Q1 状态保留为批次历史。
 
 2026-09-26 Q1 已完成并进入 Q2。正常生产 JSON 响应正文现在带 CDP 回调时记录的响应时间、固定 request/hop、page/recording/frame/loader 身份；独立判定同时核对请求开始与响应观测均在真实 host attempt 范围内。旧档缺身份保持来源不足。旧 checkpoint DOM 与实时 snapshot 执行遮罩；完整原始截图保留，但普通 Agent 二进制接口拒绝读取（旧未标记截图同样拒绝），可信 UI 仍可查看。真实 Electron/Puppeteer producer→consumer：JSON 正确/错误分别 pass/fail、缺失身份 inconclusive；普通 DOM 来源和 241 事件 React UI 回归通过。具体命令和限制见 [Q1 交接](refactor-handoffs/Q1-20260926.md)。以下 R1–R8 暂停说明是历史状态。

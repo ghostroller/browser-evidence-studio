@@ -2,12 +2,14 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
+import { NativeSelect } from './ui/native-select';
 import { StatusBadge } from './status-badge';
 
 type Capability = 'materials-read' | 'materials-edit' | 'history-read' | 'page-read' | 'page-act' | 'page-create' | 'execute' | 'results-read' | 'handoff-export';
 type Grant = { authorizationId: string; projectId: string; capabilities: Capability[]; status: string; expiresAt: string;
   remainingOperations: number; maxOperations: number; sessionId?: string; profileId?: string; directory?: string;
   origins: string[]; pages: Array<{ pageId: string; targetId: string }>; reason?: string };
+type FixedRevision = { revisionId: string; contentHash: string; status: string };
 const choices: Array<[Capability, string]> = [
   ['materials-read', '读取任务资料'], ['materials-edit', '编辑任务资料'], ['history-read', '读取历史证据'],
   ['results-read', '读取结果'], ['handoff-export', '导出交接包'], ['page-read', '读取当前页面'],
@@ -30,7 +32,11 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
   const [pending, setPending] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [revisions, setRevisions] = useState<FixedRevision[]>([]);
+  const [revisionCursor, setRevisionCursor] = useState<string | undefined>();
+  const [revisionId, setRevisionId] = useState('');
   const request = useRef(0);
+  const revisionRequest = useRef(0);
   const scopeRef = useRef(projectId);
   scopeRef.current = projectId;
   const pages: Array<{ pageId: string; targetId: string; url: string; title?: string }> = session?.pages || [];
@@ -58,6 +64,18 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
     ++request.current; setGrants([]); setInstanceId(''); setPending(''); setError(''); setNotice('');
     void load(); const timer = setInterval(() => void load(), 2000);
     return () => { ++request.current; clearInterval(timer); };
+  }, [projectId]);
+  useEffect(() => {
+    const token = ++revisionRequest.current;
+    setRevisions([]); setRevisionCursor(undefined); setRevisionId('');
+    if (!projectId) return;
+    void window.studio.call('materialRevisions', { projectId, limit: 50, maxBytes: 24576 }).then(page => {
+      if (token !== revisionRequest.current) return;
+      const available = (page.items || []).filter((item: FixedRevision) => item.status === 'available');
+      setRevisions(available); setRevisionCursor(page.nextCursor);
+      setRevisionId(available[0]?.revisionId || '');
+    }).catch(failure => { if (token === revisionRequest.current) setError(`固定资料版本读取失败：${String(failure)}`); });
+    return () => { ++revisionRequest.current; };
   }, [projectId]);
   useEffect(() => {
     const selected = pages.find(page => page.pageId === session?.selectedPageId) || pages[0];
@@ -88,6 +106,32 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
     } catch (failure) { if (scopeRef.current === scope) setError(String(failure)); }
     finally { if (scopeRef.current === scope) setPending(''); }
   };
+  const fixedRevision = revisions.find(item => item.revisionId === revisionId);
+  const exportHandoff = async (grant: Grant) => {
+    if (pending || !fixedRevision || grant.projectId !== projectId || grant.status !== 'active') return;
+    const scope = projectId;
+    setPending('准备交接'); setError(''); setNotice('');
+    try {
+      const result = await window.studio.call('exportFixedTaskHandoff', {
+        projectId: scope, revisionId: fixedRevision.revisionId,
+        contentHash: fixedRevision.contentHash, authorizationId: grant.authorizationId,
+      });
+      if (scopeRef.current === scope) setNotice(`固定交接已保存：${result.taskFile}。将 task.md 与 manifest.json 交给新任务。`);
+    } catch (failure) { if (scopeRef.current === scope) setError(String(failure)); }
+    finally { if (scopeRef.current === scope) setPending(''); }
+  };
+  const moreRevisions = async () => {
+    if (!revisionCursor || pending) return;
+    const scope = projectId, token = revisionRequest.current;
+    setPending('读取更多版本'); setError('');
+    try {
+      const page = await window.studio.call('materialRevisions', { projectId: scope, cursor: revisionCursor, limit: 50, maxBytes: 24576 });
+      if (scopeRef.current !== scope || revisionRequest.current !== token) return;
+      setRevisions(current => [...current, ...(page.items || []).filter((item: FixedRevision) => item.status === 'available')]);
+      setRevisionCursor(page.nextCursor);
+    } catch (failure) { if (scopeRef.current === scope && revisionRequest.current === token) setError(String(failure)); }
+    finally { if (scopeRef.current === scope && revisionRequest.current === token) setPending(''); }
+  };
   return <div className="overlay-body form-stack task-authorizations">
     <p className="hint">逐项授予这次任务所需能力；授权只在当前应用实例有效。页面操作会按所选页面与来源限制，撤销会中断进行中的操作。</p>
     {error && <p role="alert" className="error-inline">{error}</p>}{notice && <p role="status" className="notice">{notice}</p>}
@@ -103,11 +147,18 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
       {capabilities.includes('execute') && <p className="hint">登记脚本目录：<code>{project?.scriptDirectory || '未登记'}</code></p>}
     </>}
     <Button variant="default" className="primary" disabled={!canIssue || !!pending} onClick={() => void issue()}>{pending || '授予这次任务'}</Button>
+    <div className="section-label">固定版本交接</div>
+    <p className="hint">先固定任务资料，再选择含“读取任务资料”和“导出交接包”的本实例授权。交接文件只含有界索引，不含连接 token 或证据正文。</p>
+    <NativeSelect aria-label="交接资料版本" value={revisionId} onChange={event => setRevisionId(event.target.value)}>
+      <option value="">选择已发布的固定版本</option>
+      {revisions.map(item => <option key={item.revisionId} value={item.revisionId}>{item.revisionId.slice(0, 16)} · {item.contentHash.slice(0, 12)}</option>)}
+    </NativeSelect>
+    {revisionCursor && <Button disabled={!!pending} onClick={() => void moreRevisions()}>更多固定版本</Button>}
     <div className="section-label">本实例授权 · {instanceId ? instanceId.slice(0, 12) : '读取中'}</div>
     {grants.map(grant => <div className="task-grant" key={grant.authorizationId}><div className="detail-title"><code>{grant.authorizationId}</code><StatusBadge value={grant.status} /></div>
       <p>{grant.capabilities.join('、')}</p><small>剩余 {grant.remainingOperations} / {grant.maxOperations} 次 · 到期 {new Date(grant.expiresAt).toLocaleString('zh-CN')}</small>
       {grant.sessionId && <small>会话 {grant.sessionId.slice(0, 12)} · 环境 {grant.profileId?.slice(0, 12)} · {grant.pages.length} 页 · {grant.origins.join('、')}</small>}
-      {grant.reason && <small>{grant.reason}</small>}{grant.status === 'active' && <Button disabled={!!pending} onClick={() => void revoke(grant)}>撤销此授权</Button>}</div>)}
+      {grant.reason && <small>{grant.reason}</small>}{grant.status === 'active' && grant.capabilities.includes('handoff-export') && grant.capabilities.includes('materials-read') && <Button disabled={!!pending || !fixedRevision} onClick={() => void exportHandoff(grant)}>准备交给 Agent</Button>}{grant.status === 'active' && <Button disabled={!!pending} onClick={() => void revoke(grant)}>撤销此授权</Button>}</div>)}
     {!grants.length && <p className="muted">当前项目没有本实例任务授权。</p>}
   </div>;
 }

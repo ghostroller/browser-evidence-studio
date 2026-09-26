@@ -12,6 +12,7 @@ const JSON_LIMIT = 32 * 1024;
 const JOB_RESULT_LIMIT = 24 * 1024;
 export interface ApiOptions {
   root: string;
+  instanceId?: string;
   dispatch: (method: string, body: Record<string, unknown>, source: 'api', context?: { signal?: AbortSignal }) => unknown | Promise<unknown>;
 }
 export interface ApiHandle { address: string; connectionFile: string; close(): Promise<void>; }
@@ -24,6 +25,7 @@ function jobCapability(operation:string):TaskCapability {
   if(['createMaterialDraft','editMaterialDraft','publishMaterialDraft'].includes(operation))return 'materials-edit';
   if(['assessExecution'].includes(operation))return 'results-read';
   if(['startValidation'].includes(operation))return 'execute';
+  if(operation==='createPage')return 'page-create';
   if(['checkpoint','action','selectPage','requestHuman','cancelHandoff','stopRunner','control','seal','pauseOperations','pauseCapture','saveProfile'].includes(operation))return 'page-act';
   return 'materials-read';
 }
@@ -41,6 +43,7 @@ const routes: Route[] = [
   route('GET', /^\/v1\/runs$/, [], 'runs'), route('POST', /^\/v1\/runs$/, [], 'startRun', { mutate: true }),
   route('GET', /^\/v1\/runs\/([^/]+)$/, ['runId'], 'run'),
   ...['pages', 'snapshot', 'checkpoints', 'summary', 'gaps', 'events', 'artifacts', 'handoffs', 'validations'].map((operation) => route('GET', new RegExp(`^/v1/runs/([^/]+)/${operation}$`), ['runId'], operation)),
+  route('POST', /^\/v1\/runs\/([^/]+)\/pages$/, ['runId'], 'createPage', { mutate: true, lease: true }),
   ...[['actions', 'action'], ['checkpoints', 'checkpoint'], ['control', 'control'], ['seal', 'seal'], ['select-page', 'selectPage'], ['handoffs', 'requestHuman'], ['validations', 'startValidation'], ['stop', 'stopRunner']].map(([suffix, operation]) => route('POST', new RegExp(`^/v1/runs/([^/]+)/${suffix}$`), ['runId'], operation, { mutate: true, lease: true })),
   ...[['pause-capture', 'pauseCapture', true], ['resume-capture', 'pauseCapture', false]].map(([suffix, operation, paused]) => route('POST', new RegExp(`^/v1/runs/([^/]+)/${suffix}$`), ['runId'], String(operation), { mutate: true, lease: true, extra: { paused } })),
   route('GET', /^\/v1\/runs\/([^/]+)\/artifacts\/([^/]+)$/, ['runId', 'artifactId'], 'artifact'),
@@ -121,13 +124,13 @@ async function connectionFile(root: string, value: Record<string, unknown>): Pro
 
 export async function startApi(options: ApiOptions): Promise<ApiHandle> {
   const token = randomBytes(32).toString('base64url'), tokenHash = createHash('sha256').update(token).digest();
-  const instanceId = randomUUID(), jobs = new Map<string, InternalJob>(), idempotency = new Map<string, { fingerprint: string; jobId: string }>();
+  const instanceId = options.instanceId ?? randomUUID(), jobs = new Map<string, InternalJob>(), idempotency = new Map<string, { fingerprint: string; jobId: string }>();
   let address = '', stopped = false;
   const dispatch = (operation: string, body: Record<string, unknown>, context?: { signal?: AbortSignal }): Promise<unknown> => Promise.resolve().then(() => options.dispatch(operation, body, 'api', context));
   const runJob = (job: InternalJob): void => {
     if (stopped || job.public.status !== 'queued') return;
     job.public.status = 'running'; job.public.updatedAt = new Date().toISOString();
-    if(['checkpoint','startValidation'].includes(job.public.operation))job.cancellation=new AbortController();
+    if(['checkpoint','startValidation','createPage'].includes(job.public.operation))job.cancellation=new AbortController();
     void dispatch(job.public.operation, job.body, {signal:job.cancellation?.signal}).then((result) => {
       if (job.public.status !== 'running') return;
       const serialized = JSON.stringify(result ?? null);
@@ -138,9 +141,9 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
         if (typeof value === 'string' && value.length <= 128) references[field] = value;
       }
       job.public.result = Buffer.byteLength(serialized) > JOB_RESULT_LIMIT ? { outputTruncated: true, resultBytes: Buffer.byteLength(serialized), references, nextRead: 'Read this run through summary, checkpoints, validations or artifact queries.' } : result;
-      const cancelled=job.public.operation==='checkpoint'&&(result as any)?.metadata?.captureOutcome==='cancelled'||job.public.operation==='startValidation'&&job.cancellation?.signal.aborted;
+      const cancelled=job.public.operation==='checkpoint'&&(result as any)?.metadata?.captureOutcome==='cancelled'||['startValidation','createPage'].includes(job.public.operation)&&job.cancellation?.signal.aborted;
       job.public.status = cancelled?'cancelled':'succeeded'; job.public.updatedAt = new Date().toISOString();
-    }).catch((error: unknown) => { if (job.public.status !== 'running') return; const cancelled=['checkpoint','startValidation'].includes(job.public.operation)&&job.cancellation?.signal.aborted&&error===job.cancellation.signal.reason;job.public.status=cancelled?'cancelled':'failed';if(!cancelled)job.public.error=failure(error);job.public.updatedAt=new Date().toISOString(); });
+    }).catch((error: unknown) => { if (job.public.status !== 'running') return; const cancelled=['checkpoint','startValidation','createPage'].includes(job.public.operation)&&job.cancellation?.signal.aborted&&(error===job.cancellation.signal.reason||(error as Error)?.name==='AbortError');job.public.status=cancelled?'cancelled':'failed';if(!cancelled)job.public.error=failure(error);job.public.updatedAt=new Date().toISOString(); });
   };
   const server = createServer((request, response) => {
     void (async () => {
@@ -172,10 +175,10 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
           else if (job.public.status === 'running' || job.public.status === 'waiting-human') {
             if (!job.public.cancellationRequested) {
               job.public.cancellationRequested = true;
-              if(['checkpoint','startValidation'].includes(job.public.operation)){
+              if(['checkpoint','startValidation','createPage'].includes(job.public.operation)){
                 // Abort only this job, including a callback still waiting in the
                 // Studio queue. The checkpoint result retains persisted evidence.
-                job.cancellation?.abort(new Error(job.public.operation==='checkpoint'?'Checkpoint acquisition cancelled':'Validation startup cancelled'));
+                job.cancellation?.abort(new Error(job.public.operation==='checkpoint'?'Checkpoint acquisition cancelled':job.public.operation==='createPage'?'Task page creation cancelled':'Validation startup cancelled'));
               }else{
               void dispatch('cancelJob', { ...job.body, jobId: job.public.id, operation: job.public.operation, operationBody: job.body }).then(() => {
                 if (job.public.status === 'running' || job.public.status === 'waiting-human') job.public.status = 'cancelled';
@@ -199,7 +202,7 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
         body[name] = value;
       });
       if (matched.lease && (!Number.isSafeInteger(body.leaseEpoch) || Number(body.leaseEpoch) < 1)) throw new ApiError('LEASE_REQUIRED', 'A current leaseEpoch is required for this mutation.', 409);
-      if (matched.operation === 'action' && (!Number.isSafeInteger(body.generation) || Number(body.generation) < 0)) throw new ApiError('GENERATION_REQUIRED', 'A current navigation generation is required for each action.', 409);
+      if (['action','createPage'].includes(matched.operation) && (!Number.isSafeInteger(body.generation) || Number(body.generation) < 0)) throw new ApiError('GENERATION_REQUIRED', 'A current navigation generation is required for each action or page creation.', 409);
       if (!matched.mutate) {
         const result = await dispatch(matched.operation, body);
         if (matched.binary) {
