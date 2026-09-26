@@ -12,6 +12,7 @@ import { safeFile } from '@/evidence/files';
 import { buildSoakEvidenceSnapshot } from './soak-evidence';
 import { archiveGrowth } from './archive-growth';
 import { saveSoakReport } from './soak-report';
+import { waitForMeasuredDuration } from './soak-timing';
 
 const KiB = 1024, MiB = KiB * KiB;
 const limits = { checkpointP95Ms: 2000, summaryP95Ms: 500, httpSubmitP95Ms: 300, mainRssBytes: 1024 * MiB, pagePrivateBytes: 512 * MiB };
@@ -304,10 +305,10 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
       }
       slot++;
     }
-    if (loadElapsed() < durationMs) await delay(durationMs - loadElapsed());
-    report.load.loadEndedAt = new Date().toISOString(); report.load.loadElapsedMs = round(loadElapsed());
+    const measuredElapsed = await waitForMeasuredDuration(durationMs, loadElapsed, delay);
+    report.load.loadEndedAt = new Date().toISOString(); report.load.loadElapsedMs = round(measuredElapsed);
     report.elapsedMs = report.load.loadElapsedMs; report.load.completedCycles = actions.length;
-    assert.ok(report.elapsedMs >= durationMs); await page.capture.flush(); await summary(); await memory(); await fieldRead('late');
+    assert.ok(measuredElapsed >= durationMs); assert.ok(report.elapsedMs >= durationMs); await page.capture.flush(); await summary(); await memory(); await fieldRead('late');
     report.pageAcknowledgedActions = await page.page.$eval('#action-count', element => Number(element.textContent)); assert.equal(report.pageAcknowledgedActions, actions.length);
     if(options.newArchitecture){report.newArchitectureQueueMetrics=page.capture.queueMetrics;report.newArchitectureSamples.push({elapsedMs:report.elapsedMs,queue:page.capture.queueMetrics});}
     await save('verifying'); const verificationAt = performance.now();
