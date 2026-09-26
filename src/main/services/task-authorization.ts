@@ -84,7 +84,13 @@ export class TaskAuthorizations {
     grant.remainingOperations--;
     const controller = new AbortController(), group = this.active.get(id) ?? new Set(); group.add(controller); this.active.set(id, group);
     const abort = () => controller.abort(external?.reason); external?.addEventListener('abort', abort, { once: true });
-    try { controller.signal.throwIfAborted(); const result=await operation(controller.signal);controller.signal.throwIfAborted();return result; }
+    try { controller.signal.throwIfAborted(); const result=await operation(controller.signal);
+      // A checkpoint can commit partial evidence after its HTTP cancellation.
+      // Keep that durable receipt while the task itself remains authorized.
+      const receipt=result as {id?:unknown;metadata?:{captureOutcome?:unknown}}|null;
+      const committedCheckpoint=external?.aborted&&grant.status==='active'&&typeof receipt?.id==='string'&&['completed','timed-out','cancelled'].includes(String(receipt.metadata?.captureOutcome));
+      if(!committedCheckpoint)controller.signal.throwIfAborted();
+      return result; }
     finally { external?.removeEventListener('abort', abort); group.delete(controller); if (!group.size) this.active.delete(id); }
   }
   addPage(id: string, page: TaskAuthorization['pages'][number]): void {

@@ -122,7 +122,12 @@ export class PersistentDatasetService implements DatasetService {
     if (this.lock && await exists(path.join(dir, 'pending.json'))) throw new DatasetError('INDEX_RECOVERY_REQUIRED', 'Interrupted batch commit requires explicit rebuild before writing');
     let state: { schemaVersion: number; committedBatches: number; committedRecords: number } & DatasetIdentity;
     try { state = await readMetadata(dir, 'state.json') as typeof state; }
-    catch (error) { throw new DatasetError('INDEX_RECOVERY_REQUIRED', `Dataset metadata cannot be read; explicit rebuild required: ${String(error)}`); }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') throw new DatasetError('NOT_INITIALIZED', 'Dataset manifest exists but state was not initialized');
+      if (code === 'EACCES' || code === 'EPERM') throw new DatasetError('INDEX_READ_FAILED', 'Dataset state cannot be read with current permissions');
+      throw new DatasetError('INDEX_RECOVERY_REQUIRED', `Dataset metadata cannot be read; explicit rebuild required: ${String(error)}`);
+    }
     if (state.schemaVersion !== 1 || canonicalJson(pickIdentity(state)) !== canonicalJson(identity) || !Number.isSafeInteger(state.committedBatches) || state.committedBatches < 0 || state.committedBatches > MAX_BATCHES || !Number.isSafeInteger(state.committedRecords) || state.committedRecords < 0) throw new DatasetError('INDEX_RECOVERY_REQUIRED', 'Invalid dataset metadata; explicit rebuild required');
     const result: DatasetIndex = { directory: dir, identity: structuredClone(identity), committedBatches: state.committedBatches, committedRecords: state.committedRecords };
     if (await exists(path.join(dir, 'completion.json'))) {

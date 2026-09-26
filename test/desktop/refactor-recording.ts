@@ -16,7 +16,7 @@ import { OFFLINE_CSP } from '@/resources/rewrite';
 import rrwebSource from '../../node_modules/rrweb/dist/rrweb.umd.cjs?raw';
 
 interface SavedRecording {
-  runId: string; originalUrl: string; recordPid: number; capturedAt: string;
+  runId: string; projectId: string; originalUrl: string; recordPid: number; capturedAt: string;
   positions: Array<{ label: string; position: ReplayPosition; originalHtml: string }>;
   final: ReplayPosition;
 }
@@ -139,7 +139,7 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     assert.ok(resources.items.some(item=>item.status==='captured'&&item.frameId.startsWith('document-')&&item.originalUrl.status==='present'&&item.originalUrl.value.endsWith('/assets/frame.css')),'Same-origin frame CSS requires an exact logical source frame mapping');
     const originalFiles=['artifacts.jsonl'];for(const directory of ['raw/rrweb','raw/cdp','journal'])for(const file of await readdir(path.join(run.store.runDir,directory)))if(file.endsWith('.jsonl'))originalFiles.push(path.join(directory,file));
     for (const file of originalFiles) {const raw=await readFile(path.join(run.store.runDir,file),'utf8');assert.ok(!raw.includes('synthetic-private'),'Production originals must not leak masked input values');assert.ok(!raw.includes('synthetic-url-private'),'Production originals must not leak credential URLs');}
-    const saved: SavedRecording = { runId: run.id, originalUrl: origin + '/source', recordPid: process.pid, capturedAt: new Date().toISOString(), positions, final };
+    const saved: SavedRecording = { runId: run.id, projectId: project.id, originalUrl: origin + '/source', recordPid: process.pid, capturedAt: new Date().toISOString(), positions, final };
     await writeFile(path.join(studio.root, 'refactor-recording-fixture.json'), JSON.stringify(saved, null, 2));
     Object.assign(report, { passed: true, runId: run.id, positions: positions.map(item => ({ label: item.label, position: item.position })), resources: resources.items.map(item => ({ id: item.id, mediaType: item.mediaType, status: item.status, bytes: item.bytes })), queueMetrics });
     return report;
@@ -240,6 +240,17 @@ async function offlineScenario(studio: Studio): Promise<Record<string, unknown>>
     assert.deepEqual(blocked, [], 'Offline replay must not even attempt original-site network requests');
     await replay.webContents.executeJavaScript('window.__aPlayer.destroy();delete window.__aPlayer;true');
     assert.equal(await replay.webContents.executeJavaScript('document.querySelectorAll("#replay iframe").length'), 0);
+    const updated=saved.positions.find(item=>item.label==='updated')!;
+    const production=await studio.replayHost.open({projectId:saved.projectId,position:updated.position});
+    try {
+      assert.equal(production.status,'ready',production.error);
+      const native=(studio.replayHost as any).active.view.webContents;
+      const observed=await native.executeJavaScript(`(()=>{const root=document.querySelector('#replay iframe'),doc=root.contentDocument,child=doc.querySelector('#child')?.contentDocument,anchor=child?.querySelector('a'),image=child?.querySelector('#frame-picture');return {cssom:root.contentWindow.getComputedStyle(doc.querySelector('#cssom')).color,adopted:root.contentWindow.getComputedStyle(doc.querySelector('#adopted')).color,frameAvailable:!!anchor,frameColor:anchor?child.defaultView.getComputedStyle(anchor).color:null,frameImage:!!image?.complete&&image.naturalWidth>0,scriptRan:root.contentWindow.__sourceScriptRan===true};})()`);
+      assert.deepEqual(observed,{cssom:'rgb(60, 70, 80)',adopted:'rgb(100, 110, 120)',frameAvailable:true,frameColor:'rgb(88, 99, 111)',frameImage:true,scriptRan:false});
+      assert.equal(production.resources?.status,'ready',JSON.stringify(production.resources?.failures));
+      assert.equal(production.resources?.blockedRequests,0);
+      report.productionHost={status:production.status,resources:production.resources,observed};
+    } finally {studio.replayHost.close(production.replayId);}
     Object.assign(report, { passed: true, memory: { main: process.memoryUsage(), renderers: app.getAppMetrics().filter(metric => metric.pid === replay.webContents.getOSProcessId()).map(metric => metric.memory) } });
     return report;
   } catch(error){report.error=error instanceof Error?{name:error.name,message:error.message,stack:error.stack}:String(error);throw error;

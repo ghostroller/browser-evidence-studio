@@ -84,7 +84,11 @@ export interface WorkflowRunResult {
   operationTransportClose?: GateCloseDiagnostic;
   validation: ValidationResult;
 }
-export interface DatasetSummary extends DatasetIdentity { status: DatasetCompletion['status'] | 'unfinished'; committedBatches: number; committedRecords: number }
+export interface DatasetSummary extends DatasetIdentity {
+  status: DatasetCompletion['status'] | 'unfinished' | 'not-initialized' | 'corrupt' | 'unavailable';
+  committedBatches: number; committedRecords: number;
+  diagnostic?: { code: string; message: string };
+}
 export type StepSummary = Pick<StepEvent, 'identity' | 'state' | 'occurredAt' | 'diagnostics' | 'rerun' | 'resultValueState'> & { error?: OriginalError; dependencies?: StepIdentity[]; handoffId?: string };
 function summarizeStep(event: StepEvent): StepSummary {
   return { identity: event.identity, state: event.state, occurredAt: event.occurredAt, ...(event.diagnostics ? { diagnostics: event.diagnostics } : {}),

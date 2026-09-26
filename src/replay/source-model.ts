@@ -19,14 +19,19 @@ export class SourceModel {
     if (this.rootId === undefined) this.fail('No source full snapshot');
   }
   private fail(reason: string): never { throw new EvidenceError('SOURCE_STRUCTURE_GAP', reason, 409); }
-  private restore(input: serializedNodeWithId, parentId?: number, depth = 0): number {
+  private restore(input: serializedNodeWithId, parentId?: number, depth = 0, incoming?: Map<number, SourceMetadata>): number {
     if (depth > 512 || this.nodes.size >= 100_000) this.fail('Source structure exceeds bounded node/depth budget');
     if (this.nodes.has(input.id)) this.fail(`Duplicate source node ${input.id}`);
+    // A moved subtree can be removed and re-added in this same rrweb batch.
+    // Its newly captured metadata belongs to the new structure, not the old
+    // node being removed below.
+    const metadata = incoming?.get(input.id) ?? this.metadata.get(input.id);
+    if (metadata) this.metadata.set(input.id, metadata);
     const node: SourceTreeNode = { id: input.id, type: input.type, parentId, isShadow: 'isShadow' in input && input.isShadow === true,
-      children: [], textContent: 'textContent' in input ? input.textContent : '', metadata: this.metadata.get(input.id) };
+      children: [], textContent: 'textContent' in input ? input.textContent : '', metadata };
     this.nodes.set(input.id, node);
     if (input.type === 2 && !node.metadata) this.metadataComplete = false;
-    if ('childNodes' in input) node.children = input.childNodes.map(child => this.restore(child, input.id, depth + 1));
+    if ('childNodes' in input) node.children = input.childNodes.map(child => this.restore(child, input.id, depth + 1, incoming));
     return input.id;
   }
   private remove(id: number): void {
@@ -40,10 +45,11 @@ export class SourceModel {
     const event = record.event;
     if (event.type === 2) { this.nodes.clear(); this.metadata.clear(); this.metadataComplete = record.metadataComplete; }
     if (!record.metadataComplete) this.metadataComplete = false;
+    const incoming = new Map(record.metadata.map(item => [item.nodeId, structuredClone(item)]));
+    if (event.type === 3 && event.data.source === 0) for (const change of event.data.removes) this.remove(change.id);
     for (const item of record.metadata) this.metadata.set(item.nodeId, structuredClone(item));
     if (event.type === 2) this.rootId = this.restore(event.data.node);
     if (event.type === 3 && event.data.source === 0) {
-      for (const change of event.data.removes) this.remove(change.id);
       // rrweb may emit children before deferred parents. Resolve each add once,
       // bounded by the batch; unresolved parent/nextId is a structural gap.
       let waiting = [...event.data.adds];
@@ -54,7 +60,7 @@ export class SourceModel {
           if (!parent || addition.nextId !== null && !parent.children.includes(addition.nextId)) { next.push(addition); continue; }
           const at = addition.nextId === null ? parent.children.length : parent.children.indexOf(addition.nextId);
           if (this.nodes.has(addition.node.id)) this.remove(addition.node.id);
-          parent.children.splice(at, 0, this.restore(addition.node, parent.id));
+          parent.children.splice(at, 0, this.restore(addition.node, parent.id, 0, incoming));
         }
         if (next.length === waiting.length) this.fail('Unresolved parent or sibling in source mutation');
         waiting = next;

@@ -4,7 +4,7 @@
 
 HTTP 仍为 /v1，旧证据 schema 1 不变。state 新增独立 session（sessionId/project/profile/recordingId/页面/控制与导航代际）；seal 成功后 active=null，但 session 和 live 页保留。下一次同项目/profile startRun 在当前现场建立新 full snapshot，不因请求 url 改掉现场；换项目/profile前应由可信 UI 显式关闭 session。closePage/closeSession/navigateHistory 目前只接可信 UI，未新增 HTTP 路由。
 
-startValidation 的 executionMode 为 current-page-test 或默认 from-start-validation。当前页必须携带匹配的 projectId/profileId/pageId/generation，使用新执行记录保留原 target；从起点总是新建页面，startUrl 可为 HTTP(S)/about:blank，省略则取当前 URL、空 session 为 about:blank。模式和起点写入 run/validation；共享 profile不等于完整隔离。已有一次启动 grant只允许从起点，显式 startUrl必须与授权原页相同；原位试跑不借该 grant扩大权限。停止仍绕过业务队列，UI 目标绑定支持 validation启动转运行的同一身份，旧执行不能停止新执行。资料 revision绑定、任务级授权和录制格式2仍待后续工作包，不是本次新增公共 API。
+startValidation 的 executionMode 为 current-page-test 或默认 from-start-validation。当前页必须携带匹配的 projectId/profileId/pageId/generation，使用新执行记录保留原 target；从起点总是新建页面，startUrl 可为 HTTP(S)/about:blank，省略则取当前 URL、空 session 为 about:blank。模式和起点写入 run/validation；共享 profile 不等于完整隔离。停止仍绕过业务队列，UI 目标绑定支持 validation 启动转运行的同一身份，旧执行不能停止新执行。旧一次启动 grant 只保留历史审计，当前 HTTP 使用任务授权。
 
 
 本文描述 `src/main/api/server.ts` 的实现契约。浏览器和工作流效果还需以 `docs/verification.md` 中对应验证为准。API 仅监听动态 `127.0.0.1` 端口，不提供公共 CDP/WebSocket/eval 接口。
@@ -32,30 +32,28 @@ console.log(await response.json()); // 不打印 connection 或 headers。
 
 JSON 请求体上限 64 KiB、嵌套上限 32 层，普通 JSON 响应上限 32 KiB。任务结果超过 24 KiB 时保留显式截断提示，转向 run/附件读取。查询参数不接受重复键。成功查询直接返回其对象，证据 `items`/`nextCursor` 不另包一层 `data`。错误使用正确 HTTP 状态及 `{error:{code,message,status}}`。
 
-业务写操作返回 `202 {jobId,status,idempotencyKey}`，表示请求已受理。通过 `GET /v1/jobs/:jobId` 获取 `queued/running/succeeded/failed/cancelled`、结果或错误。给重试请求固定 `Idempotency-Key`；同 key 的 HTTP 方法、路径和规范化 JSON 内容必须相同，否则 409。省略时服务器生成并返回 key。每个应用实例最多保留 1000 个任务；任务索引不跨重启保留，持久结果从 run 证据与验收报告恢复。
+业务写操作返回 `202 {jobId,status,idempotencyKey}`，表示请求已受理。通过 `GET /v1/jobs/:jobId?authorizationId=<当前任务授权>` 获取 `queued/running/succeeded/failed/cancelled`、结果或错误。任务 job 绑定提交时的授权 ID；读取结果、幂等重试和取消均核对同一授权，撤销或过期后不再回读缓存结果。给重试请求固定 `Idempotency-Key`；同 key 的 HTTP 方法、路径和规范化 JSON 内容必须相同，否则 409。省略时服务器生成并返回 key。每个应用实例最多保留 1000 个任务；任务索引不跨重启保留，持久结果从 run 证据与验收报告恢复。
 
-`POST /v1/jobs/:jobId/cancel` 快速返回取消请求状态。`cancellationRequested:true` 不是已经停止；执行器确认后才变为 `cancelled`，停止失败保留实际任务状态和 `cancellationError`。不能据任务超时推断登录或业务执行成功。
+`POST /v1/jobs/:jobId/cancel` 携带 `{"authorizationId":"<该 job 的任务授权>"}`，快速返回取消请求状态。原任务可在授权撤销或过期后请求安全停止自己的 job；这不授予读取其结果或取消其他任务的权限。`cancellationRequested:true` 不是已经停止；执行器确认后才变为 `cancelled`，停止失败保留实际任务状态和 `cancellationError`。不能据任务超时推断登录或业务执行成功。
 
 checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求；不会取消另一个正在采集的 checkpoint。已开始采集的任务保留取消前完成的材料，落盘后返回 `cancelled` 及 checkpoint 引用。进入保存阶段后不再中止写入，过晚的取消请求仍可能得到 `succeeded`；写入失败仍为 `failed`，不能当作取消成功。
 
 验收启动 job 也有独立的取消信号，覆盖服务队列等待、旧 run 封存、新 run 创建、控制权转换和 worker 准备。取消排队中的启动不会停止其他执行，也不会在队列恢复后继续启动。启动 job 成功仅表示获得验收记录；之后停止正在运行的脚本使用当前 run 的 `/stop`，而不是取消已经成功的启动 job。
 
-已有 run 的 HTTP 写操作和保存 profile 都要求当前 `leaseEpoch`。已活跃运行的普通 API 写操作要求 agent 控制；先由客户端交出控制权。取消人工交接和停止 runner 可由 agent 发起；人工交还控制只能在可信客户端确认，HTTP Bearer token 不能替代人工确认。验收启动可使用下述客户端签发的一次性授权，不放开普通操作。从状态读取实际 `runId/pageId/generation/leaseEpoch`，不要按 URL 或当前活动窗口猜测目标。HTTP snapshot、checkpoint 和 action 必须携带 `pageId` 和 `generation`；服务按指定已登记页面采集或操作，未知页面、非当前选择页面和过期代际返回 409。切换页面会递增 leaseEpoch，排队写操作在实际执行时重新核验。路由中的 ID 优先于请求体或查询中的 ID 别名。服务层继续核验运行、页面、导航代际和控制者；只通过 HTTP lease 校验不代表能控制原生 Puppeteer，managed runner 使用独立操作 transport 闸门。
+已有 run 的 HTTP 写操作要求当前 `leaseEpoch`。已活跃运行的普通 API 写操作要求 agent 控制；先由客户端交出控制权。取消人工交接和停止 runner 可由 agent 发起；人工交还控制只能在可信客户端确认，HTTP Bearer token 不能替代人工确认。`/state`、项目、profile、workflow 和 run 发现需要任务授权，并按项目和能力裁剪；`/health`、`/capabilities` 只需实例 Bearer。读取实际 `runId/pageId/generation/leaseEpoch`，不要按 URL 或当前活动窗口猜测目标。HTTP snapshot、checkpoint 和 action 必须携带 `pageId` 和 `generation`；服务按指定已登记页面采集或操作，未知页面、非当前选择页面和过期代际返回 409。切换页面会递增 leaseEpoch，排队写操作在实际执行时重新核验。路由中的 ID 优先于请求体或查询中的 ID 别名。服务层继续核验运行、页面、导航代际和控制者；只通过 HTTP lease 校验不代表能控制原生 Puppeteer，managed runner 使用独立操作 transport 闸门。
 
 ## 路由
 
-以下路径均在 `/v1` 下；`POST` 为异步业务任务，job 查询与 cancel 由 API 层处理。工作流目录属于客户端可信项目设置，HTTP 创建项目拒绝 scriptDirectory，登记流程只读取该项目在客户端界面指定的目录；HTTP 不接受任意全机脚本路径或代码字符串。
+以下路径均在 `/v1` 下；`POST` 为异步业务任务，job 查询与 cancel 由 API 层处理。项目、profile 和工作流目录由可信客户端设置；HTTP 不接受任意全机脚本路径或代码字符串。
 
 | 方法和路径 | 用途 / 请求要点 |
 | --- | --- |
-| `GET /health`、`GET /capabilities`、`GET /state` | 健康、协议能力、当前项目/运行/控制状态；不返回 CDP 端点 |
-| `GET/POST /projects`、`GET /projects/:projectId` | 项目查询/创建；创建需要 `name`，可带 `objective`；不提供 HTTP 项目更新 |
-| `GET/POST /projects/:projectId/profiles` | 命名登录环境；创建需要 `name` |
-| `POST /profiles/:profileId/save` | 保存当前 profile 可持久化范围；仍标登录状态未知，需实际检查 |
-| `GET/POST /runs`、`GET /runs/:runId` | 创建请求含 `projectId/profileId/url`，`kind` 为 demonstrate 或 validate |
+| `GET /health`、`GET /capabilities`、`GET /state` | 前两者为实例级最小发现；state 需 `authorizationId` 并按当前任务裁剪 |
+| `GET /projects`、`GET /projects/:projectId` | 需任务授权，仅显示授权项目；项目创建/设置由可信客户端完成 |
+| `GET /projects/:projectId/profiles` | 需授权，按项目查看命名登录环境；创建由可信客户端完成 |
+| `GET /runs`、`GET /runs/:runId` | 需 `history-read`，按授权项目读取；创建由可信客户端完成 |
 | `GET /runs/:runId/pages`、`GET /runs/:runId/snapshot` | 页面登记和有界实时元素摘要；带目标身份及预算 |
-| `POST /runs/:runId/control` | `controller` 为 human 或 agent；返回后重新读取 lease |
-| `GET /runs/:runId/validation-start-grant` | 读取客户端明确授予的一次启动授权，返回 `{grant}`；无当前可用授权为 `null`，仍需 Bearer 认证 |
+| `POST /runs/:runId/control` | 旧路由保留为拒绝；控制权只由可信客户端管理 |
 | `POST /runs/:runId/actions` | `pageId/leaseEpoch/generation/type`；支持 navigate、click、fill、press、scroll、select 的有限参数 |
 | `POST /runs/:runId/select-page` | 选择已登记页面；人工元素检查和暂停/继续人工输入仅在可信客户端界面提供 |
 | `POST /runs/:runId/pause-capture`、`resume-capture` | 暂停/继续采集，会形成显式证据缺口 |
@@ -67,7 +65,7 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 | `GET /artifacts/:artifactId?runId=...`、`GET /artifacts/:artifactId/content?runId=...` | 附件读取的同等入口 |
 | `POST/GET /runs/:runId/handoffs` | 发起/读取人工交接；请求含 `pageId/instructions/completionCheck/timeoutMs` |
 | `POST /handoffs/:handoffId/cancel` | 停止等待中的 runner；人工交还与完成检查由可信客户端界面执行 |
-| `GET/POST /projects/:projectId/workflows` | 查询已登记流程；登记能力受可信项目目录边界限制 |
+| `GET /projects/:projectId/workflows` | 需 `execute` 授权查询登记流程；登记由可信客户端完成 |
 | `POST/GET /runs/:runId/validations` | 启动/查询当前项目的已登记流程，启动请求含 `input`；结果可能引用新 validation run |
 | `GET /validations/:validationId` | 执行、指纹、逐需求结果及当前版本是否仍匹配 |
 | `GET /validations/:validationId/reviews` | 有界回读人工判定；新增判定须在可信客户端界面提交 |
@@ -97,35 +95,32 @@ managed runner 只有在采集完成、材料完整且 `captureConsistency=consi
 
 新 `validation-report` 正文为 `{schemaVersion:1,kind:"managed-validation-report",validationId,runId,projectId,profileId,startEventId,result}`；按 artifact ID 读取 JSON path 时，执行结果字段位于 `/result/...`。旧报告仍是直接的执行结果对象，需按 `kind` 区分。`GET /validations/:id` 的 `result` 仍是执行结果，未额外套封套；恢复诊断随记录返回，旧报告核验成功标记为 `legacy-verified`。锁检查与安全重开仅提供可信 UI 入口，HTTP 不提供强制清锁操作。
 
-## 人工控制下授权 Agent 启动验收
+## 任务授权下启动验收
 
-客户端“执行 / 验收”中的“允许 Agent 启动一次”是新增的可信授权入口。用户核对当前项目、profile、已登记脚本目录和输入 JSON 后点击；授权本身不启动脚本，也不转交通用浏览器控制。点击“撤销启动授权”可在消费前撤回。HTTP 没有创建或撤销此授权的路由，不能通过传一个布尔参数自行取得权限。
+用户在可信客户端为指定项目、session、profile、页面、来源域、登记目录和能力签发任务授权；执行需要 `execute` 能力。当前 HTTP 只有这一条启动路径。旧 `startGrantId` 请求返回迁移提示，`/runs/:runId/validation-start-grant` 不再提供。历史一次启动授权事件仅作审计读取，不能恢复可用授权。
 
-授权在当前应用内存中保存，默认 **120 秒**、仅使用一次，重启失效，新授权替换旧授权。它绑定 `runId/projectId/profileId/workflowId/leaseEpoch`、登记目录、代码及依赖锁指纹、输入指纹，以及当前 `pageId/targetId/generation`。换页、跳转、控制权变更或改代码后旧授权不能启动；公共启动请求仍不能传目录、入口、manifest 路径或代码。
-
-agent 读取 `/v1/state` 和 `GET /v1/runs/:runId/validation-start-grant`；得到非空 grant 后，使用 UI 授权时相同的输入 JSON，调用原启动路由：
+agent 用授权 ID 查询 `/v1/state?authorizationId=...`，读取当前 run、页面、导航代际和 lease；使用固定资料 revision/hash 与当前输入启动：
 
 ```http
-POST /v1/runs/<grant.runId>/validations
+POST /v1/runs/<runId>/validations
 Authorization: Bearer <current-instance-token>
 Idempotency-Key: <one-key-for-this-start>
 Content-Type: application/json
 
 {
-  "projectId": "<grant.projectId>",
-  "profileId": "<grant.profileId>",
-  "workflowId": "<grant.workflowId>",
+  "authorizationId": "<current-task-authorization>",
+  "projectId": "<authorized-project>",
+  "sessionId": "<authorized-session>",
+  "profileId": "<authorized-profile>",
+  "pageId": "<authorized-page>",
   "leaseEpoch": 3,
-  "startGrantId": "<grant.grantId>",
+  "materialRevisionId": "<fixed-revision>",
+  "materialContentHash": "<fixed-hash>",
   "input": {}
 }
 ```
 
-`leaseEpoch` 和 `input` 必须替换为真实授权值，不沿用示例数字。所有写操作先返回 202，授权或租约错误可能在 job 中以 failed/409 返回。使用同一幂等键重试相同请求得到原 job；换幂等键重复消费同一 grant 不会创建第二次验收。并发请求在串行队列中重新检查身份、截止时间和代码指纹，然后同步消费；在此之前取消不消耗 grant，在此之后取消或启动失败也不会退回已消费的 grant。
-
-启动持有独立的转换身份，锁住本地输入，再按既有语义封存示范或已结束的验收，建立新的验收 run。已就绪的 validate run 可以复用。worker 创建前再次比对实际 workflow/input 指纹和受管 target。job 成功后使用 **返回的 `runId` 与 `id`（validationId）**，不要继续向旧 run 发操作。普通 `/actions`、`/control` 在 human 控制下仍拒绝，附带 grant 也不能放开它们。
-
-原 run 追加 `validation-start-grant-issued/revoked/consumed`，消费事件含预先分配的 `validationId/validationRunId`；后续准备失败时该目标 run 可能尚未创建，不能据这个 ID 宣称已启动。worker 准备阶段在目标 run 追加 `validation-start-grant-applied`，引用 `authorizationRunId`；拒绝和启动失败在仍可写的 run 中追加 `validation-start-rejected/failed`，并保留 job 错误。若两次 run 之间发生失败而没有可追加的 run，启动日志仍记录转换身份。授权事件只记录绑定与指纹，不保存输入原文。持久事件不恢复可用 grant。
+以上身份和版本值从当前授权与资料读取，示例数字不能沿用。所有写操作先返回 202；授权、租约或固定版本错误在 job 中返回 failed。使用同一幂等键重试完全相同的请求得到原 job；读取 job 仍需提交时的有效授权。启动成功后使用返回的 **新 `runId` 与 `id`（validationId）** 查询执行结果，不继续向旧 run 发操作。受管执行仍核对真实页面、目录和当前控制权，人工控制下不能借任务 ID 自行点击或导航。
 
 ## 验证与限制
 

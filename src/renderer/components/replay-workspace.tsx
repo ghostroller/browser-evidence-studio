@@ -6,16 +6,16 @@ import { NativeSelect } from './ui/native-select';
 type Stream = { first: ReplayPosition; last: ReplayPosition; events: number; monotonicTime: boolean };
 type PositionRow = { position: ReplayPosition; type: number; source: number };
 type Host = { replayId: string; generation: number; status: 'loading' | 'ready' | 'failed' | 'closed'; position?: ReplayPosition;
-  state?: ReplayState; selection?: HistoricalElementRef; selectionSequence?: number; selecting: boolean; error?: string; selectionError?: string;
-  resources?: { status: 'loading' | 'ready' | 'partial'; blockedRequests: number; failures: Array<{ resourceId?: string; generation: number; code?: string; name: string; message: string }> } };
+  state?: ReplayState; selection?: HistoricalElementRef; selectionSequence?: number; selecting: boolean; playing?: boolean; rebuilds?: number; error?: string; selectionError?: string;
+  resources?: { status: 'loading' | 'ready' | 'partial'; blockedRequests: number; unavailableCount?: number; failures: Array<{ resourceId?: string; generation: number; code?: string; name: string; message: string }> } };
 const same = (a?: ReplayPosition | null, b?: ReplayPosition | null) => a && b && a.recordingId === b.recordingId && a.pageId === b.pageId &&
   a.documentId === b.documentId && a.streamEpoch === b.streamEpoch && a.eventSeq === b.eventSeq && a.sourceTimeMs === b.sourceTimeMs;
 const streamId = (value: Stream) => `${value.first.pageId}/${value.first.documentId}/${value.first.streamEpoch}`;
 
 /** Controls E's isolated native ReplayHost. The renderer never owns an rrweb iframe. */
-export function ReplayWorkspace({ projectId, recordingId, requestedPosition, selecting, canStop, onPosition, onTarget, onCancelSelection, onStop, onClose, onError }: {
+export function ReplayWorkspace({ projectId, recordingId, requestedPosition, selecting, canStop, onPosition, onTarget, onSelectionReady, onCancelSelection, onStop, onClose, onError }: {
   projectId: string; recordingId: string; requestedPosition?: ReplayPosition | null; selecting: boolean;
-  canStop: boolean; onPosition(position: ReplayPosition, state?: ReplayState): void; onTarget(target: HistoricalElementRef): void; onCancelSelection(): void; onStop(): void; onClose(): void; onError?(message: string): void;
+  canStop: boolean; onPosition(position: ReplayPosition, state?: ReplayState): void; onTarget(target: HistoricalElementRef,replayId:string,generation:number): void; onSelectionReady(replayId:string,generation:number):void; onCancelSelection(): void; onStop(): void; onClose(): void; onError?(message: string): void;
 }) {
   const [streams, setStreams] = useState<Stream[]>([]);
   const [streamCursor, setStreamCursor] = useState('');
@@ -25,6 +25,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const [host, setHost] = useState<Host | null>(null);
   const [position, setPosition] = useState<ReplayPosition | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [playRevision, setPlayRevision] = useState(0);
   const [speed, setSpeed] = useState(1);
   const [seeking, setSeeking] = useState(false);
   const [error, setError] = useState('');
@@ -35,7 +36,8 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const loadToken = useRef(0);
   const pollSelection = useRef(0);
   const requestedHandled = useRef('');
-  const advancePending = useRef(false);
+  const playPending = useRef(false);
+  const segmentEnd = useRef<ReplayPosition | null>(null);
   const positionRef = useRef<ReplayPosition | null>(null);
   const positionsRef = useRef<PositionRow[]>([]);
   const nextOrdinalRef = useRef<number | undefined>(undefined);
@@ -60,9 +62,10 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
     if (next.status === 'failed') { setError(next.error || '历史回放不可用'); return; }
     if (next.position) { positionRef.current = next.position; setPosition(next.position); onPosition(next.position, next.state); }
   }, [onPosition]);
-  const seek = useCallback(async (target: ReplayPosition) => {
+  const seek = useCallback(async (target: ReplayPosition, continuePlayback = false) => {
     const token = ++seekToken.current;
-    setSeeking(true); setError(''); setPlaying(false); playRef.current = false;
+    setSeeking(true); setError('');
+    if (!continuePlayback) { setPlaying(false); playRef.current = false; }
     const current = hostRef.current;
     const opened = !current;
     try {
@@ -77,12 +80,13 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
     } catch (failure) { if (mounted.current && token === seekToken.current) setError(String(failure)); }
     finally { if (mounted.current && token === seekToken.current) setSeeking(false); }
   }, [applyHost, call, closeNative]);
-  const loadPositions = useCallback(async (selected: Stream, ordinal = 0) => {
+  const loadPositions = useCallback(async (selected: Stream, ordinal = 0): Promise<PositionRow[]> => {
     const result: { items: PositionRow[]; nextOrdinal?: number } = await call('recordingPositions', { position: selected.first, ordinal, limit: 100 });
-    if (!mounted.current || streamRef.current !== selected) return;
+    if (!mounted.current || streamRef.current !== selected) return [];
     const next = ordinal ? [...positionsRef.current, ...result.items].slice(-500) : result.items;
     positionsRef.current = next; nextOrdinalRef.current = result.nextOrdinal;
     setPositions(next); setNextOrdinal(result.nextOrdinal);
+    return next;
   }, [call]);
   useEffect(() => {
     mounted.current = true;
@@ -92,31 +96,43 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
       if (token !== loadToken.current) return;
       setStreams(page.items); setStreamCursor(page.nextCursor || '');
       const first = page.items.find(entry => requestedPosition && streamId(entry) === `${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}`) || page.items[0];
-      if (first) { streamRef.current = first; setStream(first); void loadPositions(first).catch(failure => setError(String(failure)));
+      if (first) { streamRef.current = first; setStream(first);
         requestedHandled.current = requestedPosition ? `${requestedPosition.recordingId}/${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}/${requestedPosition.eventSeq}` : '';
-        void seek(requestedPosition || first.first); }
+        void loadPositions(first).then(rows => {
+          if (!mounted.current || streamRef.current !== first) return;
+          const baseline = rows.find(row => row.type === 2)?.position;
+          if (!baseline) { setError('当前流的首批事件没有可还原的完整快照。'); return; }
+          const requested = requestedPosition && requestedPosition.eventSeq > first.first.eventSeq ? requestedPosition : baseline;
+          void seek(requested);
+        }).catch(failure => setError(String(failure))); }
     }).catch(failure => { if (token === loadToken.current) setError(String(failure)); });
     return () => { mounted.current = false; ++loadToken.current; ++seekToken.current; playRef.current = false; const current = hostRef.current;
       hostRef.current = null; if (current) closeNative(current.replayId); };
   }, [projectId, recordingId, call, loadPositions, seek, closeNative]);
   const requestedKey = requestedPosition && `${requestedPosition.recordingId}/${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}/${requestedPosition.eventSeq}`;
   useEffect(() => {
-    if (!requestedPosition || !streams.length || requestedHandled.current === requestedKey || same(positionRef.current, requestedPosition)) return;
+    if (selecting || !requestedPosition || !streams.length || requestedHandled.current === requestedKey || same(positionRef.current, requestedPosition)) return;
     const selected = streams.find(item => streamId(item) === `${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}`);
     if (!selected) { setError('请求的历史位置未在当前已加载的流中；请继续读取流列表。'); return; }
     if (streamRef.current !== selected) { streamRef.current = selected; setStream(selected); void loadPositions(selected).catch(failure => setError(String(failure))); }
     requestedHandled.current = requestedKey || '';
     void seek(requestedPosition);
-  }, [requestedKey, streams, loadPositions, seek]);
+  }, [requestedKey, streams, loadPositions, seek,selecting]);
   useEffect(() => {
     const current = hostRef.current;
-    if (!current || current.status !== 'ready' || current.selecting === selecting) return;
+    if (!current || current.status !== 'ready') return;
+    if(selecting){
+      if(current.playing){playRef.current=false;setPlaying(false);void call('pauseReplay',{replayId:current.replayId}).then((next:Host)=>{if(mounted.current&&hostRef.current?.replayId===next.replayId&&hostRef.current.generation===next.generation){hostRef.current=next;setHost(next);}}).catch(failure=>setError(String(failure)));return;}
+      if(requestedPosition&&!same(current.position,requestedPosition)){void seek(requestedPosition);return;}
+      if(current.state?.reliability!=='reliable'){setError('此卡片位置的源结构不可靠，不能选择元素。');onCancelSelection();return;}
+    }
+    if (current.selecting === selecting){if(selecting)onSelectionReady(current.replayId,current.generation);return;}
     const generation = current.generation;
     void call('selectReplay', { replayId: current.replayId, enabled: selecting }).then((next: Host) => {
       if (mounted.current && hostRef.current?.replayId === next.replayId && hostRef.current.generation === generation &&
-        next.generation === generation && selectingRef.current === selecting) { hostRef.current = next; setHost(next); }
+        next.generation === generation && selectingRef.current === selecting) { hostRef.current = next; setHost(next);if(selecting&&next.selecting)onSelectionReady(next.replayId,next.generation); }
     }).catch(failure => { if (mounted.current && hostRef.current?.replayId === current.replayId && hostRef.current.generation === generation) setError(String(failure)); });
-  }, [selecting, call, host?.replayId, host?.status]);
+  }, [selecting, call, host?.replayId, host?.status,host?.playing,host?.position?.eventSeq,requestedKey,requestedPosition,seek,onSelectionReady,onCancelSelection]);
   useEffect(() => {
     if (!host?.replayId) return;
     const timer = setInterval(() => {
@@ -131,7 +147,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
         if (next.position && (!same(previous.position, next.position) || previous.state?.reliability !== next.state?.reliability)) {
           positionRef.current = next.position; setPosition(next.position); onPosition(next.position, next.state);
         }
-        if (next.selection && (next.selectionSequence || 0) > pollSelection.current) { pollSelection.current = next.selectionSequence || 0; onTarget(next.selection); }
+        if (next.selection && (next.selectionSequence || 0) > pollSelection.current) { pollSelection.current = next.selectionSequence || 0; onTarget(next.selection,next.replayId,next.generation); }
         if (selecting && !next.selecting && previous.selecting) onCancelSelection();
       }).catch(failure => { if (mounted.current && token === seekToken.current && hostRef.current?.replayId === current.replayId && hostRef.current.generation === current.generation) setError(String(failure)); });
     }, 200);
@@ -157,42 +173,34 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
     return positionsRef.current.find(item => item.position.eventSeq > current.eventSeq)?.position || null;
   }, [call, loadPositions]);
   useEffect(() => {
-    if (!playing) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const schedule = async () => {
-      if (cancelled || !playRef.current || advancePending.current) return;
-      advancePending.current = true;
+    if (!playing || host?.playing || playPending.current || !hostRef.current || !positionRef.current) return;
+    if (streamRef.current && same(positionRef.current, streamRef.current.last)) { playRef.current=false;setPlaying(false);return; }
+    let cancelled=false;playPending.current=true;
+    void (async()=>{
       try {
-        const next = await nextPosition();
-        if (cancelled || !playRef.current) return;
-        if (!next) { playRef.current = false; setPlaying(false); return; }
-        const elapsed = Math.max(0, next.sourceTimeMs - (positionRef.current?.sourceTimeMs ?? next.sourceTimeMs));
-        // Wait for source time at the selected speed. Chunk only for timer limits.
-        let remaining = elapsed / speedRef.current;
-        const advance = async () => {
-          if (cancelled || !playRef.current) return;
-          const currentHost = hostRef.current;
-          if (!currentHost) { playRef.current = false; setPlaying(false); return; }
-          const token = ++seekToken.current;
-          try {
-            const updated: Host = await call('seekReplay', { replayId: currentHost.replayId, position: next });
-            if (!cancelled && mounted.current && token === seekToken.current) applyHost(updated, token);
-          } catch (failure) { if (!cancelled) { playRef.current = false; setPlaying(false); setError(String(failure)); } }
-          finally { advancePending.current = false; if (!cancelled && playRef.current) void schedule(); }
-        };
-        const waitChunk = () => {
-          if (cancelled || !playRef.current) return;
-          const chunk = Math.min(remaining, 60_000);
-          timer = setTimeout(() => { remaining -= chunk; if (remaining > 0) waitChunk(); else void advance(); }, chunk);
-        };
-        waitChunk();
-      } catch (failure) { if (!cancelled) { playRef.current = false; setPlaying(false); setError(String(failure)); } }
-      finally { if (!timer) advancePending.current = false; }
-    };
-    void schedule();
-    return () => { cancelled = true; if (timer) clearTimeout(timer); advancePending.current = false; };
-  }, [playing, speed, nextPosition, call, applyHost]);
+        const next=await nextPosition();if(cancelled||!playRef.current)return;
+        if(!next){playRef.current=false;setPlaying(false);return;}
+        const available=positionsRef.current.filter(item=>item.position.eventSeq>=next.eventSeq);
+        // A full snapshot starts a new bounded source window. Cross that
+        // boundary with one exact seek, then play the next continuous segment.
+        if(available[0]?.type===2){await seek(available[0].position,true);return;}
+        const boundary=available.findIndex(item=>item.type===2);
+        const end=(boundary<0?available.at(-1):available[boundary-1])?.position??next,current=hostRef.current;
+        if(!current)return;
+        segmentEnd.current=end;
+        const token=seekToken.current;
+        const updated:Host=await call('playReplay',{replayId:current.replayId,endPosition:end,speed:speedRef.current});
+        if(!cancelled&&mounted.current&&token===seekToken.current&&playRef.current)applyHost(updated,token);
+      }catch(failure){if(!cancelled){playRef.current=false;setPlaying(false);setError(String(failure));}}
+      finally{playPending.current=false;if(mounted.current&&playRef.current)setPlayRevision(value=>value+1);}
+    })();
+    return()=>{cancelled=true;};
+  },[playing,host?.playing,host?.replayId,host?.generation,host?.status,playRevision,nextPosition,call,applyHost,seek]);
+  useEffect(()=>{
+    const current=hostRef.current,end=segmentEnd.current;
+    if(!playing||!current?.playing||!end)return;
+    void call('playReplay',{replayId:current.replayId,endPosition:end,speed}).catch(failure=>{if(mounted.current)setError(String(failure));});
+  },[speed,call]);
   useEffect(() => {
     if (!selecting) return;
     const cancel = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation();
@@ -203,14 +211,16 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   }, [selecting, call, onCancelSelection]);
   const changeStream = (index: number) => { const selected = streams[index]; if (!selected) return;
     streamRef.current = selected; setStream(selected); positionsRef.current = []; nextOrdinalRef.current = undefined;
-    void loadPositions(selected).catch(failure => setError(String(failure))); void seek(selected.first); };
+    void loadPositions(selected).then(rows => { const baseline=rows.find(row=>row.type===2)?.position;
+      if (baseline) void seek(baseline); else setError('当前流的首批事件没有可还原的完整快照。');
+    }).catch(failure => setError(String(failure))); };
   const scrub = async (value: number) => { if (!stream) return; setScrubTime(null);
     try { const target: ReplayPosition = await call('resolveRecordingTime', { position: stream.first, sourceTimeMs: value }); await seek(target); }
     catch (failure) { setError(String(failure)); } };
   return <div className="replay-workspace"><div className="replay-controls"><strong>历史回放 · 隔离视图</strong>
     <NativeSelect aria-label="历史页面流" disabled={selecting} value={stream ? String(streams.indexOf(stream)) : ''} onChange={event => changeStream(Number(event.target.value))}>{streams.map((item, index) => <option key={streamId(item)} value={index}>{item.first.pageId.slice(0, 12)} · {item.first.documentId.slice(0, 12)} · {item.events} 事件</option>)}</NativeSelect>
     {streamCursor && <Button disabled={selecting} onClick={() => void call('recordingStreams', { recordingId, cursor: streamCursor, limit: 50 }).then((page: { items: Stream[]; nextCursor?: string }) => { setStreams(current => [...current, ...page.items]); setStreamCursor(page.nextCursor || ''); }).catch(failure => setError(String(failure)))}>更多页面流</Button>}
-    <Button disabled={!host || seeking || selecting} onClick={() => { playRef.current = !playing; setPlaying(!playing); }}>{playing ? '暂停' : '播放'}</Button>
+    <Button disabled={!host || seeking || selecting} onClick={() => {if(playing){playRef.current=false;setPlaying(false);const current=hostRef.current;if(current)void call('pauseReplay',{replayId:current.replayId}).then((next:Host)=>{if(mounted.current&&hostRef.current?.replayId===next.replayId)applyHost(next,seekToken.current);}).catch(failure=>setError(String(failure)));}else{playRef.current=true;setPlaying(true);}}}>{playing ? '暂停' : '播放'}</Button>
     <NativeSelect aria-label="播放速度" value={speed} onChange={event => setSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></NativeSelect>
     {selecting && <Button className="replay-cancel-selection" onClick={onCancelSelection}>取消选择（Esc）</Button>}
     <Button className="danger-quiet" disabled={!canStop} onClick={onStop}>停止并接管</Button>
@@ -223,7 +233,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
       <Button disabled={!position || seeking || selecting} onClick={() => { const next = positions.find(item => position && item.position.eventSeq > position.eventSeq); if (next) void seek(next.position); else if (nextOrdinal !== undefined && stream) void loadPositions(stream, nextOrdinal); }}>下一步</Button></div>}
     <div className="replay-status" role="status">{host?.state?.reliability === 'reliable' ? '历史结构可靠' : host?.state?.reliability === 'gap' ? '结构缺口：元素绑定不可用' : host?.state?.reliability === 'unsupported' ? '此位置不支持精确还原' : host?.status || '正在读取'}
       {selecting && <span> · 检查模式：选中历史元素后返回资料编辑</span>}{seeking && <span> · 正在定位</span>}</div>
-    {host?.resources && <p className={host.resources.status === 'partial' ? 'error-inline' : 'hint'}>历史资源：{host.resources.status === 'partial' ? '部分缺失' : host.resources.status === 'ready' ? '已就绪' : '读取中'} · 拦截外部请求 {host.resources.blockedRequests} 次{host.resources.failures.length > 0 ? ` · ${host.resources.failures.length} 项读取失败` : ''}</p>}
+    {host?.resources && <p className={host.resources.status === 'partial' ? 'error-inline' : 'hint'}>历史资源：{host.resources.status === 'partial' ? '部分缺失' : host.resources.status === 'ready' ? '已就绪' : '读取中'} · 拦截外部请求 {host.resources.blockedRequests} 次{(host.resources.unavailableCount??0)>0 ? ` · ${host.resources.unavailableCount} 项不可用` : ''}</p>}
     {host?.resources?.failures.length ? <details><summary>历史资源读取失败</summary>{host.resources.failures.slice(0, 20).map((failure, index) => <p key={`${failure.resourceId || failure.name}-${index}`}>{failure.code || failure.name}：{failure.message}</p>)}</details> : null}
     {(error || host?.error || host?.selectionError) && <p className="error-inline" role="alert">{error || host?.error || host?.selectionError}</p>}
     <div className="replay-sequence" aria-label="已加载历史事件">{positions.map(row => <Button key={`${row.position.streamEpoch}-${row.position.eventSeq}`} className={same(position, row.position) ? 'selected' : ''} disabled={seeking || selecting}

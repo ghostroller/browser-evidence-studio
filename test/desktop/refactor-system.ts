@@ -9,17 +9,20 @@ import { makeDispatch } from '@/main/services/dispatch';
 import { ArchiveReplayService } from '@/replay/service';
 import { SourceModel } from '@/replay/source-model';
 import type { HistoricalElementRef } from '@/contracts/recording';
+import { runRefactorWorkbenchUi } from './refactor-workbench';
 
 /** Real A/B/C/E/F integration. The root alone schedules its Electron process.
  * No HTTP request can supply source observations, scope facts or human reviews. */
 export async function runRefactorSystemScenario(studio: Studio): Promise<Record<string, unknown>> {
   const report: Record<string, any> = { passed: false, pid: process.pid, variants: [] };
-  const html = '<!doctype html><title>Fixed source fixture</title><style>body{font:20px sans-serif}.amount{display:inline-block}</style><main><div data-entity="o-1"><span class="amount" data-field="amount">12.00</span></div><div data-entity="o-2"><span class="amount" data-field="amount">45.00</span></div><input id="unsaved" value="synthetic-unsaved"></main>';
+  const html = '<!doctype html><title>Fixed source fixture</title><style>body{font:20px sans-serif}.amount{display:inline-block}</style><main><div data-entity="o-1"><span class="amount" data-field="amount">12.00</span></div><div data-entity="o-2"><span class="amount" data-field="amount">45.00</span></div><div id="source-a"><span id="moved" data-original="stable-source">moved source</span></div><div id="source-b"></div><input id="unsaved" value="synthetic-unsaved"></main>';
   const server = createServer((_request, response) => { response.setHeader('content-type', 'text/html'); response.end(html); });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address !== 'string');
   const origin = `http://127.0.0.1:${address.port}`, sourceUrl = origin + '/orders';
   const dispatch = makeDispatch(studio);
+  let sourceClosed=false;
+  const closeSource=async()=>{if(sourceClosed)return;server.closeAllConnections();await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve()));sourceClosed=true;};
   try {
     if (studio.active) await studio.seal(); if (studio.state().session) await studio.closeSession();
     const directory = path.join(studio.root, 'fixed-source-business'); await mkdir(directory);
@@ -49,6 +52,25 @@ export async function runRefactorSystemScenario(studio: Studio): Promise<Record<
     const window = await new ArchiveReplayService(studio.reader(recordingId).runDir).window(position), model = new SourceModel(window.records);
     const example = [...model.nodes.values()].find(node => node.metadata?.attributes['data-field']?.status === 'present' && node.metadata.attributes['data-field'].value === 'amount'); assert.ok(example?.metadata);
     const target: HistoricalElementRef = { kind: 'dom-node', position, nodeId: example.id, frameId: example.metadata.frameId, mirrorScopeId: example.metadata.mirrorScopeId };
+    await live.page.evaluate(async () => {
+      document.querySelector('#source-b')!.appendChild(document.querySelector('#moved')!);
+      for (let index = 0; index < 240; index++) {
+        document.body.setAttribute('data-tick', String(index));
+        if (index === 40 || index === 160) await new Promise(resolve => setTimeout(resolve, 150));
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+    });
+    await live.capture.flush();
+    const movedPosition=live.capture.recordingPosition!;
+    const movedWindow=await new ArchiveReplayService(studio.reader(recordingId).runDir).window(movedPosition),movedModel=new SourceModel(movedWindow.records);
+    assert.ok(movedWindow.records.length>=200,`Synthetic stream contains only ${movedWindow.records.length} source events`);
+    const moved=[...movedModel.nodes.values()].find(node=>node.metadata?.attributes.id?.status==='present'&&node.metadata.attributes.id.value==='moved');
+    assert.ok(moved?.metadata);const original=moved.metadata.attributes['data-original'];assert.equal(original?.status,'present');if(original?.status==='present')assert.equal(original.value,'stable-source');
+    const movedParent=movedModel.nodes.get(moved.parentId!);const parentId=movedParent?.metadata?.attributes.id;assert.equal(parentId?.status,'present');if(parentId?.status==='present')assert.equal(parentId.value,'source-b');
+    const movedRef:HistoricalElementRef={kind:'dom-node',position:movedPosition,nodeId:moved.id,frameId:moved.metadata.frameId,mirrorScopeId:moved.metadata.mirrorScopeId};
+    const source=await new ArchiveReplayService(studio.reader(recordingId).runDir).node(movedRef,{maxBytes:24576,limit:10});
+    const archivedOriginal=source.attributes['data-original'];assert.equal(archivedOriginal?.status,'present');if(archivedOriginal?.status==='present')assert.equal(archivedOriginal.value,'stable-source');
+    report.movedSource={eventSeq:movedPosition.eventSeq,originalAttribute:source.attributes['data-original'],recordCount:movedWindow.records.length};
     await studio.seal(); assert.equal(studio.current().targetId, targetId);
     let draft = await dispatch('createMaterialDraft', { projectId: project.id }, 'ui');
     const edited = await dispatch('editMaterialDraft', { projectId: project.id, draftId: draft.draftId, expectedDraftRevision: draft.draftRevision, edits: [
@@ -78,7 +100,7 @@ export async function runRefactorSystemScenario(studio: Studio): Promise<Record<
       const page = studio.current(), run = studio.required();
       const started = await http('POST', `/v1/runs/${run.id}/validations`, { authorizationId: grant.authorizationId, projectId: project.id, profileId: profile.id, sessionId: studio.state().session!.sessionId, pageId: page.pageId, generation: page.navigationGeneration, leaseEpoch: run.leaseEpoch, executionMode: 'current-page-test', materialRevisionId: revision.revisionId, materialContentHash: revision.contentHash, input: { variant } });
       assert.equal(started.status, 202);
-      const job = await waitFor(async () => (await http('GET', `/v1/jobs/${started.data.jobId}`)).data, value => ['succeeded', 'failed', 'cancelled'].includes(value.status));
+      const job = await waitFor(async () => (await http('GET', `/v1/jobs/${started.data.jobId}?authorizationId=${grant.authorizationId}`)).data, value => ['succeeded', 'failed', 'cancelled'].includes(value.status));
       assert.equal(job.status, 'succeeded', JSON.stringify(job.error)); assert.ok(job.result.executionId);
       const executionId = job.result.executionId;
       const execution = await waitFor(() => dispatch('execution', { projectId: project.id, executionId }, 'ui'), value => !['starting', 'running', 'waiting-human'].includes(value.status));
@@ -98,10 +120,30 @@ export async function runRefactorSystemScenario(studio: Studio): Promise<Record<
     assert.equal(revoked.status, 403); assert.equal(studio.current().targetId, targetId);
     const field = await dispatch('materialCollection', { projectId: project.id, kind: 'revision', revisionId: revision.revisionId, contentHash: revision.contentHash, collection: 'fields', limit: 10 }, 'ui');
     assert.equal(field.items[0].annotationId, undefined, 'Element examples do not require annotations');
+    const goodExecutionId=report.variants[0].executionId;
+    const goodDatasets=await dispatch('executionItems',{projectId:project.id,executionId:goodExecutionId,collection:'datasets',limit:10},'ui');
+    const healthy=goodDatasets.items.find((item:any)=>item.datasetId==='orders'&&item.committedRecords===2);
+    assert(healthy,'Committed good dataset must remain available before the disk fault');
+    const catalogRoot=path.join(studio.root,'executions',goodExecutionId,'datasets');
+    const bad=path.join(catalogRoot,healthy.attemptId,'bad-state');
+    await mkdir(bad);
+    await writeFile(path.join(bad,'dataset.json'),JSON.stringify({schemaVersion:1,executionId:goodExecutionId,attemptId:healthy.attemptId,datasetId:'bad-state'}));
+    await writeFile(path.join(bad,'state.json'),'{broken');
+    await writeFile(path.join(catalogRoot,'unexpected-attempt'),'preserved');
+    const mixed=await dispatch('executionItems',{projectId:project.id,executionId:goodExecutionId,collection:'datasets',limit:10},'ui');
+    assert(mixed.items.some((item:any)=>item.datasetId==='orders'&&item.committedRecords===2));
+    assert(!mixed.items.some((item:any)=>item.datasetId==='bad-state'),'Post-finish directory cannot become a selectable dataset');
+    const withIssue=await dispatch('execution',{projectId:project.id,executionId:goodExecutionId},'ui');
+    assert(withIssue.datasetCatalogIssues?.some((item:any)=>item.entry.endsWith('/bad-state')&&item.code==='INDEX_RECOVERY_REQUIRED'));
+    assert(withIssue.datasetCatalogIssues?.some((item:any)=>item.entry==='unexpected-attempt'));
+    report.badDataset={status:'corrupt-unselectable',goodCommittedRecords:2,catalogIssue:'unexpected-attempt'};
+    await closeSource();
+    await runRefactorWorkbenchUi(studio, { projectId: project.id, recordingId, replayPosition: movedPosition, executionId: goodExecutionId, partialExecutionId: report.variants[2].executionId, brokenDatasetId:'bad-state', targetSelector: '#moved' });
+    report.workbenchUi = 'passed-with-source-server-closed';
     report.passed = true; return report;
   } catch (error) { report.error = error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error); throw error; }
   finally {
     await writeFile(path.join(studio.root, 'refactor-system-report.json'), JSON.stringify(report, null, 2));
-    server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    await closeSource();
   }
 }

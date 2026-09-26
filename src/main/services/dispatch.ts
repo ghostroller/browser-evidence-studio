@@ -7,11 +7,29 @@ import { dispatchProject, PROJECT_METHODS } from './project-dispatch';
 const READ=new Set(['state','projects','project','profiles','workflows','runs','run','pages','snapshot','checkpoints','summary','gaps','events','artifacts','artifact','artifactContent','handoffs','validations','validation','validationStartGrant','reviews','history','replay']);
 export function makeDispatch(studio:Studio){
   return async function dispatch(method:string,body:any={},source:'api'|'ui'='ui',context:{signal?:AbortSignal}={}):Promise<any>{
-    if(source==='api'&&['control','startRun','seal','pauseOperations','pauseCapture','saveProfile','replyHuman','releaseHuman','review','authorizeValidationStart','revokeValidationStart','inspect','navigate','navigateHistory','closePage','closeSession','syntheticSite','replay'].includes(method))ensure(false,'This operation requires the trusted client UI',403);
-    if(['openReplay','seekReplay','replayStatus','selectReplay','closeReplay'].includes(method)){
+    if(source==='api'&&['control','startRun','seal','pauseOperations','pauseCapture','saveProfile','replyHuman','releaseHuman','review','authorizeValidationStart','revokeValidationStart','inspect','navigate','navigateHistory','closePage','closeSession','syntheticSite','replay','createProject','updateProject','createProfile','registerWorkflow','validationStartGrant'].includes(method))ensure(false,method==='validationStartGrant'?'Use a current task authorization; one-time startup grants are retired from the HTTP API':'This operation requires the trusted client UI',403);
+    if(source==='api'&&method==='startValidation'&&body.startGrantId!==undefined)ensure(false,'One-time startGrantId is retired; request a current task authorization with execute capability in the trusted client',403);
+    if(source==='api'&&method==='jobAccess'){
+      ensure(typeof body.ownerAuthorizationId==='string'&&body.authorizationId===body.ownerAuthorizationId,'This job belongs to another task authorization',403);
+      const grant=studio.tasks.get(body.ownerAuthorizationId);
+      if(body.projectId!==undefined)ensure(body.projectId===grant.projectId,'This job belongs to another project',403);
+      if(body.action==='cancel')return {projectId:grant.projectId,authorizationId:grant.authorizationId};
+      ensure(body.action==='read','Unknown job access action',400);
+      await studio.tasks.check(grant.authorizationId,body.jobStatus==='failed'?grant.capabilities[0]:body.capability,{projectId:grant.projectId});
+      return {projectId:grant.projectId,authorizationId:grant.authorizationId};
+    }
+    if(source==='api'&&method==='taskAuthorizations'){
+      const grant=studio.tasks.get(body.authorizationId);
+      ensure(grant.projectId===body.projectId,'Task belongs to another project',403);
+      await studio.tasks.check(grant.authorizationId,grant.capabilities[0],{projectId:grant.projectId});
+      return {instanceId:studio.instanceId,items:[grant]};
+    }
+    if(['openReplay','seekReplay','playReplay','pauseReplay','replayStatus','selectReplay','closeReplay'].includes(method)){
       ensure(source==='ui','Native replay presentation is only available in the trusted client',403);
       if(method==='openReplay')return studio.replayHost.open(body);
       if(method==='seekReplay')return studio.replayHost.seek(body);
+      if(method==='playReplay')return studio.replayHost.play(body);
+      if(method==='pauseReplay')return studio.replayHost.pause(body.replayId,body.projectId);
       if(method==='replayStatus')return studio.replayHost.status(body.replayId);
       if(method==='selectReplay')return studio.replayHost.select(body.replayId,body.enabled);
       return studio.replayHost.close(body.replayId);
@@ -33,9 +51,8 @@ export function makeDispatch(studio:Studio){
     }
     const execute=async()=>{
     if(['checkpoint','startValidation'].includes(method))context.signal?.throwIfAborted();
-    const grantStart=method==='startValidation'&&body.startGrantId!==undefined;
     const runMethods=new Set(['action','checkpoint','control','pauseOperations','pauseCapture','seal','inspect','selectPage','requestHuman','cancelHandoff','startValidation','stopRunner','saveProfile']);
-    if(source==='api'&&runMethods.has(method)&&!grantStart){
+    if(source==='api'&&runMethods.has(method)){
       const r=studio.required();ensure(body.leaseEpoch===r.leaseEpoch,'Stale control lease',409);if(body.runId)ensure(body.runId===r.id,'Run is not active',409);if(body.profileId)ensure(body.profileId===r.profileId,'Profile is not active',409);
       if(!['cancelHandoff','stopRunner'].includes(method))ensure(r.controller==='agent','Human owns this browser; use the client to grant agent control',409);
     }
@@ -52,7 +69,7 @@ export function makeDispatch(studio:Studio){
       case 'inspectRunRecovery':ensure(source==='ui','Archive recovery inspection is available in the trusted client only',403);return inspectRunRecovery(studio,body);
       case 'recoverRun':ensure(source==='ui','Archive recovery is available in the trusted client only',403);return recoverRun(studio,body);
       case 'profiles':return {items:studio.profiles.filter(p=>p.projectId===body.projectId)};
-      case 'runs':return {items:studio.runs.slice(0,100).map(({id,projectId,profileId,status,createdAt})=>({id,projectId,profileId,status,createdAt})),outputTruncated:studio.runs.length>100};case 'run':{const run=studio.runs.find(r=>r.id===body.runId);ensure(run,'Unknown run',404);return {...run,active:studio.active?.id===body.runId?studio.state().active:null};}
+      case 'runs':{const runs=source==='api'?studio.runs.filter(run=>run.projectId===body.projectId):studio.runs;return {items:runs.slice(0,100).map(({id,projectId,profileId,status,createdAt})=>({id,projectId,profileId,status,createdAt})),outputTruncated:runs.length>100};}case 'run':{const run=studio.runs.find(r=>r.id===body.runId);ensure(run,'Unknown run',404);return {...run,active:source==='api'?null:studio.active?.id===body.runId?studio.state().active:null};}
       case 'createProject':return studio.createProject(body);case 'updateProject':return studio.updateProject(body);case 'createProfile':return studio.createProfile(body);case 'startRun':ensure(source==='ui','Browser session creation requires the trusted client',403);return studio.startRun(body);
       case 'workflows':{const p=studio.projects.find(p=>p.id===body.projectId);ensure(p,'Unknown project',404);return {items:p.scriptDirectory?[{directory:p.scriptDirectory,manifest:(await loadWorkflow(p.scriptDirectory)).manifest}]:[]};}
       case 'registerWorkflow':{const p=studio.projects.find(p=>p.id===body.projectId);ensure(p?.scriptDirectory,'Register directory in the client UI first',409);ensure(!body.directory||body.directory===p.scriptDirectory,'Directory does not match registration',403);return (await loadWorkflow(p.scriptDirectory)).manifest;}
@@ -74,7 +91,7 @@ export function makeDispatch(studio:Studio){
       case 'authorizeValidationStart':ensure(source==='ui','Validation startup authorization requires the trusted client UI',403);return studio.authorizeValidationStart(body);
       case 'revokeValidationStart':ensure(source==='ui','Validation startup revocation requires the trusted client UI',403);return studio.revokeValidationStart(body);
       case 'validationStartGrant':return studio.validationStartGrant(body);
-      case 'validate':case 'startValidation':ensure(source==='ui'||!grantStart,'Use the task authorization for repeated execution; one-time startup grants are no longer accepted over HTTP',403);return studio.validate(body,{signal:context.signal});case 'validation':return studio.validation(source==='api'?body.validationId:body.id||body.validationId);case 'validations':return {items:studio.state().validations.filter(v=>!body.runId||v.runId===body.runId)};case 'review':ensure(source==='ui','Human reviews must be submitted in the trusted client',403);return studio.review(body);
+      case 'validate':case 'startValidation':return studio.validate(body,{signal:context.signal});case 'validation':return studio.validation(source==='api'?body.validationId:body.id||body.validationId);case 'validations':return {items:studio.state().validations.filter(v=>!body.runId||v.runId===body.runId)};case 'review':ensure(source==='ui','Human reviews must be submitted in the trusted client',403);return studio.review(body);
       case 'reviews':return studio.reviews(source==='api'?body.validationId:body.id||body.validationId,body);
       case 'requestHuman':return studio.startHandoff(body);case 'replyHuman':case 'releaseHuman':ensure(source==='ui','Only the trusted client can return human control',403);return studio.releaseHuman(body.handoffId||body.id);case 'cancelHandoff':return studio.cancelHandoff(body.handoffId||body.id);case 'handoffs':{const active=studio.active;return {items:active&&active.id===body.runId&&active.handoff?[active.handoff]:[]};}
       case 'stopRunner':if(source==='ui'){const state=studio.state();if(body.validationId)ensure(state.validationStarting?.validationId===body.validationId||state.validations.some(record=>record.id===body.validationId&&record.runId===studio.active?.id),'Validation stop target is stale',409);else if(body.runId)ensure(studio.active?.id===body.runId,'Stop target is stale',409);}return studio.stopRunner();case 'cancelJob':ensure(['startValidation','requestHuman','action'].includes(body.operation),'This short atomic operation cannot be cancelled after commit',409);return studio.stopRunner();
@@ -82,9 +99,39 @@ export function makeDispatch(studio:Studio){
     }};
     // Read-only state and handoff replies must remain responsive during long operations.
     const invoke=()=>READ.has(method)||['replyHuman','releaseHuman','stopRunner','cancelJob','cancelHandoff','cancelCheckpoint','inspectRunRecovery','revokeValidationStart'].includes(method)?execute():studio.serialized(execute);
+    if(source==='api'&&['state','projects','project','profiles','workflows','runs','handoffs'].includes(method)){
+      const grant=studio.tasks.get(body.authorizationId);
+      const capability=method==='workflows'?'execute':method==='runs'?'history-read':method==='handoffs'?'page-read':grant.capabilities[0];
+      const projectId=body.projectId??(['handoffs','runs'].includes(method)?studio.runs.find(item=>item.id===body.runId)?.projectId:undefined)??grant.projectId;
+      if(method==='runs')body.projectId=projectId;
+      ensure(projectId===grant.projectId,'Discovery belongs to another project',403);
+      if(method==='handoffs'){
+        const active=studio.active;
+        ensure(active&&active.id===body.runId&&active.profileId===grant.profileId&&grant.pages.some(page=>page.pageId===active.selectedPageId),'Handoff page is outside task authorization',403);
+      }
+      return studio.tasks.run(grant.authorizationId,capability,{projectId},async()=>{
+        const result=await invoke();
+        if(method==='projects')return {items:(result.items as typeof studio.projects).filter(item=>item.id===projectId)};
+        if(method==='runs')return result;
+        if(method==='state'){
+          const state=result as ReturnType<Studio['state']>;
+          const active=state.active;
+          const visiblePages=active?.pages.filter(page=>grant.pages.some(allowed=>allowed.pageId===page.pageId&&allowed.targetId===page.targetId))??[];
+          const activeView=active&&active.projectId===projectId&&grant.capabilities.some(item=>['page-read','page-act','page-create','execute'].includes(item))?
+            {id:active.id,projectId:active.projectId,profileId:active.profileId,controller:active.controller,leaseEpoch:active.leaseEpoch,capture:active.capture,execution:active.execution,locked:active.locked,pages:visiblePages,selectedPageId:visiblePages.some(page=>page.pageId===active.selectedPageId)?active.selectedPageId:null}:null;
+          return {instanceId:state.instanceId,projects:state.projects.filter(item=>item.id===projectId),
+            profiles:grant.capabilities.some(item=>['page-read','page-act','page-create','execute'].includes(item))?state.profiles.filter(item=>item.projectId===projectId):[],
+            runs:grant.capabilities.includes('history-read')?state.runs.filter(item=>item.projectId===projectId):[],
+            validations:grant.capabilities.includes('results-read')?state.validations.filter(item=>state.runs.some(run=>run.id===item.runId&&run.projectId===projectId)):[],active:activeView};
+        }
+        return result;
+      },context.signal);
+    }
     if(source==='api'&&['snapshot','pages','action','checkpoint','startValidation','validate','selectPage','requestHuman','cancelHandoff','stopRunner','cancelJob'].includes(method)){
       const capability=['snapshot','pages'].includes(method)?'page-read':['startValidation','validate'].includes(method)?'execute':'page-act';
-      return studio.authorizedOperation(body,capability,async signal=>{context={...context,signal};signal.throwIfAborted();return invoke();},context.signal);
+      return studio.authorizedOperation(body,capability,async signal=>{context={...context,signal};signal.throwIfAborted();const result=await invoke();
+        if(method==='pages'){const grant=studio.tasks.get(body.authorizationId);return {...result,items:result.items.filter((page:any)=>grant.pages.some(allowed=>allowed.pageId===page.pageId&&allowed.targetId===page.targetId))};}
+        return result;},context.signal);
     }
     if(source==='api'&&['run','summary','gaps','events','checkpoints','artifacts','artifact','artifactContent','history','validations','validation','reviews'].includes(method)){
       const runId=body.runId??studio.state().validations.find(item=>item.id===body.validationId)?.runId;

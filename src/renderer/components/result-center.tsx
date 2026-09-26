@@ -9,7 +9,7 @@ import { JsonView } from './evidence-view';
 import { StatusBadge } from './status-badge';
 
 type Page<T> = { items: T[]; nextCursor?: string; outputTruncated?: boolean };
-type Dataset = { executionId: string; attemptId: string; datasetId: string; status: string; committedBatches: number; committedRecords: number };
+type Dataset = { executionId: string; attemptId: string; datasetId: string; status: string; committedBatches: number; committedRecords: number; diagnostic?: { code: string; message: string } };
 type Batch = { batchId: string; contentHash: string; recordCount: number; durableAt: string };
 type Step = { identity: { stepId: string; attemptId: string; entityKey?: string }; state: string; error?: { message: string }; diagnostics?: unknown };
 type Assessment = { reportId: string; overall?: string; coverage?: string; reasons?: string[] };
@@ -195,12 +195,15 @@ export function ResultCenter({ projectId, executionId }: { projectId: string; ex
       <div className="result-summary"><div><span>执行</span><StatusBadge value={execution.status} /></div><div><span>资料版本</span><code>{execution.binding?.materialRevisionId || '未绑定'}</code></div>
         <div><span>代码 / 输入</span><code>{execution.binding?.codeFingerprint?.slice(0, 12) || '—'} / {execution.binding?.inputFingerprint?.slice(0, 12) || '—'}</code></div>
         <div><span>快照校验</span><StatusBadge value={execution.snapshotVerified ? 'pass' : 'inconclusive'} /></div><div><span>工作流 attempt</span><code>{execution.workflowAttemptId || '未形成'}</code></div></div>
+      {execution.datasetCatalogIssues?.map((issue: { entry: string; code: string; message: string }, index: number) =>
+        <p className="error-inline" key={`${issue.entry}-${index}`}>数据目录 {issue.entry}：{issue.code} · {issue.message}</p>)}
       <section><h3>步骤与部分失败</h3><p className="hint">每个步骤保持原 attempt 身份；失败、blocked 和已提交数据分别显示。</p>
         {steps.items.map((item, index) => <div className="result-row" key={`${item.identity?.attemptId}-${item.identity?.stepId}-${index}`}><strong>{item.identity?.stepId || '步骤'}</strong><span>{item.identity?.entityKey || ''}</span><StatusBadge value={item.state} /><small>{item.error?.message || ''}</small></div>)}
         {steps.nextCursor && <Button onClick={() => void moreExecutionItems('steps', steps.nextCursor!)}>后续步骤</Button>}
       </section><section><h3>数据集与实际 attempt</h3><p className="hint">每个数据集明确选择一个 attempt 进入验收；保留失败 attempt 的已提交批次。</p>
         {datasets.items.map(item => <div className="result-row" key={`${item.datasetId}-${item.attemptId}`}><strong>{item.datasetId}</strong><span>{item.attemptId.slice(0, 14)} · {item.committedRecords} 条 / {item.committedBatches} 批</span><StatusBadge value={item.status} />
-          <Button onClick={() => void openDataset(item)}>查看数据</Button><Button className={selected[item.datasetId] === item.attemptId ? 'selected' : ''} onClick={() => selectDatasetAttempt(item)}>用于验收</Button></div>)}
+          {item.diagnostic && <small>{item.diagnostic.code} · {item.diagnostic.message}</small>}
+          <Button disabled={!!item.diagnostic} onClick={() => void openDataset(item)}>查看数据</Button><Button disabled={!!item.diagnostic} className={selected[item.datasetId] === item.attemptId ? 'selected' : ''} onClick={() => selectDatasetAttempt(item)}>用于验收</Button></div>)}
         {datasets.nextCursor && <Button onClick={() => void moreExecutionItems('datasets', datasets.nextCursor!)}>后续数据集</Button>}
         {activeDataset && <div className="result-data"><h4>{activeDataset.datasetId} · {activeDataset.attemptId}</h4><p className="hint">原件按批次有界读取；真实 null 与缺失字段在记录中分别标识。</p>
           {batches.items.map(item => <Button key={item.batchId} className={batch?.batchId === item.batchId ? 'selected' : ''} onClick={() => void openBatch(item)}>{item.batchId.slice(0, 15)} · {item.recordCount} 条 · {item.contentHash.slice(0, 10)}</Button>)}

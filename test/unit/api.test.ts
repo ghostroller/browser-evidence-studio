@@ -6,15 +6,19 @@ import path from 'node:path';
 import { test } from 'vitest';
 import { startApi, ApiOptions } from '@/main/api/server';
 import { makeDispatch } from '@/main/services/dispatch';
+import { TaskAuthorizations, type TaskCapability } from '@/main/services/task-authorization';
 import type { Studio } from '@/main/services/studio';
 
-async function setup(dispatch: ApiOptions['dispatch']) {
+async function setup(dispatch: ApiOptions['dispatch'], authorizationId?: string) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'bes-api-test-'));
   const api = await startApi({ root, dispatch });
   const connection = JSON.parse(await fs.readFile(api.connectionFile, 'utf8')) as { token: string; address: string };
   const call = (method: string, endpoint: string, body?: unknown, headers: Record<string, string> = {}) => new Promise<{ status: number; json: any; bytes: Buffer; headers: Record<string, string | string[] | undefined> }>((resolve, reject) => {
-    const serialized = body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body);
-    const req = request(`${api.address}${endpoint}`, { method, headers: { Authorization: `Bearer ${connection.token}`, ...(serialized === undefined ? {} : { 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(serialized)) }), ...headers } }, (response) => {
+    const job=/^\/v1\/jobs\/[a-f0-9-]+(?:\/cancel)?$/.test(endpoint);
+    const target=job&&method==='GET'&&authorizationId?`${endpoint}?authorizationId=${authorizationId}`:endpoint;
+    const payload=job&&method==='POST'&&authorizationId?{...(body as object),authorizationId}:body;
+    const serialized = payload === undefined ? undefined : typeof payload === 'string' ? payload : JSON.stringify(payload);
+    const req = request(`${api.address}${target}`, { method, headers: { Authorization: `Bearer ${connection.token}`, ...(serialized === undefined ? {} : { 'Content-Type': 'application/json', 'Content-Length': String(Buffer.byteLength(serialized)) }), ...headers } }, (response) => {
       const chunks: Buffer[] = [];
       response.on('data', (chunk: Buffer) => chunks.push(chunk));
       response.on('end', () => { const bytes = Buffer.concat(chunks); let parsed: unknown; try { parsed = JSON.parse(bytes.toString('utf8')); } catch { parsed = undefined; } resolve({ status: response.statusCode!, json: parsed, bytes, headers: response.headers }); });
@@ -63,8 +67,13 @@ test('bearer token cannot submit a human handoff reply or human review', async (
 test('checkpoint job cancellation binds to the queued job and retains partial evidence for an active job', async () => {
   let queue: Promise<unknown> = Promise.resolve(), finishFirst!: () => void;
   const started: string[] = [];
-  const run = { id: 'run-1', leaseEpoch: 1, controller: 'agent', pages: new Map([['page-1', { navigationGeneration: 1 }]]) };
+  const run = { id: 'run-1', projectId:'project-1',profileId:'profile-1',leaseEpoch: 1, controller: 'agent', pages: new Map([['page-1', {pageId:'page-1',targetId:'target-1',navigationGeneration: 1 }]]) };
+  const tasks=new TaskAuthorizations();
+  const grant=await tasks.issue({projectId:'project-1',sessionId:'session-1',profileId:'profile-1'},
+    {origins:['https://fixture.test'],pages:[{pageId:'page-1',targetId:'target-1'}],capabilities:['page-act'],durationMs:60000,maxOperations:10});
   const studio = {
+    tasks,
+    authorizedOperation:(body:any,capability:TaskCapability,operation:(signal:AbortSignal)=>Promise<unknown>,signal?:AbortSignal)=>tasks.run(body.authorizationId,capability,{projectId:'project-1',sessionId:'session-1',profileId:'profile-1',pageId:'page-1',targetId:'target-1',url:'https://fixture.test/'},operation,signal),
     required: () => run,
     serialized<T>(action: () => Promise<T>) { const result = queue.then(action); queue = result.catch(() => {}); return result; },
     async checkpoint(body: any, options: { signal?: AbortSignal }) {
@@ -74,9 +83,9 @@ test('checkpoint job cancellation binds to the queued job and retains partial ev
       return { id: `cp-${body.key}`, artifactRefs: ['saved-screenshot'], metadata: { captureOutcome: options.signal?.aborted ? 'cancelled' : 'completed', captureStatus: 'partial' } };
     },
   };
-  const fixture = await setup(makeDispatch(studio as unknown as Studio));
+  const fixture = await setup(makeDispatch(studio as unknown as Studio),grant.authorizationId);
   try {
-    const body = { pageId: 'page-1', generation: 1, leaseEpoch: 1 };
+    const body = { authorizationId:grant.authorizationId,projectId:'project-1',sessionId:'session-1',profileId:'profile-1',pageId: 'page-1', generation: 1, leaseEpoch: 1 };
     const a = (await fixture.call('POST', '/v1/runs/run-1/checkpoints', { ...body, key: 'first' })).json.jobId;
     await eventual(async () => started.length, count => count === 1);
     const b = (await fixture.call('POST', '/v1/runs/run-1/checkpoints', { ...body, key: 'queued' })).json.jobId;
@@ -96,7 +105,7 @@ test('checkpoint job cancellation binds to the queued job and retains partial ev
     assert.deepEqual(cancelled.json.result.artifactRefs, ['saved-screenshot']);
     await fixture.call('POST', `/v1/jobs/${c}/cancel`, {});
     assert.equal((await fixture.call('GET', `/v1/jobs/${c}`)).json.status, 'cancelled');
-  } finally { finishFirst?.(); await fixture.cleanup(); }
+  } finally { finishFirst?.(); tasks.close(); await fixture.cleanup(); }
 });
 
 test('checkpoint cancellation during commit waits for the actual durable result or storage failure', async () => {

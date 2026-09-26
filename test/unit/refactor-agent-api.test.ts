@@ -40,4 +40,13 @@ describe('new and legacy HTTP routes share task scope',()=>{
       expect(f.calls.action).not.toHaveBeenCalled();
     }finally{f.tasks.close();}
   });
+  it('does not expose discovery and state outside the active task scope',async()=>{
+    const f=await fixture();try{
+      await expect(f.dispatch('project',{projectId:'project'},'api')).rejects.toMatchObject({code:'AUTHORIZATION_REQUIRED'});
+      await expect(f.dispatch('profiles',{projectId:'project'},'api')).rejects.toMatchObject({code:'AUTHORIZATION_REQUIRED'});
+      await expect(f.dispatch('state',{},'api')).rejects.toMatchObject({code:'AUTHORIZATION_REQUIRED'});
+      f.tasks.revoke(f.grant.authorizationId);
+      await expect(f.dispatch('projects',{authorizationId:f.grant.authorizationId},'api')).rejects.toMatchObject({code:'AUTHORIZATION_REVOKED'});
+    }finally{f.tasks.close();}
+  });
 });

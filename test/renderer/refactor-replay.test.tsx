@@ -11,51 +11,87 @@ const host = (position: ReplayPosition, generation: number) => ({ replayId: 'rep
   position, state: { position, reliability: 'reliable', gaps: [], viewport: { width: 800, height: 600, deviceScaleFactor: 1 } } });
 afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
 
+test('opens the first complete snapshot when a stream begins with a meta event', async () => {
+  const call = vi.fn(async (method: string, body: any) => {
+    if (method === 'recordingStreams') return { items: [{ first: at(0), last: at(1), events: 2, monotonicTime: true }] };
+    if (method === 'recordingPositions') return { items: [{ position: at(0), type: 4, source: -1 }, { position: at(1), type: 2, source: -1 }] };
+    if (method === 'openReplay') return host(body.position, 1);
+    if (method === 'replayStatus' || method === 'selectReplay') return host(at(1), 1);
+    if (method === 'closeReplay') return { ...host(at(1), 1), status: 'closed' };
+    throw new Error(method);
+  });
+  window.studio = { call, bounds: vi.fn() };
+  render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={at(0)} selecting={false} canStop={false}
+    onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
+  await waitFor(() => expect(call).toHaveBeenCalledWith('openReplay', expect.objectContaining({ position: at(1) })));
+});
+
 test('closes a native replay host that opens after the workspace unmounts', async () => {
   const opening = deferred<ReturnType<typeof host>>();
   const call = vi.fn(async (method: string) => {
     if (method === 'recordingStreams') return { items: [{ first: at(1), last: at(1), events: 1, monotonicTime: true }] };
-    if (method === 'recordingPositions') return { items: [{ position: at(1), type: 3, source: 0 }] };
+    if (method === 'recordingPositions') return { items: [{ position: at(1), type: 2, source: -1 }] };
     if (method === 'openReplay') return opening.promise;
     if (method === 'closeReplay') return { ...host(at(1), 1), status: 'closed' };
     throw new Error(method);
   });
   window.studio = { call, bounds: vi.fn() };
   const view = render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={at(1)} selecting={false} canStop={false}
-    onPosition={vi.fn()} onTarget={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
+    onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
   await waitFor(() => expect(call).toHaveBeenCalledWith('openReplay', expect.anything()));
   view.unmount();
   await act(async () => opening.resolve(host(at(1), 1)));
   await waitFor(() => expect(call).toHaveBeenCalledWith('closeReplay', expect.objectContaining({ replayId: 'replay-one' })));
 });
 
-test('playback follows even long source-time gaps and retains ordered same-time events', async () => {
+test('playback delegates a bounded continuous segment to the native host without seeking per event', async () => {
   const positions = [at(1), { ...at(2), sourceTimeMs: 5001 }, { ...at(3), sourceTimeMs: 5001 }];
-  let current = host(positions[0], 1);
+  let current: ReturnType<typeof host> & { playing?: boolean } = host(positions[0], 1);
   const call = vi.fn(async (method: string, body: any) => {
     if (method === 'recordingStreams') return { items: [{ first: positions[0], last: positions[2], events: 3, monotonicTime: true }] };
-    if (method === 'recordingPositions') return { items: positions.map(position => ({ position, type: 3, source: 0 })) };
+    if (method === 'recordingPositions') return { items: positions.map((position, index) => ({ position, type: index ? 3 : 2, source: index ? 0 : -1 })) };
     if (method === 'openReplay') return current;
-    if (method === 'seekReplay') { current = host(body.position, current.generation + 1); return current; }
+    if (method === 'playReplay') { current = { ...host(positions[0], current.generation + 1), playing: true }; return current; }
+    if (method === 'pauseReplay') { current = { ...current, playing: false }; return current; }
     if (method === 'replayStatus' || method === 'selectReplay') return current;
     if (method === 'closeReplay') return { ...current, status: 'closed' };
     throw new Error(method);
   });
   window.studio = { call, bounds: vi.fn() };
   render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={positions[0]} selecting={false} canStop={false}
-    onPosition={vi.fn()} onTarget={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
+    onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
   await waitFor(() => expect(screen.getByText(/event #1/)).toBeTruthy());
-  vi.useFakeTimers();
-  try {
-    await act(async () => screen.getByRole('button', { name: '播放' }).click());
-    await act(async () => vi.advanceTimersByTimeAsync(3000));
-    expect(call.mock.calls.filter(([method]) => method === 'seekReplay')).toHaveLength(0);
-    await act(async () => vi.advanceTimersByTimeAsync(1000));
-    expect(screen.getByText(/event #2/)).toBeTruthy();
-    await act(async () => vi.advanceTimersByTimeAsync(16));
-    expect(screen.getByText(/event #3/)).toBeTruthy();
-    expect(call.mock.calls.filter(([method]) => method === 'seekReplay').map(([, body]) => body.position.eventSeq)).toEqual([2, 3]);
-  } finally { vi.useRealTimers(); }
+  await act(async () => screen.getByRole('button', { name: '播放' }).click());
+  await waitFor(() => expect(call).toHaveBeenCalledWith('playReplay',expect.objectContaining({endPosition:positions[2],speed:1})));
+  await act(async () => { current={...host(positions[1],current.generation),playing:true};await new Promise(resolve=>setTimeout(resolve,240)); });
+  expect(screen.getByText(/event #2/)).toBeTruthy();
+  await act(async () => { current={...host(positions[2],current.generation),playing:false};await new Promise(resolve=>setTimeout(resolve,240)); });
+  expect(screen.getByText(/event #3/)).toBeTruthy();
+  expect(call.mock.calls.filter(([method]) => method === 'seekReplay')).toHaveLength(0);
+});
+
+test('continuous playback crosses a full snapshot boundary and resumes the next segment', async () => {
+  const rows = [1,2,3,4].map(index => ({ position: at(index), type: index === 1 || index === 3 ? 2 : 3, source: index === 1 || index === 3 ? -1 : 0 }));
+  let current: ReturnType<typeof host> & { playing?: boolean } = host(at(1),1);
+  const call = vi.fn(async (method: string, body: any) => {
+    if (method === 'recordingStreams') return { items: [{ first: at(1), last: at(4), events: 4, monotonicTime: true }] };
+    if (method === 'recordingPositions') return { items: rows };
+    if (method === 'openReplay') return current;
+    if (method === 'playReplay') { current = { ...host(current.position!, current.generation + 1), playing: true }; return current; }
+    if (method === 'seekReplay') { current = host(body.position, current.generation + 1); return current; }
+    if (method === 'replayStatus' || method === 'selectReplay') return current;
+    if (method === 'closeReplay') return { ...current, status: 'closed' };
+    throw new Error(method);
+  });
+  window.studio = { call, bounds: vi.fn() };
+  render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={at(1)} selecting={false} canStop={false}
+    onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
+  await waitFor(() => expect(screen.getByText(/event #1/)).toBeTruthy());
+  await act(async () => screen.getByRole('button', { name: '播放' }).click());
+  await waitFor(() => expect(call).toHaveBeenCalledWith('playReplay', expect.objectContaining({ endPosition: at(2) })));
+  await act(async () => { current = { ...host(at(2), current.generation), playing: false }; await new Promise(resolve => setTimeout(resolve,240)); });
+  await waitFor(() => expect(call).toHaveBeenCalledWith('seekReplay', expect.objectContaining({ position: at(3) })));
+  await waitFor(() => expect(call).toHaveBeenCalledWith('playReplay', expect.objectContaining({ endPosition: at(4) })));
 });
 
 test('an older seek response cannot replace a newer exact event position', async () => {
@@ -64,7 +100,7 @@ test('an older seek response cannot replace a newer exact event position', async
   let current = host(at(1), 1);
   const call = vi.fn(async (method: string, body: any) => {
     if (method === 'recordingStreams') return { items: [{ first: at(1), last: at(3), events: 3, monotonicTime: true }] };
-    if (method === 'recordingPositions') return { items: [1, 2, 3].map(index => ({ position: at(index), type: 3, source: 0 })) };
+    if (method === 'recordingPositions') return { items: [1, 2, 3].map(index => ({ position: at(index), type: index === 1 ? 2 : 3, source: index === 1 ? -1 : 0 })) };
     if (method === 'openReplay') return current;
     if (method === 'seekReplay') return body.position.eventSeq === 2 ? second.promise : third.promise;
     if (method === 'replayStatus') return current;
@@ -74,7 +110,7 @@ test('an older seek response cannot replace a newer exact event position', async
   });
   window.studio = { call, bounds: vi.fn() };
   const onPosition = vi.fn();
-  const props = { projectId: 'project-one', recordingId: 'run-one', selecting: false, canStop: false, onPosition, onTarget: vi.fn(), onCancelSelection: vi.fn(), onStop: vi.fn(), onClose: vi.fn() };
+  const props = { projectId: 'project-one', recordingId: 'run-one', selecting: false, canStop: false, onPosition, onTarget: vi.fn(), onSelectionReady:vi.fn(), onCancelSelection: vi.fn(), onStop: vi.fn(), onClose: vi.fn() };
   const view = render(<ReplayWorkspace {...props} requestedPosition={at(1)} />);
   await waitFor(() => expect(screen.getByText(/event #1/)).toBeTruthy());
   view.rerender(<ReplayWorkspace {...props} requestedPosition={at(2)} />);

@@ -20,6 +20,31 @@ it('discovers durable batches after the host dies before finish without rewritin
     const reopened=new ProjectExecutions(root,new ProjectMaterials(root)),summary=await reopened.summary('project','execution');expect(summary.status).toBe('interrupted');expect(summary.counts.datasets).toBe(1);
     const catalog=await reopened.items('project','execution','datasets',{maxBytes:4096,limit:10});expect(catalog.items).toEqual([{executionId:'execution',attemptId:'attempt',datasetId:'orders',status:'unfinished',committedBatches:1,committedRecords:2}]);
     const records=await reopened.records('project',{executionId:'execution',attemptId:'attempt',datasetId:'orders'},'batch',{maxBytes:4096,limit:10});expect(records.items.map(item=>item.value)).toEqual([{id:'one'},{id:'two'}]);expect(await readFile(path.join(directory,'host-state.json'),'utf8')).toBe(host);expect(await readFile(path.join(directory,'writer.lock'),'utf8')).toBe(lock);
+    await mkdir(path.join(directory,'datasets','attempt','interrupted-init'));
+    const badManifest=path.join(directory,'datasets','attempt','bad-manifest'),badState=path.join(directory,'datasets','attempt','bad-state'),missingState=path.join(directory,'datasets','attempt','missing-state');
+    await mkdir(badManifest);await mkdir(badState);await mkdir(missingState);
+    await writeFile(path.join(badManifest,'dataset.json'),'{broken');
+    await writeFile(path.join(badState,'dataset.json'),JSON.stringify({schemaVersion:1,executionId:'execution',attemptId:'attempt',datasetId:'bad-state'}));
+    await writeFile(path.join(badState,'state.json'),'{broken');
+    await writeFile(path.join(missingState,'dataset.json'),JSON.stringify({schemaVersion:1,executionId:'execution',attemptId:'attempt',datasetId:'missing-state'}));
+    await writeFile(path.join(directory,'datasets','attempt','unexpected-file'),'preserved');
+    await writeFile(path.join(directory,'datasets','unexpected-attempt'),'preserved');
+    const withInterrupted=await reopened.items('project','execution','datasets',{maxBytes:4096,limit:10});
+    expect(withInterrupted.items).toContainEqual({executionId:'execution',attemptId:'attempt',datasetId:'orders',status:'unfinished',committedBatches:1,committedRecords:2});
+    expect(withInterrupted.items).toContainEqual(expect.objectContaining({datasetId:'interrupted-init',status:'not-initialized'}));
+    expect(withInterrupted.items).toContainEqual(expect.objectContaining({datasetId:'bad-manifest',status:'corrupt'}));
+    expect(withInterrupted.items).toContainEqual(expect.objectContaining({datasetId:'bad-state',status:'corrupt'}));
+    expect(withInterrupted.items).toContainEqual(expect.objectContaining({datasetId:'missing-state',status:'not-initialized'}));
+    expect(withInterrupted.items).toContainEqual(expect.objectContaining({datasetId:'unexpected-file',status:'unavailable'}));
+    expect((await reopened.summary('project','execution')).datasetCatalogIssues).toContainEqual(expect.objectContaining({entry:'unexpected-attempt',code:'INVALID_ENTRY'}));
+    await expect(reopened.records('project',{executionId:'execution',attemptId:'attempt',datasetId:'bad-state'},'batch',{maxBytes:4096,limit:10})).rejects.toThrow('Dataset corrupt');
+    const firstPage=await reopened.items('project','execution','datasets',{maxBytes:4096,limit:2});
+    expect(firstPage.nextCursor).toBeTruthy();
+    const secondPage=await reopened.items('project','execution','datasets',{maxBytes:4096,limit:2,cursor:firstPage.nextCursor});
+    expect(secondPage.items.length).toBe(2);
+    expect((await reopened.records('project',{executionId:'execution',attemptId:'attempt',datasetId:'orders'},'batch',{maxBytes:4096,limit:10})).items.map(item=>item.value)).toEqual([{id:'one'},{id:'two'}]);
+    expect(await readFile(path.join(badState,'state.json'),'utf8')).toBe('{broken');
+    expect(await readFile(path.join(directory,'writer.lock'),'utf8')).toBe(lock);
   }finally{if(child.exitCode===null)child.kill('SIGKILL');await exited;}
 });
 

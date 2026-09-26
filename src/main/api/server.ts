@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import { createServer, IncomingMessage, ServerResponse } from 'node:http';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import type { TaskCapability } from '@/main/services/task-authorization';
 
 const executeFile = promisify(execFile);
 const BODY_LIMIT = 64 * 1024;
@@ -12,15 +13,22 @@ const JOB_RESULT_LIMIT = 24 * 1024;
 export interface ApiOptions {
   root: string;
   dispatch: (method: string, body: Record<string, unknown>, source: 'api', context?: { signal?: AbortSignal }) => unknown | Promise<unknown>;
-  state?: () => unknown | Promise<unknown>;
 }
 export interface ApiHandle { address: string; connectionFile: string; close(): Promise<void>; }
 type JobStatus = 'queued' | 'running' | 'waiting-human' | 'succeeded' | 'failed' | 'cancelled';
 interface ApiFailure { code: string; message: string; status: number; }
 interface Job { id: string; status: JobStatus; operation: string; createdAt: string; updatedAt: string; result?: unknown; error?: ApiFailure; cancellationRequested?: boolean; cancellationError?: ApiFailure; }
-interface InternalJob { public: Job; body: Record<string, unknown>; cancellation?: AbortController; }
+interface InternalJob { public: Job; body: Record<string, unknown>; access?: { authorizationId:string; projectId?:string; capability:TaskCapability }; cancellation?: AbortController; }
 interface Route { verb: string; pattern: RegExp; parameters: string[]; operation: string; mutate?: boolean; readBody?: boolean; lease?: boolean; extra?: Record<string, unknown>; binary?: boolean; }
+function jobCapability(operation:string):TaskCapability {
+  if(['createMaterialDraft','editMaterialDraft','publishMaterialDraft'].includes(operation))return 'materials-edit';
+  if(['assessExecution'].includes(operation))return 'results-read';
+  if(['startValidation'].includes(operation))return 'execute';
+  if(['checkpoint','action','selectPage','requestHuman','cancelHandoff','stopRunner','control','seal','pauseOperations','pauseCapture','saveProfile'].includes(operation))return 'page-act';
+  return 'materials-read';
+}
 const route = (verb: string, pattern: RegExp, parameters: string[], operation: string, options: Partial<Route> = {}): Route => ({ verb, pattern, parameters, operation, ...options });
+const TRUSTED_ONLY_OPERATIONS=new Set(['createProject','createProfile','startRun','control','seal','pauseCapture','saveProfile','registerWorkflow']);
 const routes: Route[] = [
   ...['taskAuthorizations','taskChanges','materialDrafts','materialRevisions','materialDraft','materialRevision','materialCollection','materialDiff','recordingStreams','recordingPositions','resolveRecordingTime','historicalState','historicalNode','historicalLocators','execution','executionItems','datasetBatches','datasetRecords','executionReport','executionReports','executionReportItems'].map(operation=>route('POST',new RegExp(`^/v1/projects/([^/]+)/query/${operation}$`),['projectId'],operation,{readBody:true})),
   ...['createMaterialDraft','editMaterialDraft','publishMaterialDraft','assessExecution'].map(operation=>route('POST',new RegExp(`^/v1/projects/([^/]+)/operations/${operation}$`),['projectId'],operation,{mutate:true})),
@@ -32,7 +40,6 @@ const routes: Route[] = [
   route('GET', /^\/v1\/projects\/([^/]+)\/workflows$/, ['projectId'], 'workflows'), route('POST', /^\/v1\/projects\/([^/]+)\/workflows$/, ['projectId'], 'registerWorkflow', { mutate: true }),
   route('GET', /^\/v1\/runs$/, [], 'runs'), route('POST', /^\/v1\/runs$/, [], 'startRun', { mutate: true }),
   route('GET', /^\/v1\/runs\/([^/]+)$/, ['runId'], 'run'),
-  route('GET', /^\/v1\/runs\/([^/]+)\/validation-start-grant$/, ['runId'], 'validationStartGrant'),
   ...['pages', 'snapshot', 'checkpoints', 'summary', 'gaps', 'events', 'artifacts', 'handoffs', 'validations'].map((operation) => route('GET', new RegExp(`^/v1/runs/([^/]+)/${operation}$`), ['runId'], operation)),
   ...[['actions', 'action'], ['checkpoints', 'checkpoint'], ['control', 'control'], ['seal', 'seal'], ['select-page', 'selectPage'], ['handoffs', 'requestHuman'], ['validations', 'startValidation'], ['stop', 'stopRunner']].map(([suffix, operation]) => route('POST', new RegExp(`^/v1/runs/([^/]+)/${suffix}$`), ['runId'], operation, { mutate: true, lease: true })),
   ...[['pause-capture', 'pauseCapture', true], ['resume-capture', 'pauseCapture', false]].map(([suffix, operation, paused]) => route('POST', new RegExp(`^/v1/runs/([^/]+)/${suffix}$`), ['runId'], String(operation), { mutate: true, lease: true, extra: { paused } })),
@@ -116,7 +123,7 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
   const token = randomBytes(32).toString('base64url'), tokenHash = createHash('sha256').update(token).digest();
   const instanceId = randomUUID(), jobs = new Map<string, InternalJob>(), idempotency = new Map<string, { fingerprint: string; jobId: string }>();
   let address = '', stopped = false;
-  const dispatch = (operation: string, body: Record<string, unknown>, context?: { signal?: AbortSignal }): Promise<unknown> => Promise.resolve().then(() => operation === 'state' && options.state ? options.state() : options.dispatch(operation, body, 'api', context));
+  const dispatch = (operation: string, body: Record<string, unknown>, context?: { signal?: AbortSignal }): Promise<unknown> => Promise.resolve().then(() => options.dispatch(operation, body, 'api', context));
   const runJob = (job: InternalJob): void => {
     if (stopped || job.public.status !== 'queued') return;
     job.public.status = 'running'; job.public.updatedAt = new Date().toISOString();
@@ -149,14 +156,18 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
       if (!request.url?.startsWith('/') || request.url.startsWith('//')) throw new ApiError('INVALID_URL', 'Only local API paths are accepted.');
       const url = new URL(request.url, address), verb = request.method ?? 'GET';
       if (verb === 'GET' && url.pathname === '/v1/health') { json(response, 200, { status: 'ready', schemaVersion: 1, instanceId, transport: 'loopback-http', processId: process.pid }); return; }
-      if (verb === 'GET' && url.pathname === '/v1/capabilities') { json(response, 200, { schemaVersion: 1, authentication: 'Bearer token from current-user-only connection file', asyncMutations: true, idempotencyHeader: 'Idempotency-Key', bodyLimitBytes: BODY_LIMIT, evidenceDefaults: { queryBytes: 8192, artifactBytes: 4096 }, nativeControl: 'Managed Puppeteer transport gate; HTTP leases alone do not control native connections.', validationStartAuthorization: { issuer: 'trusted-ui', singleUse: true, ttlSeconds: 120, readRoute: '/v1/runs/:runId/validation-start-grant', requestField: 'startGrantId', boundTo: ['runId','projectId','profileId','workflowId','leaseEpoch','pageId','targetId','generation','workflowSha256','inputSha256'] }, unsupported: ['public-cdp', 'arbitrary-eval', 'websocket-control'], operations: routes.map(({ verb: method, operation }) => ({ method, operation })) }); return; }
+      if (verb === 'GET' && url.pathname === '/v1/capabilities') { json(response, 200, { schemaVersion: 1, authentication: 'Bearer token from current-user-only connection file', taskAuthorization: { issuer: 'trusted-ui', requestField: 'authorizationId', capabilities: ['materials-read','materials-edit','history-read','page-read','page-act','page-create','execute','results-read','handoff-export'] }, asyncMutations: true, idempotencyHeader: 'Idempotency-Key', bodyLimitBytes: BODY_LIMIT, evidenceDefaults: { queryBytes: 8192, artifactBytes: 4096 }, nativeControl: 'Managed Puppeteer transport gate; HTTP leases alone do not control native connections.', unsupported: ['public-cdp', 'arbitrary-eval', 'websocket-control','one-time-validation-start-grant'], operations: routes.filter(({operation})=>!TRUSTED_ONLY_OPERATIONS.has(operation)).map(({ verb: method, operation }) => ({ method, operation })) }); return; }
       const jobMatch = /^\/v1\/jobs\/([a-f0-9-]+)(\/cancel)?$/.exec(url.pathname);
       if (jobMatch) {
         const job = jobs.get(jobMatch[1]);
         if (!job) throw new ApiError('JOB_NOT_FOUND', 'Job is not available in this application instance.', 404);
-        if (verb === 'GET' && !jobMatch[2]) { json(response, 200, job.public); return; }
+        if (verb === 'GET' && !jobMatch[2]) {
+          if(job.access)await dispatch('jobAccess',{authorizationId:queryBody(url).authorizationId,ownerAuthorizationId:job.access.authorizationId,projectId:job.access.projectId,capability:job.access.capability,jobStatus:job.public.status,action:'read'});
+          json(response, 200, job.public); return;
+        }
         if (verb === 'POST' && jobMatch[2]) {
-          await requestBody(request);
+          const cancelBody=await requestBody(request);
+          if(job.access)await dispatch('jobAccess',{authorizationId:cancelBody.authorizationId,ownerAuthorizationId:job.access.authorizationId,projectId:job.access.projectId,capability:job.access.capability,action:'cancel'});
           if (job.public.status === 'queued') { job.public.status = 'cancelled'; job.public.updatedAt = new Date().toISOString(); }
           else if (job.public.status === 'running' || job.public.status === 'waiting-human') {
             if (!job.public.cancellationRequested) {
@@ -209,11 +220,13 @@ export async function startApi(options: ApiOptions): Promise<ApiHandle> {
       if (prior) {
         if (prior.fingerprint !== fingerprint) throw new ApiError('IDEMPOTENCY_CONFLICT', 'This key already identifies a different request.', 409);
         const priorJob = jobs.get(prior.jobId)!;
+        if(priorJob.access)await dispatch('jobAccess',{authorizationId:body.authorizationId,ownerAuthorizationId:priorJob.access.authorizationId,projectId:priorJob.access.projectId,capability:priorJob.access.capability,jobStatus:priorJob.public.status,action:'read'});
         json(response, 202, { jobId: prior.jobId, status: priorJob.public.status, idempotencyKey: key }); return;
       }
       if (jobs.size >= 1000) throw new ApiError('JOB_LIMIT', 'This instance has reached 1000 jobs; restart after active work finishes.', 429);
       const now = new Date().toISOString(), id = randomUUID();
-      const job: InternalJob = { public: { id, status: 'queued', operation: matched.operation, createdAt: now, updatedAt: now }, body };
+      const job: InternalJob = { public: { id, status: 'queued', operation: matched.operation, createdAt: now, updatedAt: now }, body,
+        access:typeof body.authorizationId==='string'?{authorizationId:body.authorizationId,projectId:typeof body.projectId==='string'?body.projectId:undefined,capability:jobCapability(matched.operation)}:undefined };
       jobs.set(id, job); idempotency.set(key, { fingerprint, jobId: id });
       json(response, 202, { jobId: id, status: 'queued', idempotencyKey: key });
       setImmediate(() => runJob(job));

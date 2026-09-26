@@ -22,7 +22,7 @@ import { captureRequestBody, requestMetadata } from '@/capture/request-body';
 import { prepareResponseBody, RESPONSE_CAPTURE_BYTES } from '@/capture/response-body';
 import { EvidenceReader } from '@/evidence/reader';
 import { SourceFrameScopes } from '@/capture/frame-scopes';
-import { rewriteReplayRecords } from '@/resources/replay-resources';
+import { prepareArchivedReplay, rewriteReplayRecords } from '@/resources/replay-resources';
 
 const stores: EvidenceStore[] = [], windows: JSDOM[] = [];
 afterEach(async () => { for (const store of stores.splice(0)) await store.close(); for (const window of windows.splice(0)) window.window.close(); });
@@ -199,6 +199,62 @@ describe('format-2 production recorder and bounded archive', () => {
         expect(matches.snapshotLength, expression.expression).toBe(candidate.historical.matchCount); expect(matches.snapshotItem(0)).toBe(a);
       }
     }
+  });
+  it('prepares production resource URLs by frame and source event and reports missing CSS assets',async()=>{
+    const {dom,records}=await source('<img src="/shared.png"><div style="background:url(/missing.png)"></div><iframe></iframe>');
+    dom.window.document.querySelector('iframe')!.contentDocument!.body.innerHTML='<img src="/shared.png">';
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,30));
+    const frame=records.flatMap(record=>record.metadata).find(item=>item.tagName==='img'&&item.frameId!=='top')!;
+    const evidence=await store(),capture=new ResourceCapture(evidence),archive=new ResourceArchive(evidence.runDir);
+    const top=await capture.capture({position:records.find(record=>record.event.type===2)!.position,frameId:'top',url:'https://source.invalid/shared.png',mediaType:'image/png',data:Buffer.from('top-bytes')});
+    const frameUse=records.find(record=>record.metadata.some(item=>item.nodeId===frame.nodeId))!.position;
+    const child=await capture.capture({position:frameUse,frameId:frame.frameId,url:'https://source.invalid/shared.png',mediaType:'image/png',data:Buffer.from('frame-bytes')});
+    const prepared=await prepareArchivedReplay(records,archive,(id,position)=>`offline:${id}:${position.eventSeq}`);
+    const serialized=JSON.stringify(prepared.records);
+    expect(serialized).toContain(`offline:${top.id}:`);
+    expect(serialized).toContain(`offline:${child.id}:`);
+    expect(prepared.diagnostics).toContainEqual(expect.objectContaining({url:'https://source.invalid/missing.png',frameId:'top',status:'missing'}));
+    expect(serialized).toContain('about:blank');
+  });
+  it('does not report navigation links or iframe hosts as missing replay assets',async()=>{
+    const {dom,records}=await source('<a href="/orders/43">open</a><img src="/missing-image.png"><iframe src="/frame-target"></iframe>');
+    const link=dom.window.document.createElement('link');link.rel='stylesheet';link.href='/missing-style.css';dom.window.document.head.append(link);
+    await new Promise<void>(resolve=>dom.window.setTimeout(resolve,30));
+    const evidence=await store(),archive=new ResourceArchive(evidence.runDir);
+    const prepared=await prepareArchivedReplay(records,archive,id=>`offline:${id}`);
+    const missing=prepared.diagnostics.map(item=>item.url);
+    expect(missing).toContain('https://source.invalid/missing-image.png');
+    expect(missing).toContain('https://source.invalid/missing-style.css');
+    expect(missing).not.toContain('https://source.invalid/orders/43');
+    expect(missing).not.toContain('https://source.invalid/frame-target');
+    const rewritten=JSON.stringify(prepared.records.map(record=>record.event));
+    expect(rewritten).not.toContain('https://source.invalid/orders/43');
+    expect(rewritten).not.toContain('https://source.invalid/frame-target');
+  });
+  it('retains source metadata when rrweb moves an element and its descendants in one mutation', async () => {
+    const { dom, records } = await source('<section id="before"><article data-key="source"><span data-child="source-child">kept</span></article></section><section id="after"></section>');
+    const initial = new SourceModel(records.slice(records.findIndex(record => record.event.type === 2)));
+    const articleId = [...initial.nodes.values()].find(node => node.metadata?.tagName === 'article')!.id;
+    const childId = [...initial.nodes.values()].find(node => node.metadata?.tagName === 'span')!.id;
+    const article = dom.window.document.querySelector('article')!;
+    dom.window.document.querySelector('#after')!.append(article);
+    await new Promise<void>(resolve => dom.window.setTimeout(resolve, 20));
+    const mutation = [...records].reverse().find(record => record.event.type === 3 && record.event.data.source === 0 && record.event.data.adds.some(add => add.node.type === 2 && 'tagName' in add.node && add.node.tagName === 'article'));
+    expect(mutation).toBeDefined();
+    expect(mutation!.event.type === 3 && mutation!.event.data.source === 0 && mutation!.event.data.removes.length).toBeTruthy();
+    const model = new SourceModel(records.slice(records.findIndex(record => record.event.type === 2)));
+    const moved = model.nodes.get(articleId);
+    const child = model.nodes.get(childId);
+    expect(moved?.parentId).toBe([...model.nodes.values()].find(node => node.metadata?.attributes.id?.status === 'present' && node.metadata.attributes.id.value === 'after')?.id);
+    expect(moved?.metadata?.attributes['data-key']).toEqual({ status: 'present', value: 'source' });
+    expect(child?.metadata?.attributes['data-child']).toEqual({ status: 'present', value: 'source-child' });
+    const ref: HistoricalElementRef = { kind: 'dom-node', position: records.at(-1)!.position, nodeId: articleId,
+      frameId: moved!.metadata!.frameId, mirrorScopeId: moved!.metadata!.mirrorScopeId };
+    const evidence = await store(), writer = new RecordingIndexWriter(evidence);
+    for (const record of records) await writer.append(record);
+    const direct = new SourceModel((await new ArchiveReplayService(evidence.runDir).window(ref.position)).records);
+    expect(direct.node(ref)).toEqual(model.node(ref));
+    expect(sourceLocators(direct, ref)).toEqual(sourceLocators(model, ref));
   });
   it('reads exact same-millisecond event boundaries, verifies raw bytes and rebuilds a corrupt index without modifying originals', async () => {
     const { dom, records } = await source(undefined,1790367000000);

@@ -20,13 +20,13 @@ import { checkpointSourceProofs, checkpointSourceTargets } from './checkpoint-so
 import { SourceModel } from '@/replay/source-model';
 import type { CaptureCoordinator } from '@/capture/coordinator';
 import type { CheckpointHostScope } from '@/runner/manager';
-import { datasetCatalog } from './dataset-catalog';
+import { datasetCatalog, type DatasetCatalogIssue } from './dataset-catalog';
 
 const hash=(value:unknown)=>createHash('sha256').update(canonicalJson(value)).digest('hex');
 interface HostExecution {
   binding:ExecutionBinding;runId:string;validationId:string;pageId:string;startedAt:string;finishedAt?:string;status:string;
   workflowAttemptId?:string;codeFingerprint?:string;inputFingerprint?:string;snapshotVerified:boolean;
-  steps:StepSummary[];datasets:DatasetSummary[];assertions:WorkflowRunResult['assertions'];
+  steps:StepSummary[];datasets:DatasetSummary[];assertions:WorkflowRunResult['assertions'];datasetCatalogIssues?:DatasetCatalogIssue[];
 }
 export type ExecutionSummary=Omit<HostExecution,'steps'|'datasets'|'assertions'> & {counts:{steps:number;datasets:number}};
 export type ReportSummary=Omit<ValidationReport,'requirements'|'datasets'> & {reportId:string;contentHash:string;counts:{requirements:number;datasets:number}};
@@ -107,15 +107,33 @@ export class ProjectExecutions {
     const directory=await this.directory(id),value=await this.json<HostExecution>(directory,'host-state.json');
     ensure(value.binding.projectId===projectId&&value.binding.executionId===id,'Execution belongs to another project',403);
     const binding=await this.json<ExecutionBinding>(directory,'binding.json');ensure(canonicalJson(value.binding)===canonicalJson(binding),'Execution projection binding mismatch',409);
+    const catalog=await datasetCatalog(directory,id,await this.dataReader(id));
     if(!value.finishedAt){
       if(!this.active.has(id))value.status='interrupted';
-      value.datasets=await datasetCatalog(directory,id,await this.dataReader(id));
+      value.datasets=catalog.items;value.datasetCatalogIssues=catalog.issues;
+    }else{
+      // A finished host projection fixes the set of selectable datasets. Audit
+      // their files, but never admit a directory created after host finish.
+      const key=(item:{attemptId:string;datasetId:string})=>`${item.attemptId}/${item.datasetId}`;
+      const recorded=new Set(value.datasets.map(key)),found=new Map(catalog.items.map(item=>[key(item),item]));
+      value.datasets=value.datasets.map(item=>{
+        const actual=found.get(key(item));
+        if(!actual)return {...item,status:'unavailable',diagnostic:{code:'MISSING_DIRECTORY',message:'Persisted dataset directory is missing'}};
+        if(actual.diagnostic)return {...item,status:actual.status,diagnostic:actual.diagnostic};
+        if(actual.committedBatches!==item.committedBatches||actual.committedRecords!==item.committedRecords)
+          return {...item,status:'corrupt',diagnostic:{code:'COMMIT_COUNT_MISMATCH',message:'Dataset metadata differs from the fixed host result'}};
+        return item;
+      });
+      value.datasetCatalogIssues=[...catalog.issues,...catalog.items.filter(item=>!recorded.has(key(item))).map(item=>({
+        entry:key(item),code:item.diagnostic?.code??'UNEXPECTED_DATASET',
+        message:'Dataset was not listed by the finished host result and is not selectable',
+      }))];
     }
     return value;
   }
   async summary(projectId:string,id:string){return summary(await this.state(projectId,id));}
   async items(projectId:string,id:string,collection:'steps'|'datasets',budget:ReadBudget){ensure(collection==='steps'||collection==='datasets','Unknown execution collection');const value=await this.state(projectId,id);return boundedItems<StepSummary|DatasetSummary>(value[collection],`${id}/${collection}`,budget);}
-  private async data(projectId:string,identity:DatasetIdentity){const value=await this.state(projectId,identity.executionId);if(value.finishedAt)ensure(value.datasets.some(item=>item.attemptId===identity.attemptId&&item.datasetId===identity.datasetId),'Dataset is not in the persisted execution result',404);return this.active.get(identity.executionId)??PersistentDatasetService.openReader(this.root,identity.executionId);}
+  private async data(projectId:string,identity:DatasetIdentity){const value=await this.state(projectId,identity.executionId);const item=value.datasets.find(item=>item.attemptId===identity.attemptId&&item.datasetId===identity.datasetId);ensure(item||!value.finishedAt,'Dataset is not in the persisted execution result',404);ensure(!item?.diagnostic,`Dataset ${item?.status}: ${item?.diagnostic?.code}`,409);return PersistentDatasetService.openReader(this.root,identity.executionId);}
   async batches(projectId:string,identity:DatasetIdentity,budget:ReadBudget){return (await this.data(projectId,identity)).batches(identity,budget);}
   async records(projectId:string,identity:DatasetIdentity,batchId:string,body:any){return (await this.data(projectId,identity)).records(identity,batchId,{...materialBudget(body),...(body.fields?{fields:body.fields}:{}),...(body.entity?{entity:body.entity}:{})});}
   private async scope(directory:string,attemptId:string):Promise<AttemptScope|undefined>{
@@ -127,7 +145,7 @@ export class ProjectExecutions {
     const directory=await this.directory(id),data=await this.dataReader(id);
     const byName=new Map<string,DatasetSummary[]>();for(const item of value.datasets)byName.set(item.datasetId,[...(byName.get(item.datasetId)??[]),item]);
     const identities=selected??[...byName.values()].filter(items=>items.length===1).map(([item])=>({executionId:id,attemptId:item.attemptId,datasetId:item.datasetId}));
-    ensure(identities.length<=64&&identities.every(identity=>identity.executionId===id&&value.datasets.some(item=>item.attemptId===identity.attemptId&&item.datasetId===identity.datasetId)),'Select only exact datasets in the persisted execution result',403);
+    ensure(identities.length<=64&&identities.every(identity=>identity.executionId===id&&value.datasets.some(item=>item.attemptId===identity.attemptId&&item.datasetId===identity.datasetId&&!item.diagnostic)),'Select only available datasets in the persisted execution result',403);
     // User selection must never turn overlapping live scopes into apparent
     // uniqueness. A workflow-level batch owns only observations outside steps.
     const allAttemptIds=[...new Set([value.workflowAttemptId,...value.steps.filter(item=>item.state==='running').map(item=>item.identity.attemptId)])];
@@ -153,7 +171,10 @@ export class ProjectExecutions {
     const report=await new ValidatorService(this.materials.service,data,sources,reviews).validate({attemptId:value.workflowAttemptId,datasetIdentities:identities,executedCodeFingerprint:value.codeFingerprint,executedInputFingerprint:value.inputFingerprint,snapshotVerified:value.snapshotVerified,assertions:value.assertions},{maxBytes:1024*1024,limit:2000});
     const stored:StoredReport={reportId:randomUUID(),contentHash:hash(report),report};await this.original(directory,`report-${stored.reportId}.json`,stored);return reportSummary(stored);
   }
-  private async dataReader(id:string){return this.active.get(id)??PersistentDatasetService.openReader(this.root,id);}
+  // A finished host result can become visible while its writer is closing.
+  // Read committed originals through an independent reader so assessment and
+  // history queries cannot inherit that writer's closed flag.
+  private async dataReader(id:string){return PersistentDatasetService.openReader(this.root,id);}
   async sampleCheckpoint(projectId:string,scope:CheckpointHostScope,capture:Pick<CaptureCoordinator,'recordingPosition'|'samplePresentation'|'flush'>,requirementIds:unknown,assertCurrent:()=>void,signal?:AbortSignal):Promise<string[]>{
     scope=structuredClone(scope);requirementIds=structuredClone(requirementIds);
     const current=()=>{signal?.throwIfAborted();assertCurrent();ensure(this.active.has(scope.executionId)&&!this.terminal.has(scope.executionId),'Checkpoint execution is no longer active',409);};

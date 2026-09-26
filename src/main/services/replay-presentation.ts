@@ -21,17 +21,33 @@ export function replayHit(frame:HTMLIFrameElement,x:number,y:number):{node:Eleme
 export async function waitReplayPresentation(document:Document,generation:number):Promise<string[]>{
   const errors:string[]=[],started=Date.now();
   const current=()=>{if((window as any).__besGeneration!==generation)throw new Error('Replay seek superseded');};
+  const assets=()=>{
+    const roots:Array<Document|ShadowRoot>=[document],documents:Document[]=[document],links:HTMLLinkElement[]=[],images:HTMLImageElement[]=[];
+    for(let index=0;index<roots.length;index++){
+      if(roots.length>128)throw new Error('Replay frame/shadow asset scope exceeds budget');
+      const root=roots[index];links.push(...root.querySelectorAll<HTMLLinkElement>('link[rel=stylesheet]'));images.push(...root.querySelectorAll<HTMLImageElement>('img'));
+      for(const element of root.querySelectorAll('*')){
+        if(element.shadowRoot)roots.push(element.shadowRoot);
+        if(element.tagName==='IFRAME'){
+          const child=(element as HTMLIFrameElement).contentDocument;
+          if(child&&!documents.includes(child)){documents.push(child);roots.push(child);}
+          else if(!child&&errors.length<64)errors.push('Archived child frame is unavailable');
+        }
+      }
+    }
+    if(links.length+images.length>5000)throw new Error('Replay asset element budget exceeded');
+    return {links,images,documents};
+  };
   while(true){
     current();
-    const links=[...document.querySelectorAll<HTMLLinkElement>('link[rel=stylesheet]')],images=[...document.images];
-    if(links.length+images.length>5000)throw new Error('Replay asset element budget exceeded');
-    void document.body?.offsetHeight;
-    const pending=links.some(link=>!link.sheet)||images.some(image=>!image.complete)||document.fonts.status==='loading';
-    if(!pending){for(const image of images)if(image.src&&image.naturalWidth===0&&errors.length<64)errors.push('Archived image failed to decode');document.fonts.forEach(face=>{if(face.status==='error'&&errors.length<64)errors.push('Archived font failed to decode');});break;}
+    const {links,images,documents}=assets();
+    for(const child of documents)void child.body?.offsetHeight;
+    const pending=links.some(link=>!link.sheet)||images.some(image=>!image.complete)||documents.some(child=>child.fonts.status==='loading');
+    if(!pending){for(const image of images)if(image.src&&image.naturalWidth===0&&errors.length<64)errors.push('Archived image failed to decode');for(const child of documents)child.fonts.forEach(face=>{if(face.status==='error'&&errors.length<64)errors.push('Archived font failed to decode');});break;}
     if(Date.now()-started>=5000){
       if(links.some(link=>!link.sheet))errors.push('Archived stylesheet did not become ready within 5 seconds');
       if(images.some(image=>!image.complete))errors.push('Archived image did not become ready within 5 seconds');
-      if(document.fonts.status==='loading')errors.push('Archived fonts did not become ready within 5 seconds');break;
+      if(documents.some(child=>child.fonts.status==='loading'))errors.push('Archived fonts did not become ready within 5 seconds');break;
     }
     await new Promise(resolve=>setTimeout(resolve,25));
   }

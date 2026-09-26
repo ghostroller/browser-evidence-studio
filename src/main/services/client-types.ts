@@ -12,13 +12,15 @@ export interface AuthorizeTaskInput {
 }
 export interface ReplayHostState {
   replayId: string; projectId: string; generation: number; status: 'loading' | 'ready' | 'failed' | 'closed';
+  playing?: boolean; rebuilds?: number;
   position?: ReplayPosition; state?: ReplayState; selection?: HistoricalElementRef;
   selecting: boolean; selectionSequence: number; error?: string;
-  resources?: { status:'loading'|'ready'|'partial'; blockedRequests:number; failures:Array<{resourceId?:string;generation:number;code?:string;name:string;message:string}> };
+  resources?: { status:'loading'|'ready'|'partial'; blockedRequests:number; unavailableCount?:number; failures:Array<{resourceId?:string;generation:number;code?:string;name:string;message:string}> };
   selectionError?: string;
 }
 export interface ReplayOpenInput { projectId: string; position: ReplayPosition }
 export interface ReplaySeekInput extends ReplayOpenInput { replayId: string }
+export interface ReplayPlayInput { projectId: string; replayId: string; endPosition: ReplayPosition; speed: number }
 export interface ReplaySelectInput { replayId: string; enabled: boolean }
 export interface ReplayCloseInput { replayId: string }
 export interface TaskAuthorizationResult extends TaskAuthorization { leaseEpoch?: number }
@@ -27,5 +29,5 @@ export interface TaskAuthorizationResult extends TaskAuthorization { leaseEpoch?
 // call('replayStatus', { replayId }): Promise<ReplayHostState>
 // call('selectReplay', ReplaySelectInput): Promise<ReplayHostState>
 // call('closeReplay', ReplayCloseInput): Promise<ReplayHostState>
-// Every seek is exact eventSeq; UI play advances positions/time through seekReplay.
+// Every seek is exact eventSeq; bounded continuous playback uses one Replayer per segment.
 // Poll replayStatus for selections; stale seek generations cannot publish selection.

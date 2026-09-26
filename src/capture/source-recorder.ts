@@ -36,7 +36,7 @@ export function installSourceRecorder(config: RecorderConfiguration, urlPrivacy:
   }
   const documentId = uuid(), streamEpoch = uuid();
   const pending = new Map<number, SourceMetadata>();
-  let seq = 0, pendingBytes = 0, metadataComplete = true, failedEmits = 0;
+  let seq = 0, pendingBytes = 0, metadataComplete = true, failedEmits = 0, iframeAttachments = 0;
   let pendingSample: { nodeId: number; observation: SourceValue<Omit<SourcePresentation, 'sampledAt'>>; result?: PresentationSample; failure?: string } | undefined;
   const credential = /password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key/i;
   const present = <T>(value: T): SourceValue<T> => ({ status: 'present', value });
@@ -45,6 +45,10 @@ export function installSourceRecorder(config: RecorderConfiguration, urlPrivacy:
     return urlPrivacy(value, document.baseURI);
   }
   function privateAttribute(name: string, value: string, element: Element): boolean {
+    // rrweb's _cssText is CSS source, not a relative URL. A selector beginning
+    // with # must not inherit a credential query from document.baseURI. Keep
+    // the conservative redaction for stylesheets containing any URL token.
+    if (name === '_cssText' && !/(?:\?|url\s*\(|@import|https?:\/\/|wss?:\/\/|password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key)/i.test(value)) return false;
     return masked(element) && name !== 'class' || credential.test(name) || name === 'value' && /^(input|textarea|select|option)$/i.test(element.localName) || privateUrl(value);
   }
   function masked(element: Element): boolean {
@@ -93,7 +97,7 @@ export function installSourceRecorder(config: RecorderConfiguration, urlPrivacy:
     if (node.type === 2) {
       const element = w.rrweb.record.mirror.getNode(node.id) as Element | null;
       for (const [name, value] of Object.entries(node.attributes)) {
-        if (element?.nodeType === 1 && masked(element) && name !== 'class' || credential.test(name) || name === 'value' && /^(input|textarea|select|option)$/.test(node.tagName) || typeof value === 'string' && privateUrl(value)) node.attributes[name] = '[redacted]';
+        if (typeof value === 'string' && (element?.nodeType === 1 ? privateAttribute(name, value, element) : credential.test(name) || privateUrl(value))) node.attributes[name] = '[redacted]';
       }
     }
     if ('textContent' in node && privateUrl(node.textContent)) node.textContent = '[redacted credential URL]';
@@ -128,6 +132,7 @@ export function installSourceRecorder(config: RecorderConfiguration, urlPrivacy:
       }
     } },
     emit: event => {
+      if (event.type === 3 && event.data.source === 0 && event.data.isAttachIframe) iframeAttachments++;
       const position: ReplayPosition = { recordingId: config.recordingId, pageId: config.pageId, documentId, streamEpoch, eventSeq: seq++, sourceTimeMs: event.timestamp };
       if (event.type === 5 && event.data.tag === 'bes-source-presentation' && pendingSample) {
         const metadata = pending.get(pendingSample.nodeId);
@@ -192,6 +197,22 @@ export function installSourceRecorder(config: RecorderConfiguration, urlPrivacy:
     // intervening site callback and without a per-node recursive innerText walk.
     await Promise.resolve();
     if (!w.__besRecorderReady || !el.isConnected) throw new Error('Source node is unavailable for presentation sampling');
+    // Main-world CSSOM changes do not pass through the isolated world's
+    // prototype observers. An explicit source sample starts a new rrweb
+    // baseline from the live source document, including stylesheet state.
+    iframeAttachments = 0;
+    const expectedAttachments = [...document.querySelectorAll('iframe')].filter(frame => {
+      try { return !!frame.contentDocument; } catch { return false; }
+    }).length;
+    w.rrweb.record.takeFullSnapshot();
+    // rrweb attaches same-origin iframe snapshots asynchronously after the
+    // top baseline. Keep the source sample behind those attachment events.
+    const attachmentDeadline = Date.now() + 1000;
+    while (true) {
+      if (iframeAttachments >= expectedAttachments) break;
+      if (Date.now() >= attachmentDeadline) throw new Error('Same-origin frame source snapshot did not attach before sampling');
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
     const mirror = w.rrweb.record.mirror, nodeId = mirror.getId(el), rootId = mirror.getId(el.ownerDocument);
     const frameId = el.ownerDocument === document ? 'top' : `document-${rootId}`, mirrorScopeId = `${streamEpoch}:document-${rootId}`;
     if (nodeId < 0 || rootId < 0 || expected && (expected.kind !== 'dom-node' || expected.position.recordingId !== config.recordingId || expected.position.pageId !== config.pageId || expected.position.documentId !== documentId || expected.position.streamEpoch !== streamEpoch || expected.nodeId !== nodeId || expected.frameId !== frameId || expected.mirrorScopeId !== mirrorScopeId)) throw new Error('Presentation target does not belong to the current source mirror');

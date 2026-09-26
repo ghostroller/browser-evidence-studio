@@ -7,6 +7,32 @@ import { ResultCenter } from '@/renderer/components/result-center';
 afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(complete => { resolve = complete; }); return { promise, resolve }; }
 
+test('an interrupted corrupt dataset stays diagnosed while committed sibling batches remain accessible', async () => {
+  const call=vi.fn(async(method:string,body:any)=>{
+    if(method==='execution')return {status:'interrupted',workflowAttemptId:'attempt',snapshotVerified:false,binding:{},datasetCatalogIssues:[{entry:'invalid-attempt',code:'INVALID_ENTRY',message:'Not a directory'}]};
+    if(method==='executionItems'&&body.collection==='steps')return {items:[]};
+    if(method==='executionItems'&&body.collection==='datasets')return {items:[
+      {executionId:'execution-one',attemptId:'attempt',datasetId:'good',status:'unfinished',committedBatches:1,committedRecords:2},
+      {executionId:'execution-one',attemptId:'attempt',datasetId:'bad',status:'corrupt',committedBatches:0,committedRecords:0,diagnostic:{code:'INVALID_JSON',message:'Metadata is corrupt'}},
+    ]};
+    if(method==='executionReports')return {items:[]};
+    if(method==='datasetBatches')return {items:[{batchId:'committed',contentHash:'hash',recordCount:2,durableAt:'now'}]};
+    throw new Error(method);
+  });
+  window.studio={call,bounds:vi.fn()};
+  render(<ResultCenter projectId="project-one" executionId="execution-one"/>);
+  await waitFor(()=>expect(screen.getByText(/invalid-attempt/)).toBeTruthy());
+  const bad=screen.getByText('bad').closest('.result-row')!;
+  expect(bad.textContent).toContain('INVALID_JSON');
+  expect((bad.querySelector('button') as HTMLButtonElement).disabled).toBe(true);
+  expect((bad.querySelectorAll('button')[1] as HTMLButtonElement).disabled).toBe(true);
+  const good=screen.getByText('good').closest('.result-row')!;
+  fireEvent.click(good.querySelector('button')!);
+  await waitFor(()=>expect(screen.getByText(/committed/)).toBeTruthy());
+  expect(call).toHaveBeenCalledWith('datasetBatches',expect.objectContaining({datasetId:'good',attemptId:'attempt'}));
+  expect(call).not.toHaveBeenCalledWith('datasetBatches',expect.objectContaining({datasetId:'bad'}));
+});
+
 test('assesses an explicitly selected dataset attempt and keeps machine and human layers separate', async () => {
   const call = vi.fn(async (method: string, body: any) => {
     if (method === 'execution') return { status: 'partial', workflowAttemptId: 'workflow-attempt', snapshotVerified: true,

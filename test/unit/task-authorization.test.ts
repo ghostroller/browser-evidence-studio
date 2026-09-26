@@ -44,4 +44,14 @@ describe('host task authorization', () => {
       await expect(tasks.check(grant.authorizationId, 'execute', { projectId: 'one', directory: path.join(root, 'moved') })).rejects.toMatchObject({ code: 'AUTHORIZATION_DIRECTORY' });
     } finally { tasks.close(); await rm(root, { recursive: true, force: true }); }
   });
+  it('preserves a committed checkpoint receipt after HTTP cancellation but never after task revocation',async()=>{
+    const tasks=new TaskAuthorizations();
+    try{
+      const grant=await tasks.issue({projectId:'one'},{...offline,capabilities:[...offline.capabilities]});
+      const cancelled=new AbortController();
+      const receipt={id:'checkpoint-1',metadata:{captureOutcome:'completed'},artifactRefs:['saved']};
+      await expect(tasks.run(grant.authorizationId,'history-read',{projectId:'one'},async()=>{cancelled.abort(new Error('HTTP cancelled'));return receipt;},cancelled.signal)).resolves.toEqual(receipt);
+      await expect(tasks.run(grant.authorizationId,'history-read',{projectId:'one'},async()=>{tasks.revoke(grant.authorizationId);return receipt;})).rejects.toMatchObject({code:'AUTHORIZATION_REVOKED'});
+    }finally{tasks.close();}
+  });
 });
