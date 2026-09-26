@@ -28,11 +28,11 @@ const response = await fetch(`${connection.address}/v1/health`, {
 console.log(await response.json()); // 不打印 connection 或 headers。
 ```
 
-## 固定任务交接（Q3）
+## 固定任务交接（Q3 / C04）
 
-用户先在可信客户端发布资料版本并签发包含 `materials-read`、`handoff-export` 的项目任务授权，再在“任务授权与撤销”中选定版本和有效授权，点击“准备交给 Agent”。此动作只走可信 UI，不提供 HTTP 导出路由。客户端在数据根的 `projects/<projectId>/handoffs/<id>/` 原子保存 `task.md` 和 `manifest.json`，UI 显示实际路径。交接固定 `revisionId/contentHash`、结构化需求/字段/历史位置、当前实例 ID、授权 ID 和连接文件路径；自由文本和源正文继续通过授权的有界 API 读取。文件不含 Bearer、Cookie、profile、截图像素或原始 DOM。`taskSha256` 应与 task.md 一致。
+用户先在可信客户端发布资料版本并签发包含 `materials-read`、`handoff-export` 的项目任务授权，再在“任务授权与撤销”中选定版本和有效授权，点击“准备交给 Agent”。此动作只走可信 UI，不提供 HTTP 导出路由。客户端在数据根的 `projects/<projectId>/handoffs/<id>/` 原子保存 `task.md`、`manifest.json` 和 `access.json`，UI 显示实际路径。固定 `manifest.json` schemaVersion 2 保留项目、`revisionId/contentHash`、各资料集合计数、分页读取契约及 `taskSha256`，不随资料数量展开所有 ID，也不固定容易过期的 cursor。当前实例 ID、授权、连接文件路径及可读取的项目 skill 路径位于运行期 `access.json`；实例或授权变化须重新取得 envelope，不改写旧固定任务事实。文件不含 Bearer、Cookie、profile、截图像素或原始 DOM；自由文本和源正文继续通过授权的有界 API 读取。`taskSha256` 应与 task.md 一致。
 
-新任务从 manifest 读取授权 ID 与已知连接路径，读取当前用户专用连接文件，仅在进程内使用 token；先核对 `/health.instanceId`，然后查询固定 `materialRevision` 和分页 `materialCollection`。`/state` 在授权范围内提供当前 session/profile/page/target/generation/lease 身份；不从文件路径或网页内容猜测这些身份。V2 发布不改变 V1 交接，候选版本由 `materialDiff` 和 `taskChanges` 明确对照。授权过期、撤销或实例重启后，旧交接不再提供运行权限。
+新任务从 `access.json` 取得授权 ID 与连接文件路径，读取当前用户专用连接文件，仅在进程内使用 token；先核对 `/health.instanceId`，再以 `{authorizationId,revisionId,contentHash}` 查询 `POST /v1/projects/:projectId/query/materialRevision`。按 `manifest.read.collections` 逐集合调用 `POST /v1/projects/:projectId/query/materialCollection`，请求包含相同固定身份、`kind:"revision"`、`collection`、`limit/maxBytes` 和本次返回的 `cursor`，逐页核对计数；cursor 失效时从固定 revision/hash 重新读取该集合。`history-read` 是独立能力，只有资料权限不能推断可读历史。`/state` 在授权范围内提供当前 session/profile/page/target/generation/lease 身份；不从文件路径或网页内容猜测这些身份。V2 发布不改变 V1 固定任务，候选版本由 `materialDiff` 和 `taskChanges` 明确对照。授权过期、撤销或实例重启后，旧 envelope 不再提供运行权限。
 
 ## 请求、任务和控制权
 

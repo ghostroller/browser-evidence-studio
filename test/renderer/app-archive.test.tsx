@@ -70,6 +70,31 @@ afterEach(() => {
   delete (window as Partial<Window>).studio;
 });
 
+test('a readable sealed run offers explicit trusted index repair with its inspected writer fingerprint', async () => {
+  stubLayout();
+  const call = vi.fn(async (method: string) => {
+    if (method === 'state') return state;
+    if (method === 'presentation') return undefined;
+    if (method === 'inspectRunRecovery') return {
+      runId: runA, status: 'sealed', inspection: { state: 'unlocked', lockFingerprint: 'inspected-lock', message: 'No writer owns this run' },
+      canRecover: false, canRecoverIndexes: true,
+      indexDiagnostics: { replay: { state: 'missing', reason: 'index-lost' }, resources: { state: 'published', reason: 'generation-manifest-present' } },
+    };
+    if (method === 'recoverRunIndexes') return { runId: runA, replay: {}, resources: {} };
+    throw new Error(`Unexpected studio method: ${method}`);
+  });
+  window.studio = { call, bounds: vi.fn() };
+
+  render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
+  fireEvent.mouseDown(screen.getByRole('tab', { name: '存档' }), { button: 0, ctrlKey: false });
+  fireEvent.click(await screen.findAllByRole('button', { name: '检查/重建索引' }).then(buttons => buttons[0]));
+  const dialog = await screen.findByRole('dialog');
+  await waitFor(() => expect(within(dialog).getByText(/回放索引：missing/)).toBeTruthy());
+  fireEvent.click(within(dialog).getByRole('button', { name: '检查并重建回放/资源索引' }));
+  await waitFor(() => expect(call).toHaveBeenCalledWith('recoverRunIndexes', { runId: runA, expectedFingerprint: 'inspected-lock' }));
+  expect(within(dialog).getByText(/索引已重建/)).toBeTruthy();
+});
+
 test('a late history response cannot replace the selected archive or redirect artifact reads', async () => {
   stubLayout();
 

@@ -53,7 +53,7 @@ export function RunRecoveryView({ runId, active, onRecovered, onOpen }: {
   const [data, setData] = useState<any>(null);
   const [pending, setPending] = useState('');
   const [error, setError] = useState('');
-  const [recovered, setRecovered] = useState(false);
+  const [recovered, setRecovered] = useState<'archive' | 'indexes' | null>(null);
   const request = useRef(0);
   const inspect = useCallback(async () => {
     const current = ++request.current;
@@ -72,10 +72,21 @@ export function RunRecoveryView({ runId, active, onRecovered, onOpen }: {
     setPending('recover'); setError('');
     try {
       await window.studio.call('recoverRun', { runId, expectedFingerprint: data.inspection.lockFingerprint });
-      setRecovered(true);
+      setRecovered('archive');
       await onRecovered();
     } catch (failure) {
       setError(String(failure)); setData(null);
+    } finally { setPending(''); }
+  };
+  const recoverIndexes = async () => {
+    setPending('indexes'); setError('');
+    try {
+      await window.studio.call('recoverRunIndexes', { runId, expectedFingerprint: data.inspection.lockFingerprint });
+      setRecovered('indexes');
+      await onRecovered();
+      await inspect();
+    } catch (failure) {
+      setError(String(failure));
     } finally { setPending(''); }
   };
   const states: Record<string, string> = {
@@ -85,16 +96,18 @@ export function RunRecoveryView({ runId, active, onRecovered, onOpen }: {
   const state = data?.inspection?.state;
   return <div className="overlay-body run-recovery" data-run-id={runId}>
     <code>{runId}</code>
-    <p>恢复只重建可读存档与验收记录。已有原件保留，旧浏览器控制权和执行栈不会恢复。</p>
+    <p>恢复只重建可读索引与验收记录。已有原件保留，旧浏览器控制权和执行栈不会恢复。</p>
     {data && <>
       <h3 data-lock-state={state}>{states[state] || state}</h3>
       <p>{data.inspection.message}</p>
       {data.inspection.owner?.pid && <p className="muted">原进程编号：{data.inspection.owner.pid} · 检查时间：{time(data.inspection.checkedAt)}</p>}
       {data.error && <details><summary>上次读取失败原因</summary><p>{data.error}</p></details>}
+      {data.indexDiagnostics && <p className="hint">回放索引：{data.indexDiagnostics.replay.state}（{data.indexDiagnostics.replay.reason}）；资源 URL 索引：{data.indexDiagnostics.resources.state}（{data.indexDiagnostics.resources.reason}）。索引可重建，原件状态需另行核对。</p>}
     </>}
-    {pending && <p role="status">{pending === 'recover' ? '正在确认所有权并重建存档…' : '正在检查写入所有权…'}</p>}
+    {pending && <p role="status">{pending === 'recover' ? '正在确认所有权并重建存档…' : pending === 'indexes' ? '正在核对原件并重建索引…' : '正在检查写入所有权…'}</p>}
     {error && <p className="error-inline" role="alert">{error}</p>}
-    {recovered && <p className="notice">存档已恢复为可读状态。请检查已保存材料和中断原因，再新建运行重试。</p>}
+    {recovered === 'archive' && <p className="notice">存档已恢复为可读状态。请检查已保存材料和中断原因，再新建运行重试。</p>}
+    {recovered === 'indexes' && <p className="notice">索引已重建。原件未改写；请重新查看回放与资源。</p>}
     {active && <p className="notice">当前存在打开的运行；请先结束并封存，再恢复存档。</p>}
     {data && !data.canRecover && data.status === 'unreadable' && !active && <p className="hint">当前状态不能安全恢复。原件保持不变，可稍后重新检查。</p>}
     <div className="recovery-actions">
@@ -102,6 +115,7 @@ export function RunRecoveryView({ runId, active, onRecovered, onOpen }: {
       {!recovered && data?.canRecover && <Button size="sm" disabled={!!pending || active} onClick={() => void recover()}>
         {state === 'unlocked' ? '重建可读索引' : '安全恢复存档'}
       </Button>}
+      {data?.canRecoverIndexes && <Button size="sm" disabled={!!pending || active} onClick={() => void recoverIndexes()}>检查并重建回放/资源索引</Button>}
       {(recovered || data && data.status !== 'unreadable') && <Button size="sm" disabled={!!pending} onClick={() => {
         void onOpen().catch(failure => setError(String(failure)));
       }}>查看已保存材料</Button>}
