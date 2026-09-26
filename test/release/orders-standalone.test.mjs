@@ -1,10 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { copyFile, readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { startFixture } from '../../test/fixtures/site/index.ts';
+import { fileURLToPath } from 'node:url';
+import { startFixture } from '../fixtures/site/index.ts';
 
 const executable = process.env.BROWSER_EXECUTABLE_PATH;
 test('independent entry refuses an occupied output directory before launching Chrome', async () => {
@@ -22,13 +23,25 @@ test('independent entry refuses an occupied output directory before launching Ch
   } finally { await rm(output, { recursive: true, force: true }); }
 });
 
-test('ordinary independent Puppeteer workflow accepts complete data and rejects missing/incorrect/partial entities', { skip: !executable, timeout: 120000 }, async () => {
+test('ordinary independent Puppeteer workflow installs outside the repository, accepts complete data and rejects missing/incorrect/partial entities', { skip: !executable, timeout: 240000 }, async () => {
   const fixture = await startFixture();
   const output = await mkdtemp(path.join(tmpdir(), 'bes-independent-'));
+  const standalone = await mkdtemp(path.join(tmpdir(), 'bes-standalone-package-'));
   try {
+    const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../examples/orders');
+    for (const file of ['package.json', 'package-lock.json', 'standalone.mjs', 'run.mjs', 'input.schema.json', 'output.schema.json']) {
+      await copyFile(path.join(source, file), path.join(standalone, file));
+    }
+    const install = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund'],
+      { cwd: standalone, shell: process.platform === 'win32', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    let installation = '';
+    install.stdout.on('data', chunk => installation += chunk);
+    install.stderr.on('data', chunk => installation += chunk);
+    const installExit = await new Promise((resolve, reject) => { install.once('error', reject); install.once('exit', resolve); });
+    assert.equal(installExit, 0, installation);
     for (const variant of ['normal', 'duplicate', 'missing', 'wrong-image', 'empty-middle']) {
       const directory = path.join(output, variant);
-      const child = spawn(process.execPath, ['examples/orders/standalone.mjs', '--url', fixture.url, '--executable-path', executable, '--variant', variant, '--output', directory], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = spawn(process.execPath, [path.join(standalone, 'standalone.mjs'), '--url', fixture.url, '--executable-path', executable, '--variant', variant, '--output', directory], { cwd: standalone, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let diagnostics = '';
       child.stdout.on('data', chunk => diagnostics += chunk);
       child.stderr.on('data', chunk => diagnostics += chunk);
@@ -39,5 +52,5 @@ test('ordinary independent Puppeteer workflow accepts complete data and rejects 
       if (variant === 'duplicate') assert.deepEqual(report.result.duplicateIds, ['SYN-003']);
     }
     console.log(`Independent workflow evidence: ${output}`);
-  } finally { await fixture.close(); }
+  } finally { await fixture.close(); await rm(standalone, { recursive: true, force: true }); }
 });

@@ -12,18 +12,18 @@
 
 ## 无需 Electron 的独立测试
 
-确认当前终端使用 Node 24.21.0 / npm 11.19.0，安装或版本切换方式不限。仓库依赖安装完成后，在仓库根目录指定一个已安装的独立 Chrome：
+确认当前终端使用 Node 24.21.0 / npm 11.19.0，安装或版本切换方式不限。在仓库根目录指定一个已安装的独立 Chrome：
 
 ```powershell
 $env:BROWSER_EXECUTABLE_PATH = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
 npm.cmd run test:example
 ```
 
-将路径替换为本机 Chrome 的实际位置。该命令自行启动 Node 合成站点、执行五个变体并关闭浏览器及站点，不需要运行客户端或连接其 HTTP API。未设置 `BROWSER_EXECUTABLE_PATH` 时测试会跳过，不能视为通过。每个变体的报告写入终端显示的临时目录；预期失败变体返回非零码，由测试核对结果。
+将路径替换为本机 Chrome 的实际位置。该命令将本目录复制到仓库外新目录，以本目录的 package-lock.json 独立安装，再启动 Node 合成站点、执行五个变体并关闭浏览器及站点；运行时不需要客户端或仓库 node_modules。未设置 `BROWSER_EXECUTABLE_PATH` 时测试会跳过，不能视为通过。每个变体的报告写入终端显示的临时目录；预期失败变体返回非零码，由测试核对结果。
 
 ## 独立交付入口
 
-单次执行使用 `standalone.mjs`。它需要 Node、`puppeteer-core`、Ajv 和一个已运行的合成站点，以及同目录的 `run.mjs`、`input.schema.json`、`output.schema.json`；当前锁定版本见仓库 `package.json`。`workflow.json` 用于客户端登记，不是独立入口的执行依赖。浏览器由 `--executable-path` 或 `BROWSER_EXECUTABLE_PATH` 指定：
+单次执行使用 `standalone.mjs`。把本目录的 `package.json`、`package-lock.json`、`standalone.mjs`、`run.mjs`、`input.schema.json`、`output.schema.json` 复制到仓库外业务目录，在该目录运行 `npm ci`；它仅安装本样例声明的 `puppeteer-core` 和 Ajv。还需要 Node、一个已运行的合成站点及受支持的 Chrome。`workflow.json` 用于客户端登记，不是独立入口的执行依赖。浏览器由 `--executable-path` 或 `BROWSER_EXECUTABLE_PATH` 指定：
 
 ```powershell
 node examples/orders/standalone.mjs --url http://127.0.0.1:合成端口 --executable-path 'C:\Program Files\Google\Chrome\Application\chrome.exe'

@@ -116,7 +116,7 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
         projectId: scope, revisionId: fixedRevision.revisionId,
         contentHash: fixedRevision.contentHash, authorizationId: grant.authorizationId,
       });
-      if (scopeRef.current === scope) setNotice(`固定交接已保存：${result.taskFile}。将 task.md 与 manifest.json 交给新任务。`);
+      if (scopeRef.current === scope) setNotice(`固定交接已保存：${result.taskFile}。将 task.md、manifest.json 与 access.json 交给新任务；后者只在当前实例授权有效。`);
     } catch (failure) { if (scopeRef.current === scope) setError(String(failure)); }
     finally { if (scopeRef.current === scope) setPending(''); }
   };
@@ -148,7 +148,7 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
     </>}
     <Button variant="default" className="primary" disabled={!canIssue || !!pending} onClick={() => void issue()}>{pending || '授予这次任务'}</Button>
     <div className="section-label">固定版本交接</div>
-    <p className="hint">先固定任务资料，再选择含“读取任务资料”和“导出交接包”的本实例授权。交接文件只含有界索引，不含连接 token 或证据正文。</p>
+    <p className="hint">先固定任务资料，再选择含“读取任务资料”和“导出交接包”的本实例授权。manifest 只含固定版本身份和集合计数；全部资料按页读取。历史证据另需“读取历史证据”。交接文件不含连接 token 或证据正文。</p>
     <NativeSelect aria-label="交接资料版本" value={revisionId} onChange={event => setRevisionId(event.target.value)}>
       <option value="">选择已发布的固定版本</option>
       {revisions.map(item => <option key={item.revisionId} value={item.revisionId}>{item.revisionId.slice(0, 16)} · {item.contentHash.slice(0, 12)}</option>)}

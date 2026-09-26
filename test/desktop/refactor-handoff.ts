@@ -83,12 +83,17 @@ export async function runRefactorHandoffScenario(studio: Studio, siteUrl: string
     const handoffDir = path.join(studio.root, 'projects', project.id, 'handoffs', handoffs[0]);
     const task = await readFile(path.join(handoffDir, 'task.md'), 'utf8');
     const manifest = JSON.parse(await readFile(path.join(handoffDir, 'manifest.json'), 'utf8'));
+    const access = JSON.parse(await readFile(path.join(handoffDir, 'access.json'), 'utf8'));
     assert.equal(manifest.revisionId, revision.revisionId); assert.equal(manifest.contentHash, revision.contentHash);
-    assert.equal(manifest.authorization.authorizationId, authorizationId);
+    assert.equal(manifest.schemaVersion, 2);
+    assert.equal(access.authorization.authorizationId, authorizationId);
     assert.equal(manifest.taskSha256, createHash('sha256').update(task).digest('hex'));
-    assert.equal(manifest.fields[0].id, 'result-text'); assert.equal(manifest.checkpoints[0].anchor.recordingId, run.id);
-    const connection = JSON.parse(await readFile(manifest.connectionFile, 'utf8'));
-    assert.ok(!task.includes(connection.token) && !JSON.stringify(manifest).includes(connection.token));
+    assert.equal(manifest.counts.fields, 1); assert.equal(manifest.counts.checkpoints, 1);
+    assert.equal(path.basename(access.skillFile), 'SKILL.md');
+    assert.match(await readFile(access.skillFile, 'utf8'), /references\/handoff\.md/);
+    assert.match(await readFile(path.join(path.dirname(access.skillFile), 'references', 'handoff.md'), 'utf8'), /materialCollection/);
+    const connection = JSON.parse(await readFile(access.connectionFile, 'utf8'));
+    assert.ok(!task.includes(connection.token) && !JSON.stringify(manifest).includes(connection.token) && !JSON.stringify(access).includes(connection.token));
     async function request(method: string, route: string, body?: Record<string, unknown>): Promise<{ status: number; data: any }> {
       const response = await fetch(connection.address + route, { method, headers: { Authorization: `Bearer ${connection.token}`,
         ...(body ? { 'Content-Type': 'application/json', 'Idempotency-Key': randomUUID() } : {}) },
@@ -105,7 +110,7 @@ export async function runRefactorHandoffScenario(studio: Studio, siteUrl: string
       return terminal;
     }
     const health = await request('GET', '/v1/health');
-    assert.equal(health.data.instanceId, manifest.instanceId);
+    assert.equal(health.data.instanceId, access.instanceId);
     const capabilities = await request('GET', '/v1/capabilities');
     assert.equal(capabilities.status, 200);
     assert(capabilities.data.operations.some((item: any) => item.operation === 'createPage'));

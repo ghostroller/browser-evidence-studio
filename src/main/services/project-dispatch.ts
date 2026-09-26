@@ -1,4 +1,6 @@
 import type { Studio } from './studio';
+import { app } from 'electron';
+import path from 'node:path';
 import { exportFixedTaskHandoff } from './fixed-task-handoff';
 import type { TaskCapability } from './task-authorization';
 import { MATERIAL_COLLECTIONS, materialBudget, materialSummary } from './project-materials';
@@ -28,6 +30,9 @@ export async function dispatchProject(studio: Studio, method: string, body: any,
       projectId: body.projectId, revisionId: body.revisionId, contentHash: body.contentHash,
       authorizationId: body.authorizationId, instanceId: studio.instanceId,
       connectionFile: studio.connection.file,
+      skillFile: app.isPackaged
+        ? path.join(process.resourcesPath, 'browser-evidence-studio', 'SKILL.md')
+        : path.join(app.getAppPath(), 'skills', 'browser-evidence-studio', 'SKILL.md'),
       ...(grant.directory ? { scriptDirectory } : {}),
       signal,
     });
