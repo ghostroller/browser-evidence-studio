@@ -7,7 +7,7 @@ import { RecordingArchive } from '@/replay/archive';
 import { ResourceArchive } from '@/resources/archive';
 import { recoverRunIndexes } from '@/main/services/run-recovery';
 import { startFixture } from '../fixtures/site';
-import { runSoak } from './soak';
+import { runSoak, settleInitialCaptureBaseline } from './soak';
 import { verifySoakEvidenceSnapshot, type SoakEvidenceSnapshot } from './soak-evidence';
 import { EvidenceReader } from '@/evidence/reader';
 import { hashBytes } from '@/evidence/files';
@@ -101,6 +101,7 @@ export async function runRefactorRecoveryScenario(studio:Studio,phase:string):Pr
     const profile=await studio.createProfile({projectId:project.id,name:'合成恢复环境'});
     await studio.startRun({projectId:project.id,profileId:profile.id,url:fixture.url+'/soak'});
     const run=studio.required(),page=studio.current();
+    await settleInitialCaptureBaseline(page, run.id);
     await page.page.evaluate(async()=>{await new Promise<void>((resolve,reject)=>{const link=document.createElement('link');link.rel='stylesheet';link.href='/soak-resource.css';link.onload=()=>resolve();link.onerror=()=>reject(new Error('Synthetic CSS failed'));document.head.appendChild(link);});});
     await page.capture.flush();
     const recording=new RecordingArchive(run.store.runDir),resources=new ResourceArchive(run.store.runDir);

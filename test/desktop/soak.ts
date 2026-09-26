@@ -33,6 +33,19 @@ interface MemorySample {
   windowVisible: boolean; windowFocused: boolean; browserViewVisible: boolean; systemIdleSeconds: number; systemIdleStateAt60Seconds: 'active' | 'idle' | 'locked' | 'unknown';
 }
 
+export async function settleInitialCaptureBaseline(page: ReturnType<Studio['current']>, runId: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const position = page.capture.recordingPosition;
+    if (position?.recordingId === runId && position.pageId === page.pageId) {
+      await page.capture.flush();
+      return;
+    }
+    await delay(10);
+  }
+  throw new Error('Synthetic page did not save its initial recording baseline before CSS injection');
+}
+
 async function* events(reader: EvidenceReader, types: string[]) {
   let cursor: string | undefined;
   do {
@@ -170,6 +183,7 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
     await studio.startRun({ projectId: project.id, profileId: profile.id, url: url + '/soak' });
     const run = studio.required(), page = studio.current(); report.runId = run.id;
     if(options.newArchitecture){
+      await settleInitialCaptureBaseline(page, run.id);
       await page.page.evaluate(async()=>{await new Promise<void>((resolve,reject)=>{const link=document.createElement('link');link.rel='stylesheet';link.href='/soak-resource.css';link.onload=()=>resolve();link.onerror=()=>reject(new Error('Synthetic long-run CSS failed'));document.head.appendChild(link);});});
       await page.capture.flush();
     }
