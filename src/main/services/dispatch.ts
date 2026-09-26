@@ -7,6 +7,7 @@ import { dispatchProject, PROJECT_METHODS } from './project-dispatch';
 const READ=new Set(['state','projects','project','profiles','workflows','runs','run','pages','snapshot','checkpoints','summary','gaps','events','artifacts','artifact','artifactContent','handoffs','validations','validation','validationStartGrant','reviews','history','replay']);
 export function makeDispatch(studio:Studio){
   return async function dispatch(method:string,body:any={},source:'api'|'ui'='ui',context:{signal?:AbortSignal}={}):Promise<any>{
+    if(method==='action')context={...context,signal:context.signal?AbortSignal.any([context.signal,AbortSignal.timeout(15_000)]):AbortSignal.timeout(15_000)};
     if(source==='api'&&['control','startRun','seal','pauseOperations','pauseCapture','saveProfile','replyHuman','releaseHuman','review','authorizeValidationStart','revokeValidationStart','inspect','navigate','navigateHistory','closePage','closeSession','syntheticSite','replay','createProject','updateProject','createProfile','registerWorkflow','validationStartGrant'].includes(method))ensure(false,method==='validationStartGrant'?'Use a current task authorization; one-time startup grants are retired from the HTTP API':'This operation requires the trusted client UI',403);
     if(source==='api'&&method==='startValidation'&&body.startGrantId!==undefined)ensure(false,'One-time startGrantId is retired; request a current task authorization with execute capability in the trusted client',403);
     if(source==='api'&&method==='jobAccess'){
@@ -32,7 +33,7 @@ export function makeDispatch(studio:Studio){
       if(method==='pauseReplay')return studio.replayHost.pause(body.replayId,body.projectId);
       if(method==='replayStatus')return studio.replayHost.status(body.replayId);
       if(method==='selectReplay')return studio.replayHost.select(body.replayId,body.enabled);
-      return studio.replayHost.close(body.replayId);
+      ensure(typeof body.replayId==='string'&&body.replayId.length>0,'A specific replay operation ID is required',400);return studio.replayHost.close(body.replayId);
     }
     if(PROJECT_METHODS.has(method))return dispatchProject(studio,method,body,source,context.signal);
     // Presentation never enters the run queue: a capture can take seconds while
@@ -104,7 +105,7 @@ export function makeDispatch(studio:Studio){
       default:ensure(false,'Unknown operation: '+method,404);
     }};
     // Read-only state and handoff replies must remain responsive during long operations.
-    const invoke=()=>READ.has(method)||['replyHuman','releaseHuman','stopRunner','cancelJob','cancelHandoff','cancelCheckpoint','inspectRunRecovery','revokeValidationStart'].includes(method)?execute():studio.serialized(execute);
+    const invoke=()=>READ.has(method)||['replyHuman','releaseHuman','stopRunner','cancelJob','cancelHandoff','cancelCheckpoint','inspectRunRecovery','revokeValidationStart'].includes(method)?execute():studio.serialized(execute,method==='action'?context.signal:undefined);
     if(source==='api'&&['state','projects','project','profiles','workflows','runs','handoffs'].includes(method)){
       const grant=studio.tasks.get(body.authorizationId);
       const capability=method==='workflows'?'execute':method==='runs'?'history-read':method==='handoffs'?'page-read':grant.capabilities[0];

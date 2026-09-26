@@ -187,16 +187,9 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
     await waitFor(() => studio.current().view.getVisible(), value => !value, 'agent dialog hides native view');
     const managed = studio.current();
     const clicksBeforeDialogAction = await managed.page.$eval('#action-count', element => Number(element.textContent));
-    // Ordinary Puppeteer click includes its visibility/IntersectionObserver path.
-    // Keep the real dialog open throughout; no DOM click or CSS workaround.
-    let actionDeadline: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        studio.action({ type: 'click', selector: '#increment', pageId: managed.pageId, generation: managed.navigationGeneration, leaseEpoch: agentLease }),
-        new Promise<never>((_resolve, reject) => { actionDeadline = setTimeout(() => reject(new Error('Puppeteer click stalled while a trusted dialog hid the native browser')), 10000); }),
-      ]);
-    } finally { clearTimeout(actionDeadline); }
-    assert.equal(await managed.page.$eval('#action-count', element => Number(element.textContent)), clicksBeforeDialogAction + 1, 'Ordinary agent action progresses while the native view is hidden');
+    // A covering trusted dialog explicitly makes native input unavailable.
+    await assert.rejects(studio.action({type:'click',selector:'#increment',pageId:managed.pageId,generation:managed.navigationGeneration,leaseEpoch:agentLease}),/input_not_ready|overlay|not presented/);
+    assert.equal(await managed.page.$eval('#action-count',element=>Number(element.textContent)),clicksBeforeDialogAction,'Covered action must not dispatch a click');
     assert.equal(managed.view.getVisible(), false, 'The action cannot uncover the browser below the dialog');
     assert(await evaluate<boolean>(`document.querySelector('.overlay-heading h2')?.textContent==='连接与已验证环境'`), 'The dialog remains open during hidden-view execution');
     assert.equal(run.controller, 'agent'); assert.equal(run.leaseEpoch, agentLease);
@@ -288,6 +281,7 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
     await click('返回实时页面', `document.querySelector('.replay-controls')`);
     await waitFor(() => evaluate<boolean>(`!document.querySelector('.replay-workspace')`), Boolean, 'replay workspace removed on close');
     await waitFor(() => Promise.resolve((studio as any).replayHost.active), value => !value, 'native replayer and sandbox iframe destroyed on close');
+    if(studio.window.window.isMinimized())studio.window.window.restore();
     await waitFor(() => studio.current().view.getVisible(), Boolean, 'replay close restores live business view');
   }
   console.log('UI PASS: real React/IPC, native bounds, explicit control, archive screenshot, sandboxed rrweb play/pause and replay screenshot');

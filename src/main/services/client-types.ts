@@ -18,7 +18,7 @@ export interface ReplayHostState {
   resources?: { status:'loading'|'pending'|'ready'|'partial'; blockedRequests:number; pendingCount?:number; unavailableCount?:number; failures:Array<{resourceId?:string;generation:number;code?:string;name:string;message:string}> };
   selectionError?: string;
 }
-export interface ReplayOpenInput { projectId: string; position: ReplayPosition }
+export interface ReplayOpenInput { projectId: string; position: ReplayPosition; replayId?: string }
 export interface ReplaySeekInput extends ReplayOpenInput { replayId: string }
 export interface ReplayPlayInput { projectId: string; replayId: string; endPosition: ReplayPosition; speed: number }
 export interface ReplaySelectInput { replayId: string; enabled: boolean }

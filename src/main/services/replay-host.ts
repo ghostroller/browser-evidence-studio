@@ -30,13 +30,16 @@ interface ActiveReplay {
  * Only original archive resources can enter it; a seek generation owns every byte. */
 export class ReplayHost {
   private active?: ActiveReplay;
-  private lifetime=0;
+  private pending?: { replayId: string; projectId: string };
   constructor(private readonly window: StudioWindow, private readonly materials: ProjectMaterials, private readonly root: string) {}
   async open(body: ReplayOpenInput): Promise<ReplayHostState> {
-    body=structuredClone(body);const request=++this.lifetime,replayId=randomUUID(),position = parseReplayPosition(body.position);
-    await this.materials.replay(position.recordingId, body.projectId);
-    if(request!==this.lifetime)return {replayId,projectId:body.projectId,generation:0,status:'closed',selecting:false,selectionSequence:0};
-    this.closeActive();
+    body=structuredClone(body);const replayId=body.replayId??randomUUID(),position=parseReplayPosition(body.position);
+    ensure(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(replayId),'Invalid replay operation ID',400);
+    ensure(this.pending?.replayId!==replayId&&this.active?.state.replayId!==replayId,'Replay operation ID is already active',409);
+    const request={replayId,projectId:body.projectId};this.pending=request;
+    try{await this.materials.replay(position.recordingId, body.projectId);}catch(error){if(this.pending===request)this.pending=undefined;throw error;}
+    if(request!==this.pending)return {replayId,projectId:body.projectId,generation:0,status:'closed',selecting:false,selectionSequence:0};
+    this.pending=undefined;this.closeActive();
     const partition = session.fromPartition(`bes-replay-${replayId}`);
     partition.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     partition.setPermissionCheckHandler(() => false);
@@ -68,7 +71,7 @@ export class ReplayHost {
       }
     });
     view.webContents.on('before-input-event', (event, input) => {
-      if(input.key==='Escape' && active.state.selecting) { event.preventDefault(); void this.select(replayId, false).catch(()=>{}); }
+      if(input.key==='Escape' && active.state.selecting) { event.preventDefault(); void this.select(replayId,false).catch(error=>{if(this.active===active)active.state.selectionError=captureError(error).message;}); }
     });
     view.webContents.on('render-process-gone', (_event, details) => {
       if(this.active===active){active.abort?.abort();active.state.status='failed';active.state.error=`Replay renderer exited (${details.reason})`;this.window.hideReplay(view);}
@@ -212,7 +215,10 @@ export class ReplayHost {
     return structuredClone(active.state);
   }
   close(id?: string): ReplayHostState | undefined {
-    this.lifetime++;return this.closeActive(id);
+    if(!id){this.pending=undefined;return this.closeActive();}
+    if(this.pending?.replayId===id){const pending=this.pending;this.pending=undefined;return {...pending,generation:0,status:'closed',selecting:false,selectionSequence:0};}
+    // A concrete close only owns its own view; it cannot cancel another open.
+    return this.closeActive(id);
   }
   private closeActive(id?:string):ReplayHostState|undefined{
     const active=id?this.require(id):this.active;if(!active)return;

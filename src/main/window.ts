@@ -1,6 +1,7 @@
 import { app, BrowserWindow, WebContentsView } from 'electron';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { StudioError } from '@/shared/errors';
 import { UiPreferencesStore, type UiTheme } from './ui-preferences';
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 export class StudioWindow {
@@ -12,6 +13,7 @@ export class StudioWindow {
   private readonly backgroundOperations = new Set<WebContentsView>();
   private replay?: WebContentsView;
   private replayReady=false;
+  private presentationEpoch=0;
   private rect = {x: 236, y: 160, width: 700, height: 610};
   private locked = false;
   private browserVisible = true;
@@ -42,7 +44,8 @@ export class StudioWindow {
     void this.maskReady.catch(() => undefined);
     this.window.contentView.addChildView(this.mask);
     this.mask.setVisible(false);
-    this.window.on('resize', () => this.layout());
+    this.window.on('resize',()=>this.layout());this.window.on('restore',()=>this.layout());
+    this.window.on('show',()=>this.layout());this.window.on('minimize',()=>this.layout());
     this.window.on('blur', () => { if(this.occlusion.delete('layout'))this.layout(); });
     this.window.webContents.on('did-navigate', (_event, url) => {
       // Only a committed document replaces the previous UI. A renderer navigation
@@ -64,7 +67,7 @@ export class StudioWindow {
   }
   /** Read-only diagnostics: explain native visibility without overriding any lock. */
   presentationStatus() {
-    return { browserVisible:this.browserVisible, needsBounds:this.uiNeedsBounds, occlusion:[...this.occlusion],
+    return { epoch:this.presentationEpoch, minimized:this.window.isMinimized(), contentSize:this.window.getContentSize(), browserVisible:this.browserVisible, needsBounds:this.uiNeedsBounds, occlusion:[...this.occlusion],
       rect:{...this.rect}, locked:this.locked, activeWebContentsId:this.active && this.contents(this.active)?.id,
       replayWebContentsId:this.replay && this.contents(this.replay)?.id, replayReady:this.replayReady,
       views:this.views.map(view=>({webContentsId:this.contents(view)?.id,visible:view.getVisible(),bounds:view.getBounds()})) };
@@ -100,18 +103,30 @@ export class StudioWindow {
   }
   private contents(view:WebContentsView) {try{const contents=view.webContents;return contents&&!contents.isDestroyed()?contents:undefined;}catch{return undefined;}}
   show(view?: WebContentsView) { this.active = view&&this.views.includes(view)&&this.contents(view)?view:undefined; this.layout(); }
+  assertInputReady(view: WebContentsView) {
+    const reasons=[];
+    if(this.window.isMinimized())reasons.push('window-minimized');
+    const size=this.window.getContentSize();if(size[0]<2||size[1]<2)reasons.push('window-content-unavailable');
+    if(!this.views.includes(view)||!this.contents(view))reasons.push('target-unavailable');
+    if(this.uiNeedsBounds||!this.uiDocumentReady)reasons.push('layout-not-ready');
+    if(!this.browserVisible)reasons.push('browser-hidden');
+    if(this.replay)reasons.push('replay-owner');
+    reasons.push(...this.occlusion);
+    if(!view.getVisible())reasons.push('native-hidden');
+    const bounds=view.getBounds();if(bounds.width<2||bounds.height<2)reasons.push('native-bounds');
+    if(reasons.length)throw new StudioError(409,'input_not_ready',JSON.stringify({reasons,presentation:this.presentationStatus()}));
+  }
   async withBackgroundInteraction<T>(view: WebContentsView, run: () => Promise<T>): Promise<T> {
-    if(view===this.active)return run();
     if(!this.views.includes(view)||!this.contents(view))throw new Error('Background page is no longer available');
     this.backgroundOperations.add(view);
     // Keep the foreground page above the target while Chromium composites the
     // target for CDP input. The input mask stays above both native pages.
-    if(this.active&&this.window.contentView.children.includes(this.active)){
+    if(view!==this.active&&this.active&&this.window.contentView.children.includes(this.active)){
       this.window.contentView.removeChildView(this.active);this.window.contentView.addChildView(this.active);
     }
     this.window.contentView.removeChildView(this.mask);this.window.contentView.addChildView(this.mask);
     this.layout();
-    try{return await run();}
+    try{this.assertInputReady(view);return await run();}
     finally{this.backgroundOperations.delete(view);this.layout();}
   }
   setBrowserVisible(visible: boolean) { this.browserVisible=visible;this.layout(); }
@@ -174,7 +189,14 @@ export class StudioWindow {
   }
   private layout() {
     if(this.window.isDestroyed())return;
+    this.presentationEpoch++;
     const [width,height] = this.window.getContentSize();
+    // Windows reports 0x0 while minimized. Preserve the last usable geometry;
+    // restore/show will reapply presentation without waiting for renderer IPC.
+    if(this.window.isMinimized()||width<1||height<1){
+      for(const view of [...this.views,...(this.replay?[this.replay]:[]),this.mask])if(this.contents(view))view.setVisible(false);
+      return;
+    }
     const x = Math.max(0,Math.min(width,Math.round(this.rect.x))),y = Math.max(0,Math.min(height,Math.round(this.rect.y)));
     const right = Math.max(x,Math.min(width,Math.round(this.rect.x+this.rect.width))),bottom = Math.max(y,Math.min(height,Math.round(this.rect.y+this.rect.height)));
     const rect = {x:Math.min(x,Math.max(0,width-1)),y:Math.min(y,Math.max(0,height-1)),width:Math.max(1,right-x),height:Math.max(1,bottom-y)};
