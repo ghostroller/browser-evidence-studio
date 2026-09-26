@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { readFile, writeFile, rename } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { app, powerMonitor } from 'electron';
@@ -11,6 +11,7 @@ import type { EvidenceReader } from '@/evidence/reader';
 import { safeFile } from '@/evidence/files';
 import { buildSoakEvidenceSnapshot } from './soak-evidence';
 import { archiveGrowth } from './archive-growth';
+import { saveSoakReport } from './soak-report';
 
 const KiB = 1024, MiB = KiB * KiB;
 const limits = { checkpointP95Ms: 2000, summaryP95Ms: 500, httpSubmitP95Ms: 300, mainRssBytes: 1024 * MiB, pagePrivateBytes: 512 * MiB };
@@ -153,10 +154,7 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
       slowCycles, missedSlots,
       checkpointTiming: 'Client POST start through succeeded job response: includes HTTP, queue, durable completion and up to 50 ms polling delay. Stored captureStartedAt/savedAt timestamps are supplementary, not a durable completion clock.' };
     report.memory = memoryReport(samples);
-    for (const file of ['soak-result.json', 'soak-progress.json']) {
-      const destination = path.join(studio.root, file), temporary = destination + '.tmp';
-      await writeFile(temporary, JSON.stringify(report, null, file === 'soak-result.json' ? 2 : undefined)); await rename(temporary, destination);
-    }
+    await saveSoakReport(studio.root, report);
   };
   let started: number | undefined, startedMonotonic: number | undefined;
   const recordPowerEvent = (event: string) => {
