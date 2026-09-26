@@ -118,6 +118,11 @@ export async function inspectWriterLock(runDir: string, options: WriterLockOptio
 }
 
 interface KernelGuard { release(): Promise<void>; }
+export interface IndexMaintenanceHandle { readonly runDir:string; release():Promise<void> }
+const indexMaintenanceHandles=new WeakMap<IndexMaintenanceHandle,string>();
+export function assertIndexMaintenance(handle:IndexMaintenanceHandle,canonicalRunDir:string):void{
+  if(indexMaintenanceHandles.get(handle)!==canonicalRunDir)throw new WriterLockError('ACTIVE_INDEX_REBUILD','A live maintenance guard for this run is required');
+}
 async function acquireGuard(runDir: string): Promise<KernelGuard> {
   const canonical = await fs.realpath(runDir), stat = await fs.stat(canonical, { bigint: true });
   if (!stat.isDirectory() || stat.ino === 0n) throw new WriterLockError('WRITER_GUARD_UNAVAILABLE', 'The run directory has no stable filesystem identity.');
@@ -138,6 +143,19 @@ async function acquireGuard(runDir: string): Promise<KernelGuard> {
   server.unref();
   let releasing: Promise<void> | undefined;
   return { release: () => releasing ??= new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) };
+}
+
+/** Shares the writer's kernel guard for one run. A projection rebuild cannot
+ * race a newly opened writer, even when the marker was absent at inspection. */
+export async function claimIndexMaintenance(runDir:string):Promise<IndexMaintenanceHandle>{
+  const canonical=await fs.realpath(runDir),guard=await acquireGuard(canonical);
+  try{
+    const inspection=await inspectWriterLock(canonical);
+    if(inspection.state!=='unlocked')throw new WriterLockError('ACTIVE_INDEX_REBUILD',`Index maintenance requires an unlocked writer (${inspection.state})`,inspection);
+    const handle:IndexMaintenanceHandle={runDir:canonical,release:async()=>{await guard.release();indexMaintenanceHandles.delete(handle);}};
+    indexMaintenanceHandles.set(handle,canonical);
+    return handle;
+  }catch(error){await guard.release();throw error;}
 }
 
 function requireRecoverable(inspection: WriterLockInspection): void {

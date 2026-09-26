@@ -13,26 +13,49 @@ import { EvidenceReader } from '@/evidence/reader';
 import { hashBytes } from '@/evidence/files';
 import type { ReplayPosition } from '@/contracts/recording';
 import { sameStream } from '@/capture/recording-types';
+import { SourceModel } from '@/replay/source-model';
+import { assertReadyReplay, assertReplayDom, type ReplayDomExpectation, type ReplayDomObservation } from './replay-verification';
 import { app, webContents } from 'electron';
 
-interface NewArchitectureSoak {schemaVersion:1;processId:number;runId:string;minutes:number;position:ReplayPosition;resourceId:string;resourceUrl:string;frameId:string;blobHash:string;rawFiles:Array<{name:string;sha256:string}>;evidenceSnapshot:SoakEvidenceSnapshot;recovery:{replayRecords:number;resourceReferences:number};sourceStream:{events:number;preBaselineEvents:number;first:ReplayPosition;lastPreBaseline:ReplayPosition|null;baseline:ReplayPosition};}
+interface NewArchitectureSoak {schemaVersion:1;processId:number;runId:string;projectId:string;minutes:number;position:ReplayPosition;resourceId:string;resourceUrl:string;frameId:string;blobHash:string;rawFiles:Array<{name:string;sha256:string}>;evidenceSnapshot:SoakEvidenceSnapshot;recovery:{replayRecords:number;resourceReferences:number};sourceStream:{events:number;preBaselineEvents:number;first:ReplayPosition;lastPreBaseline:ReplayPosition|null;baseline:ReplayPosition};}
 
-async function replayMemory(studio:Studio,projectId:string,positions:ReplayPosition[]){
+function savedDom(model:SourceModel,outlineColor?:string):ReplayDomExpectation{
+  const id=(value:string)=>[...model.nodes.values()].find(node=>node.type===2&&node.metadata?.attributes.id?.status==='present'&&node.metadata.attributes.id.value===value);
+  const count=id('action-count');
+  const button=[...model.nodes.values()].find(node=>node.type===2&&node.metadata?.tagName.toLowerCase()==='button'&&node.metadata.attributes.id?.status==='present'&&node.metadata.attributes.id.value.startsWith('soak-click-'));
+  assert.ok(count&&button,'Saved source must contain the soak count and button');
+  const buttonId=button.metadata!.attributes.id;assert.equal(buttonId.status,'present');
+  const countText=model.node({kind:'dom-node',position:model.records.at(-1)!.position,frameId:count.metadata!.frameId,mirrorScopeId:count.metadata!.mirrorScopeId,nodeId:count.id}).text;
+  assert.equal(countText.status,'present');
+  return {nodeId:count.id,text:countText.value,buttonNodeId:button.id,buttonId:buttonId.value,outlineColor};
+}
+
+async function replayMemory(studio:Studio,projectId:string,positions:ReplayPosition[],stylesheetAt?:number){
   const before=new Set(webContents.getAllWebContents().map(contents=>contents.id));
+  const started=performance.now();
   const opened=await studio.replayHost.open({projectId,position:positions[0]});
-  const source=webContents.getAllWebContents().find(contents=>!before.has(contents.id));
-  assert.ok(source&&!source.isDestroyed(),'Replay process must be identifiable from its new WebContents');
-  const pid=source.getOSProcessId();assert.ok(pid>0);
-  const samples:Array<{seek:number;mainRssBytes:number;replayPrivateBytes:number|null;replayWorkingSetBytes:number|null}>=[];
+  const fresh=webContents.getAllWebContents().filter(contents=>!before.has(contents.id));
+  const samples:Array<{seek:number;latencyMs:number;events:number;readBytes:number;generation:number;mainRssBytes:number;replayPrivateBytes:number|null;replayWorkingSetBytes:number|null}>=[];
   try{
+    assert.equal(fresh.length,1,'Replay operation must create exactly one identifiable WebContents');
+    const source=fresh[0];assert.ok(!source.isDestroyed(),'Replay WebContents was destroyed');
+    const pid=source.getOSProcessId();assert.ok(pid>0);
+    const recording=new RecordingArchive(path.join(studio.root,'runs',positions[0].recordingId));
+    let previous=0;
     for(const [seek,position] of positions.entries()){
-      if(seek)await studio.replayHost.seek({projectId,replayId:opened.replayId,position});
+      const began=seek?performance.now():started;
+      const result=seek?await studio.replayHost.seek({projectId,replayId:opened.replayId,position}):opened;
+      assertReadyReplay(result,position,opened.replayId,previous);previous=result.generation;
+      const window=await recording.window(position);
+      const expected=savedDom(new SourceModel(window.records),seek===stylesheetAt?'rgb(20, 40, 60)':undefined);
+      const observed=await source.executeJavaScript(`(()=>{const frame=document.querySelector('#replay iframe');const doc=frame?.contentDocument;const count=doc?.querySelector('#action-count');const button=doc?.querySelector('button[id^="soak-click-"]');const mirror=window.__besPlayer?.getMirror();return {nodeId:count&&mirror?mirror.getId(count):null,text:count?.textContent??null,buttonNodeId:button&&mirror?mirror.getId(button):null,buttonId:button?.id??null,outlineColor:doc?.body?getComputedStyle(doc.body).outlineColor:null};})()` ) as ReplayDomObservation;
+      assertReplayDom(observed,expected);
       const metric=app.getAppMetrics().find(item=>item.pid===pid);
-      samples.push({seek,mainRssBytes:process.memoryUsage().rss,replayPrivateBytes:metric?.memory.privateBytes===undefined?null:metric.memory.privateBytes*1024,replayWorkingSetBytes:metric?.memory.workingSetSize===undefined?null:metric.memory.workingSetSize*1024});
+      samples.push({seek,latencyMs:performance.now()-began,events:window.records.length,readBytes:window.readBytes,generation:result.generation,mainRssBytes:process.memoryUsage().rss,replayPrivateBytes:metric?.memory.privateBytes===undefined?null:metric.memory.privateBytes*1024,replayWorkingSetBytes:metric?.memory.workingSetSize===undefined?null:metric.memory.workingSetSize*1024});
     }
+    assert.ok(samples.every(sample=>sample.replayPrivateBytes!==null),'Replay private memory must be available for the long-run verification');
+    return{pid,webContentsId:source.id,samples,changeBytes:samples.at(-1)!.replayPrivateBytes!-samples[0].replayPrivateBytes!,interpretation:'Bounded post-recording seek samples; no claim of indefinite memory stability.'};
   }finally{studio.replayHost.close(opened.replayId);}
-  assert.ok(samples.every(sample=>sample.replayPrivateBytes!==null),'Replay private memory must be available for the long-run verification');
-  return{pid,samples,changeBytes:samples.at(-1)!.replayPrivateBytes!-samples[0].replayPrivateBytes!,interpretation:'Bounded post-recording seek samples; no claim of indefinite memory stability.'};
 }
 
 async function longSoak(studio:Studio):Promise<Record<string,unknown>>{
@@ -80,8 +103,8 @@ async function longSoak(studio:Studio):Promise<Record<string,unknown>>{
     assert.equal((await resources.resolve(fixture.url+'/soak-resource.css',position,css.frameId))?.id,css.id);
     for(const original of rawFiles)assert.equal(hashBytes(await readFile(path.join(rawDirectory,original.name))),original.sha256);
     const projectId=studio.runs.find(run=>run.id===load.runId)?.projectId;assert.ok(projectId);
-    const replay=await replayMemory(studio,projectId,seeks.map(item=>item.position));
-    const saved:NewArchitectureSoak={schemaVersion:1,processId:process.pid,runId:load.runId,minutes,position,resourceId:css.id,resourceUrl:fixture.url+'/soak-resource.css',frameId:css.frameId,blobHash,rawFiles,evidenceSnapshot:load.evidenceSnapshot,sourceStream,
+    const replay=await replayMemory(studio,projectId,seeks.map(item=>item.position),2);
+    const saved:NewArchitectureSoak={schemaVersion:1,processId:process.pid,runId:load.runId,projectId,minutes,position,resourceId:css.id,resourceUrl:fixture.url+'/soak-resource.css',frameId:css.frameId,blobHash,rawFiles,evidenceSnapshot:load.evidenceSnapshot,sourceStream,
       recovery:{replayRecords:recovery.replay.records,resourceReferences:recovery.resources.references}};
     await writeFile(path.join(studio.root,'new-architecture-soak.json'),JSON.stringify(saved,null,2));
     return{passed:true,load:{minutes,cycles:load.load.completedCycles,plannedCycles:load.load.plannedCycles,skippedSlots:load.load.skippedScheduleSlots,performance:load.performanceVerdict,queueMetrics:load.newArchitectureQueueMetrics,archiveGrowth:load.newArchitectureArchiveGrowth,memory:load.memory},streams:streams.items.length,sourceStream,seeks,replayMemory:replay,workerMemory:{status:'not-running',reason:'The fixed recording load does not start a runner worker; worker_threads share the main PID.'},recovery:saved.recovery,resourceId:css.id,runId:load.runId};
@@ -97,7 +120,8 @@ async function verifyLongSoak(studio:Studio):Promise<Record<string,unknown>>{
   assert.equal(hashBytes((await resources.read(saved.resourceId)).bytes),saved.blobHash);
   for(const original of saved.rawFiles)assert.equal(hashBytes(await readFile(path.join(runDir,'raw','rrweb',original.name))),original.sha256);
   const evidence=await verifySoakEvidenceSnapshot(new EvidenceReader(runDir),saved.evidenceSnapshot);
-  return{passed:true,originalProcessId:saved.processId,processId:process.pid,runId:saved.runId,minutes:saved.minutes,sourceStream:saved.sourceStream,recovered: saved.recovery,evidence};
+  const replay=await replayMemory(studio,saved.projectId,[saved.position],0);
+  return{passed:true,originalProcessId:saved.processId,processId:process.pid,runId:saved.runId,minutes:saved.minutes,sourceStream:saved.sourceStream,recovered: saved.recovery,evidence,replay};
 }
 
 /** One real Electron process, a real format-2 recorder and a directed recovery.

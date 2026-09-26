@@ -9,7 +9,11 @@ import { jsonLines } from '@/evidence/files';
 import type { EvidenceStore } from '@/evidence/store';
 import { credentialUrl } from '@/capture/url-privacy';
 import { responsePrivacy } from '@/capture/privacy';
-import { inspectWriterLock } from '@/evidence/writer-lock';
+import { assertIndexMaintenance, claimIndexMaintenance, inspectWriterLock, type IndexMaintenanceHandle } from '@/evidence/writer-lock';
+import { verifySealedOriginals } from '@/evidence/sealed-originals';
+
+interface UrlEntry { id:string;position:ReplayPosition;frameId:string;unavailableReason?:string;requestId?:string;requestStartedAt?:string;availableObservedAt?:string }
+const publishedFile='resource-url-index-published.json';
 
 export const RESOURCE_MAX_BYTES = 8 * 1024 * 1024;
 export const RESOURCE_TOTAL_BYTES = 256 * 1024 * 1024;
@@ -108,7 +112,7 @@ export class ResourceCapture {
 
 export class ResourceArchive {
   constructor(readonly runDir: string, readonly dataRoot = path.dirname(path.dirname(runDir))) {}
-  private async urlEntries(url:string):Promise<Array<{id:string;position:ReplayPosition;frameId:string}>>{
+  private async urlEntries(url:string):Promise<UrlEntry[]>{
     const urlHash=hashBytes(url);
     let relative=`resource-url-index/${urlHash}.jsonl`,expectedHash:string|undefined,pointerFound=false;
     try {
@@ -128,7 +132,7 @@ export class ResourceArchive {
         if(error instanceof EvidenceError)throw error;
         throw new EvidenceError((error as NodeJS.ErrnoException).code==='ENOENT'?'RESOURCE_INDEX_MISSING':error instanceof SyntaxError?'RESOURCE_INDEX_CORRUPT':'RESOURCE_INDEX_READ_FAILED',`Cannot read published URL index: ${String(error)}`,409);
       }
-      if(await exists(path.join(this.runDir,'resource-url-index-generations')))throw new EvidenceError('RESOURCE_INDEX_MISSING','Resource generation pointer is missing; directed recovery required',409);
+      if(await exists(path.join(this.runDir,publishedFile)))throw new EvidenceError('RESOURCE_INDEX_MISSING','Published resource generation pointer is missing; directed recovery required',409);
     }
     let file:string;
     try{file=await safeFile(this.runDir,relative);}
@@ -152,12 +156,12 @@ export class ResourceArchive {
     let bytes:Buffer;
     try{bytes=await boundedIndexBytes(file,4*1024*1024);}catch(error){if(error instanceof EvidenceError)throw error;throw new EvidenceError('RESOURCE_INDEX_READ_FAILED',`Cannot read URL index: ${String(error)}`,409);}
     if(expectedHash&&hashBytes(bytes)!==expectedHash)throw new EvidenceError('RESOURCE_INDEX_CORRUPT','Resource URL index hash mismatch; directed recovery required',409);
-    const entries:Array<{id:string;position:ReplayPosition;frameId:string}>=[];
+    const entries:UrlEntry[]=[];
     for(const line of bytes.toString('utf8').split('\n')){
       if(!line)continue;
       if(entries.length>=10000)throw new EvidenceError('RESOURCE_INDEX_BUDGET','Resource URL history exceeds bounded scan budget',413);
-      let entry:{id:string;position:ReplayPosition;frameId:string};
-      try{entry=JSON.parse(line);checkedId(entry.id);parseReplayPosition(entry.position);if(typeof entry.frameId!=='string'||!entry.frameId)throw new Error('Invalid frame');}
+      let entry:UrlEntry;
+      try{entry=JSON.parse(line);checkedId(entry.id);parseReplayPosition(entry.position);if(typeof entry.frameId!=='string'||!entry.frameId||entry.unavailableReason!==undefined&&(typeof entry.unavailableReason!=='string'||entry.unavailableReason.length>512))throw new Error('Invalid frame or diagnostic');}
       catch(error){throw new EvidenceError('RESOURCE_INDEX_CORRUPT',`Malformed resource URL index row: ${String(error)}`,409);}
       entries.push(entry);
     }
@@ -181,13 +185,14 @@ export class ResourceArchive {
     return { reference, bytes };
   }
   async resolve(url:string,position:ReplayPosition,frameId='top'):Promise<ArchivedResource|undefined>{
-    const candidates:Array<{id:string;position:ReplayPosition;frameId:string}>=[];let count=0;
+    const candidates:UrlEntry[]=[];let count=0;
     for(const entry of await this.urlEntries(url)){
       if(++count>10000)throw new EvidenceError('RESOURCE_INDEX_BUDGET','Resource URL history exceeds bounded scan budget',413);
       if(entry.frameId===frameId&&entry.position.recordingId===position.recordingId&&entry.position.pageId===position.pageId&&entry.position.documentId===position.documentId&&entry.position.streamEpoch===position.streamEpoch&&entry.position.eventSeq<=position.eventSeq)candidates.push(entry);
     }
     let probeFailure:ArchivedResource|undefined;
     for(const selected of candidates.reverse().sort((a,b)=>b.position.eventSeq-a.position.eventSeq)){
+      if(selected.unavailableReason)return this.unavailable(url,selected);
       const reference=await this.reference(selected.id);
       if(reference.originalUrl.status!=='present'||reference.originalUrl.value!==url&&reference.source.requestUrl!==url||!sameReplayPosition(reference.position,selected.position)||reference.frameId!==selected.frameId||reference.frameId!==frameId)throw new EvidenceError('RESOURCE_INDEX_MISMATCH','Resource URL index does not match its immutable manifest',409);
       // A cache probe returning no bytes is an observation failure, not a new
@@ -198,6 +203,9 @@ export class ResourceArchive {
     }
     return probeFailure;
   }
+  private unavailable(url:string,entry:UrlEntry):ArchivedResource{
+    return {id:entry.id,position:entry.position,frameId:entry.frameId,...(entry.requestId?{requestId:entry.requestId}:{}),...(entry.requestStartedAt?{requestStartedAt:entry.requestStartedAt}:{}),...(entry.availableObservedAt?{availableObservedAt:entry.availableObservedAt}:{}),originalUrl:{status:'present',value:url},mediaType:'application/octet-stream',status:'failed',reason:`observed-unavailable: ${entry.unavailableReason}`,capturedAt:'',bytes:0,source:{byteRepresentation:'decoded-response'}};
+  }
   /** All observed versions in one source stream. Position is a storage anchor,
    * not an availability clock; replay must inspect availableObservedAt. */
   async history(url:string,position:ReplayPosition,frameId:string):Promise<ArchivedResource[]>{
@@ -205,6 +213,7 @@ export class ResourceArchive {
     for(const entry of await this.urlEntries(url)){
       if(++count>10000)throw new EvidenceError('RESOURCE_INDEX_BUDGET','Resource URL history exceeds bounded scan budget',413);
       if(entry.frameId!==frameId||entry.position.recordingId!==position.recordingId||entry.position.pageId!==position.pageId||entry.position.documentId!==position.documentId||entry.position.streamEpoch!==position.streamEpoch)continue;
+      if(entry.unavailableReason){found.push(this.unavailable(url,entry));continue;}
       const reference=await this.reference(entry.id);
       if(reference.originalUrl.status!=='present'||reference.originalUrl.value!==url&&reference.source.requestUrl!==url||!sameReplayPosition(reference.position,entry.position)||reference.frameId!==frameId)throw new EvidenceError('RESOURCE_INDEX_MISMATCH','Resource URL index does not match its immutable manifest',409);
       found.push(reference);
@@ -213,9 +222,13 @@ export class ResourceArchive {
   }
   /** Rebuild only this run's URL projection from saved manifests and blobs. A
    * failed generation remains on disk for diagnosis and is never published. */
-  async rebuildUrlIndex():Promise<{generation:string;references:number;urls:number;corrupt:Array<{id:string;reason:string}>;corruptCount:number}>{
+  async rebuildUrlIndex(guard?:IndexMaintenanceHandle):Promise<{generation:string;references:number;urls:number;corrupt:Array<{id:string;reason:string}>;corruptCount:number;verificationBasis:'sealed'|'unverified'}>{
     const ownership=await inspectWriterLock(this.runDir);
     if(ownership.state!=='unlocked')throw new EvidenceError('ACTIVE_INDEX_REBUILD',`Resource recovery requires an unlocked writer (${ownership.state})`,409);
+    const maintenance=guard??await claimIndexMaintenance(this.runDir);
+    try{
+    assertIndexMaintenance(maintenance,await fs.realpath(this.runDir));
+    const verificationBasis=await verifySealedOriginals(this.runDir,'resource');
     const generation=randomUUID(),prefix=`resource-url-index-generations/${generation}`;
     const staged=path.join(this.runDir,prefix);
     try{await fs.mkdir(staged,{recursive:true});}
@@ -228,7 +241,7 @@ export class ResourceArchive {
     let eventFiles:string[];
     try{eventFiles=(await fs.readdir(path.join(this.runDir,'journal'))).filter(name=>/^events-\d{6}\.jsonl$/.test(name)).sort();}
     catch(error){throw new EvidenceError('RESOURCE_ORIGINAL_READ_FAILED',`Cannot enumerate original resource events: ${String(error)}`,409);}
-    const orderedIds:string[]=[],confirmed=new Map<string,ArchivedResource>(),manifestNames=new Set(names);let scanned=0;
+    const orderedIds:string[]=[],confirmed=new Map<string,ArchivedResource>();let scanned=0;
     try{for(const name of eventFiles){
       const relative=`journal/${name}`;
       for await(const line of jsonLines(await safeFile(this.runDir,relative))){
@@ -236,30 +249,31 @@ export class ResourceArchive {
         if(line.invalid)throw new EvidenceError('RESOURCE_ORIGINAL_CORRUPT',`Original event ${relative}:${line.offset} is malformed: ${line.invalid}`,409);
         if(line.value?.type!=='resource-reference')continue;
         const data=line.value.data as ArchivedResource|undefined,id=data?.id;
-        if(!data||typeof id!=='string'||!manifestNames.has(`${id}.json`)||confirmed.has(id))throw new EvidenceError('RESOURCE_ORIGINAL_CORRUPT',`Resource event ${relative}:${line.offset} has missing, invalid, or duplicate manifest identity`,409);
+        if(!data||typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)||!data.originalUrl||!data.source||typeof data.frameId!=='string'||!data.frameId||confirmed.has(id))throw new EvidenceError('RESOURCE_ORIGINAL_CORRUPT',`Resource event ${relative}:${line.offset} has missing, invalid, or duplicate identity`,409);
+        parseReplayPosition(data.position);
         confirmed.set(id,data);orderedIds.push(id);
       }
     }}catch(error){if(error instanceof EvidenceError)throw error;throw new EvidenceError('RESOURCE_ORIGINAL_READ_FAILED',`Cannot scan original resource events: ${String(error)}`,409);}
     for(const name of names)if(!confirmed.has(name.slice(0,-5))){corruptCount++;if(corrupt.length<128)corrupt.push({id:name.slice(0,-5),reason:'manifest-without-confirmed-resource-event'});}
     for(const id of orderedIds){
-      let reference:ArchivedResource;
+      const event=confirmed.get(id)!;
+      let reason:string|undefined;
       try{
-        reference=await this.reference(id);
-        const event=confirmed.get(id)!;
-        if(!sameReplayPosition(reference.position,event.position)||reference.frameId!==event.frameId||reference.status!==event.status||reference.blobHash!==event.blobHash||reference.availableObservedAt!==event.availableObservedAt||JSON.stringify(reference.originalUrl)!==JSON.stringify(event.originalUrl))throw new EvidenceError('INVALID_RESOURCE','Resource manifest no longer matches its confirmed original event',409);
+        const reference=await this.reference(id);
+        if(JSON.stringify(reference)!==JSON.stringify(event))throw new EvidenceError('INVALID_RESOURCE','Resource manifest no longer matches its confirmed original event',409);
         if(['captured','late-fetched'].includes(reference.status))await this.read(id);
       }
       catch(error){
-        if(error instanceof EvidenceError&&['INVALID_RESOURCE','RESOURCE_INTEGRITY','RESOURCE_UNAVAILABLE','RESOURCE_BYTE_BUDGET'].includes(error.code)){corruptCount++;if(corrupt.length<128)corrupt.push({id,reason:String(error)});continue;}
-        if(error instanceof SyntaxError){corruptCount++;if(corrupt.length<128)corrupt.push({id,reason:String(error)});continue;}
-        throw new EvidenceError('RESOURCE_ORIGINAL_READ_FAILED',`Cannot read original resource ${id}: ${String(error)}`,409);
+        if(error instanceof EvidenceError&&['INVALID_RESOURCE','RESOURCE_INTEGRITY','RESOURCE_UNAVAILABLE','RESOURCE_BYTE_BUDGET'].includes(error.code)||error instanceof SyntaxError||(error as NodeJS.ErrnoException).code==='ENOENT')reason=error instanceof EvidenceError?error.code:(error as NodeJS.ErrnoException).code==='ENOENT'?'RESOURCE_MANIFEST_MISSING':'RESOURCE_MANIFEST_CORRUPT';
+        else throw new EvidenceError('RESOURCE_ORIGINAL_READ_FAILED',`Cannot read original resource ${id}: ${String(error)}`,409);
+        corruptCount++;if(corrupt.length<128)corrupt.push({id,reason});
       }
       references++;
-      if(reference.originalUrl.status!=='present')continue;
-      const urls=new Set([reference.originalUrl.value,...(reference.source.requestUrl&&reference.source.requestUrl!=='[redacted]'?[reference.source.requestUrl]:[])]);
+      if(event.originalUrl.status!=='present')continue;
+      const urls=new Set([event.originalUrl.value,...(event.source.requestUrl&&event.source.requestUrl!=='[redacted]'?[event.source.requestUrl]:[])]);
       for(const url of urls){
         const hash=hashBytes(url),rows=byUrl.get(hash)??[];
-        rows.push(JSON.stringify({id,position:reference.position,frameId:reference.frameId}));byUrl.set(hash,rows);
+        rows.push(JSON.stringify({id,position:event.position,frameId:event.frameId,...(reason?{unavailableReason:reason,requestId:event.requestId,requestStartedAt:event.requestStartedAt,availableObservedAt:event.availableObservedAt}:{})}));byUrl.set(hash,rows);
       }
     }
     const hashes:Record<string,string>={};
@@ -274,9 +288,12 @@ export class ResourceArchive {
       }
       const manifestFile=path.join(staged,'index-manifest.json');
       await atomicJson(manifestFile,{version:1,generation,references,corruptCount,urls:hashes});
+      await verifySealedOriginals(this.runDir,'resource');
       await atomicJson(path.join(this.runDir,'resource-url-index-current.json'),{version:1,generation,manifestSha256:hashBytes(await fs.readFile(manifestFile))});
-    }catch(error){throw new EvidenceError('RESOURCE_INDEX_WRITE_FAILED',`URL index generation ${generation} remains unpublished after write/validation failure: ${String(error)}`,507);}
-    return{generation,references,urls:byUrl.size,corrupt,corruptCount};
+      await atomicJson(path.join(this.runDir,publishedFile),{version:1,generation});
+    }catch(error){if(error instanceof EvidenceError&&error.code==='RESOURCE_ORIGINAL_INTEGRITY')throw error;throw new EvidenceError('RESOURCE_INDEX_WRITE_FAILED',`URL index generation ${generation} remains unpublished after write/validation failure: ${String(error)}`,507);}
+    return{generation,references,urls:byUrl.size,corrupt,corruptCount,verificationBasis};
+    }finally{if(!guard)await maintenance.release();}
   }
   /** Manifest listing is bounded by count; callers use the next ID as cursor. */
   async list(limit = 128, after?: string): Promise<{ items: ArchivedResource[]; nextCursor?: string }> {
