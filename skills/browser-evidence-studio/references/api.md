@@ -10,6 +10,8 @@
 | 历史证据 | `GET /v1/runs/:runId/summary?authorizationId=...`、`gaps`、`events`、`checkpoints`、`artifacts`，随后按 ID 有界读正文；须有 `history-read` |
 | 页面动作 | `POST /v1/runs/:runId/actions` 传 `authorizationId/projectId/profileId/sessionId/pageId/generation/leaseEpoch/type` 和该动作的受支持参数；需 `page-act`，人工持有控制权时拒绝 |
 | 固定版验收 | `POST /v1/runs/:runId/validations` 传 `authorizationId/projectId/sessionId/profileId/pageId/leaseEpoch/materialRevisionId/materialContentHash/input`；保存返回的 jobId，经 `/v1/jobs/:jobId?authorizationId=...` 查询终态，再读实际 validationId 结果 |
+| 独立资料评估 | 执行结束后，`POST /v1/projects/:projectId/query/executionItems` 传 `authorizationId/executionId/collection:"datasets"/limit/maxBytes`，从持久结果取得 `executionId/attemptId/datasetId`；`POST /v1/projects/:projectId/operations/assessExecution` 传 `authorizationId/executionId/datasetIdentities:[{executionId,attemptId,datasetId}]`，轮询 job，保存返回的 `reportId/overall` |
+| 评估报告 | `POST /v1/projects/:projectId/query/executionReport` 传 `authorizationId/executionId/reportId`；`executionReportItems` 另传 `collection:"requirements"` 或 `"datasets"`、`limit/maxBytes`，逐项核对机器结论和来源状态 |
 
 普通 Puppeteer 工作流的文件形状与 reporter 接口见 [workflow.md](workflow.md)，验收顺序见 [validation.md](validation.md)。路径 `/v1` 已写入上表；不要重复附加此前废弃的一次性启动授权字段。
 

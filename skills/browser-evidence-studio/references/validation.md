@@ -14,6 +14,8 @@ checkpointKey 与 requirementId 稳定对应。结构化输出声明 sourceRefs/
 
 重试同一启动保留相同 Idempotency-Key；用原授权 ID 轮询 job，202 不是启动成功。取消仍在排队或准备的启动用该 job 的 `/cancel` 并传原 `authorizationId`，不会停止其他执行。授权撤销后不能再读取缓存结果；历史结果通过新的有效结果读取授权和固定执行身份查询。启动成功后跟踪返回的 **新 runId** 和 `id`（validationId）；继续停止脚本用该 run 的 `/stop`。检查实际执行状态、逐需求结果、前后指纹、入口、退出、checkpoint 和数据来源。代码、构建、配置或锁文件变化后，旧 pass 只代表历史版本；受影响 checkpoint 必须重新验证。常用路由和身份字段见随包提供的 [api.md](api.md)。
 
+执行完成后还要用 `results-read` 对固定资料做独立评估：先按 `executionId` 查询持久的 `executionItems`（`collection:"datasets"`），从返回条目选实际 `executionId/attemptId/datasetId`，再调用 `assessExecution`，轮询 job，按 `reportId` 读取 `executionReport` 和 `executionReportItems` 的 requirements/datasets。`GET /validations/:id` 中 worker 的 `result.datasets` 是脚本返回值，不等同于已经提交的持久数据集；其中的 `not-run` 不能直接当作独立资料评估的最终结论。来源证明、数据集完整性或绑定不足时保留机器原结论，不用脚本 assertion 或人工评审替代。具体 HTTP 路由和字段见 [api.md](api.md)。
+
 机器结论与人工评审分开保存。评审使用 accept/reject/exception、原因和范围，不能覆写机器失败。交付报告明确通过、不通过、未覆盖、证据不足，以及真实场景尚未验证的项目。
 
 工具验证先用合成站点。最终真实拼多多演示与扫码需事先与用户协调时间，且只能操作明确授权的账号环境。不要修改原 `agent-browser-evidence`、业务插件或宿主，不把真实录制/profile 放入代码仓库。最终业务脚本应另有普通 Node/Puppeteer 启动入口，可脱离客户端和 LLM 执行。

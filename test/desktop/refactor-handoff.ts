@@ -251,9 +251,20 @@ async function runLiveHandoffScenario(studio: Studio, siteUrl: string): Promise<
     await studio.startRun({ projectId, profileId: profile.id, url: siteUrl + '/orders' });
     const run = studio.required(), page = studio.current();
     await page.page.waitForSelector('#ssr-data');
+    await page.page.waitForFunction(() => document.querySelector('#api-state')?.textContent === '已就绪');
     await page.capture.flush();
     const position = page.capture.recordingPosition;
     assert.ok(position, 'The list page has a recorded position');
+    const firstPageSource = await until(async () => {
+      const artifacts = await studio.reader(run.id).artifacts({ limit: 100, maxBytes: 32768 });
+      return (artifacts.items as Array<{ kind?: string; captureStatus?: string; source?: { url?: string } }>).find(item => item.kind === 'response-body' && item.captureStatus === 'complete' &&
+        item.source?.url === `${siteUrl}/api/orders?page=1&variant=normal`);
+    }, Boolean, 'captured first-page JSON source');
+    const sourceUrl = firstPageSource?.source?.url;
+    assert.ok(sourceUrl, 'Frozen source URL must come from a captured response');
+    const paginationProof = { kind: 'numbered-pages', sourceUrl, pageParameter: 'page', pagePointer: '/page',
+      rowsPointer: '/items', entityPointer: '/id', outputEntityPath: '/id',
+      termination: { kind: 'has-next-and-total', hasNextPointer: '/hasNext', totalRecordsPointer: '/total' } };
     const draft = await dispatch('createMaterialDraft', { projectId }, 'ui');
     const edited = await dispatch('editMaterialDraft', { projectId, draftId: draft.draftId, expectedDraftRevision: draft.draftRevision,
       edits: [
@@ -263,12 +274,14 @@ async function runLiveHandoffScenario(studio: Studio, siteUrl: string): Promise<
           notes: 'Use the visible list and detail pages. API and SSR observations can corroborate; neither alone proves every rendered page was visited.',
           requirementIds: ['all-orders', 'matching-details'], annotationIds: [] } },
         { operation: 'upsert', collection: 'fields', item: { id: 'order-id', dataset: 'orders', name: 'Order ID',
-          description: 'Stable synthetic order identity', outputPath: '/id', valueType: 'string', sourcePolicy: 'any-evidenced' } },
+          description: 'Stable synthetic order identity', outputPath: '/id', valueType: 'string', sourcePolicy: 'any-evidenced',
+          sourceProof: { kind: 'json-record', sourceUrl, pageParameter: 'page', rowsPointer: '/items', entityPointer: '/id', outputEntityPath: '/id', valuePointer: '/id' } } },
         { operation: 'upsert', collection: 'fields', item: { id: 'image-order-id', dataset: 'orders', name: 'Image order ID',
-          description: 'Identity displayed by each detail image; must equal its order ID', outputPath: '/imageOrderId', valueType: 'string', sourcePolicy: 'any-evidenced' } },
+          description: 'Identity displayed by each detail image; must equal its order ID', outputPath: '/imageOrderId', valueType: 'string', sourcePolicy: 'any-evidenced',
+          sourceProof: { kind: 'json-record', sourceUrl, pageParameter: 'page', rowsPointer: '/items', entityPointer: '/id', outputEntityPath: '/id', valuePointer: '/imageOrderId' } } },
         { operation: 'upsert', collection: 'requirements', item: { id: 'all-orders', dataset: 'orders',
           description: 'Visit all pages of the synthetic orders list, collect each distinct order and its detail, and show a termination proof for pagination.',
-          rules: [{ type: 'min-rows', count: 7 }, { type: 'unique', field: 'id' }, { type: 'pagination-complete', minPages: 3 }], fieldIds: ['order-id'] } },
+          rules: [{ type: 'min-rows', count: 7 }, { type: 'unique', field: 'id' }, { type: 'pagination-complete', minPages: 3, proof: paginationProof }], fieldIds: ['order-id'] } },
         { operation: 'upsert', collection: 'requirements', item: { id: 'matching-details', dataset: 'orders',
           description: 'For each order, verify that the detail image identity matches the order ID. A mismatch is a failed result that must be diagnosed and corrected.',
           rules: [{ type: 'required', field: 'imageOrderId' }, { type: 'same-entity', field: 'imageOrderId', equalsField: 'id' }], fieldIds: ['order-id', 'image-order-id'] } },

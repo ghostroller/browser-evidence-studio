@@ -75,6 +75,9 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 | `GET /projects/:projectId/workflows` | 需 `execute` 授权查询登记流程；登记由可信客户端完成 |
 | `POST/GET /runs/:runId/validations` | 启动/查询当前项目的已登记流程，启动请求含 `input`；结果可能引用新 validation run |
 | `GET /validations/:validationId` | 执行、指纹、逐需求结果及当前版本是否仍匹配 |
+| `POST /projects/:projectId/query/executionItems` | 需 `results-read`；传 `authorizationId/executionId/collection:"datasets"/limit/maxBytes`，读取持久数据集的实际执行与 attempt 身份 |
+| `POST /projects/:projectId/operations/assessExecution` | 需 `results-read`；执行结束后传 `authorizationId/executionId/datasetIdentities:[{executionId,attemptId,datasetId}]`；返回异步 job，终态结果含 `reportId/overall` |
+| `POST /projects/:projectId/query/executionReport`、`executionReportItems` | 需 `results-read`；传 `authorizationId/executionId/reportId`，条目查询另传 `collection:"requirements"` 或 `"datasets"`、`limit/maxBytes`，读取持久机器报告及逐项来源判定 |
 | `GET /validations/:validationId/reviews` | 有界回读人工判定；新增判定须在可信客户端界面提交 |
 | `POST /runs/:runId/stop` | 停止自动化并确认静默后交还人工 |
 
