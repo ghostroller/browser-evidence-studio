@@ -290,6 +290,9 @@ async function runLiveHandoffScenario(studio: Studio, siteUrl: string): Promise<
     await until(() => ui.executeJavaScript(`!![...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='准备交给 Agent'&&!item.disabled)`), Boolean, 'selected fixed revision');
     assert.equal(await ui.executeJavaScript(`(() => {const button=[...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='准备交给 Agent'&&!item.disabled);if(!button)return false;button.click();return true})()`), true);
     await until(() => ui.executeJavaScript(`!![...document.querySelectorAll('[role="status"]')].find(item=>item.textContent?.includes('固定交接已保存'))`), Boolean, 'saved fixed handoff');
+    await ui.executeJavaScript(`([...document.querySelectorAll('button')].find(item=>item.textContent?.trim()==='返回工作台'))?.click()`);
+    await until(() => ui.executeJavaScript(`document.querySelector('.overlay-heading')===null`), Boolean, 'handoff dialog closed before the independent task');
+    await until(async () => page.view.getVisible(), Boolean, 'managed page visible for the independent task');
     const handoffs = await readdir(path.join(studio.root, 'projects', projectId, 'handoffs'));
     assert.equal(handoffs.length, 1);
     const sourceDir = path.join(studio.root, 'projects', projectId, 'handoffs', handoffs[0]);
