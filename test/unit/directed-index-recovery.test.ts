@@ -12,7 +12,7 @@ import type { ReplayPosition } from '@/contracts/recording';
 import { inspectRunRecovery, recoverRunIndexes } from '@/main/services/run-recovery';
 import type { Studio } from '@/main/services/studio';
 
-async function fixture(){
+async function fixture(twoVersions=false){
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'bes-directed-index-'));
   const runDir=path.join(root,'runs','recording');
   const store=await EvidenceStore.create(runDir,{id:'recording',projectId:'synthetic',kind:'demonstrate',mode:'synthetic',objective:'Directed index recovery'});
@@ -22,12 +22,25 @@ async function fixture(){
   await new RecordingIndexWriter(store).append(record);
   const url='https://synthetic.invalid/a.css',capture=new ResourceCapture(store);
   const resource=await capture.capture({position,frameId:'top',requestId:'request-1',url,mediaType:'text/css',data:Buffer.from('a{color:red}'),availableObservedAt:new Date().toISOString()});
+  const latestResource=twoVersions?await capture.capture({position,frameId:'top',requestId:'request-2',url,mediaType:'text/css',data:Buffer.from('a{color:blue}'),availableObservedAt:new Date().toISOString()}):resource;
   await store.seal();await store.close();
   const archive=new RecordingArchive(runDir),resources=new ResourceArchive(runDir);
-  return{root,runDir,position,url,resource,archive,resources,cleanup:()=>fs.rm(root,{recursive:true,force:true})};
+  return{root,runDir,position,url,resource,latestResource,archive,resources,cleanup:()=>fs.rm(root,{recursive:true,force:true})};
 }
 
 describe('directed recording and resource index recovery',()=>{
+  it('retains the actual latest request version rather than whichever manifest is listed first',async()=>{
+    const f=await fixture(true);try{
+      const before=await f.resources.resolve(f.url,f.position);
+      expect(before?.id).toBe(f.latestResource.id);
+      expect((await f.resources.read(before!.id)).bytes.toString()).toContain('blue');
+      await fs.rm(path.join(f.runDir,'resource-url-index'),{recursive:true});
+      await f.resources.rebuildUrlIndex();
+      const after=await f.resources.resolve(f.url,f.position);
+      expect(after?.id).toBe(before?.id);
+      expect((await f.resources.read(after!.id)).bytes).toEqual((await f.resources.read(before!.id)).bytes);
+    }finally{await f.cleanup();}
+  });
   it('distinguishes missing URL projection from an unobserved URL and publishes a complete generation',async()=>{
     const f=await fixture();try{
       const raw=path.join(f.runDir,'raw','rrweb','rrweb-000001.jsonl'),original=hashBytes(await fs.readFile(raw));
