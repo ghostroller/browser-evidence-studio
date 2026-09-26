@@ -154,7 +154,6 @@ export async function runUiLayoutScenarios(studio: Studio): Promise<void> {
     try {
       for (let step = 1; step <= 5; step++) {
         ui.sendInputEvent({ type: 'mouseMove', x: start.x + Math.round(distance * step / 5), y: start.y, modifiers: ['leftbuttondown'] });
-        await delay(25);
       }
     } finally {
       ui.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, x: start.x + distance, y: start.y });
