@@ -36,13 +36,15 @@ function streamKey(position: ReplayPosition): string {
 function entryPath(position: ReplayPosition, prefix = 'replay-index'): string { return `${prefix}/${streamKey(position)}/${position.eventSeq}.json`; }
 const generationFile = 'replay-index-current.json';
 async function indexPrefix(runDir: string): Promise<string> {
-  let pointer: { version?: number; generation?: string };
+  let pointer: { version?: number; generation?: string; manifestSha256?: string };
   try { pointer = JSON.parse(await fs.readFile(await safeFile(runDir, generationFile), 'utf8')); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT'){try{await fs.stat(path.join(runDir,'replay-index-generations'));throw new EvidenceError('REPLAY_INDEX_MISSING','Replay generation pointer is missing; directed recovery required',409);}catch(problem){if((problem as NodeJS.ErrnoException).code==='ENOENT')return 'replay-index';throw problem;}} throw new EvidenceError(error instanceof SyntaxError?'REPLAY_INDEX_CORRUPT':'REPLAY_INDEX_READ_FAILED', `Cannot read replay index generation: ${String(error)}`, 409); }
-  if (pointer.version !== 1 || !/^[a-f0-9-]{36}$/.test(pointer.generation ?? '')) invalid('Malformed replay index generation pointer');
+  if (pointer.version !== 1 || !/^[a-f0-9-]{36}$/.test(pointer.generation ?? '') || !/^[a-f0-9]{64}$/.test(pointer.manifestSha256 ?? ''))throw new EvidenceError('REPLAY_INDEX_CORRUPT','Malformed replay index generation pointer',409);
   const prefix = `replay-index-generations/${pointer.generation}`;
   try {
-    const manifest = JSON.parse(await fs.readFile(await safeFile(runDir, `${prefix}/index-manifest.json`), 'utf8')) as { version: number; generation: string; records: number };
+    const bytes=await fs.readFile(await safeFile(runDir, `${prefix}/index-manifest.json`));
+    if(bytes.length>4096||hashBytes(bytes)!==pointer.manifestSha256)throw new EvidenceError('REPLAY_INDEX_CORRUPT','Replay generation manifest hash or budget mismatch',409);
+    const manifest = JSON.parse(bytes.toString('utf8')) as { version: number; generation: string; records: number };
     if (manifest.version !== 1 || manifest.generation !== pointer.generation || !Number.isSafeInteger(manifest.records)) invalid('Malformed replay index generation manifest');
   } catch (error) { if(error instanceof EvidenceError)throw error;throw new EvidenceError((error as NodeJS.ErrnoException).code==='ENOENT'?'REPLAY_INDEX_MISSING':error instanceof SyntaxError?'REPLAY_INDEX_CORRUPT':'REPLAY_INDEX_READ_FAILED', `Published replay index generation is unavailable: ${String(error)}`, 409); }
   return prefix;
@@ -275,8 +277,9 @@ export class RecordingArchive {
     } catch(error) { if(error instanceof EvidenceError)throw error; throw new EvidenceError('REPLAY_ORIGINAL_READ_FAILED',`Cannot scan original recordings: ${String(error)}`,409); }
     try {
       for(const [key,entry] of previous){const descriptor=checkedStream(JSON.parse(await fs.readFile(await safeFile(this.runDir,`${prefix}/${key}/stream.json`),'utf8')));if(descriptor.events!==entry.ordinal+1||(await fs.stat(await safeFile(this.runDir,`${prefix}/${key}/positions.bin`))).size!==descriptor.events*24)invalid('Rebuilt replay timeline is incomplete');}
-      await atomicJson(path.join(this.runDir,prefix,'index-manifest.json'),{version:1,generation,records,streams:previous.size,corruptCount});
-      await atomicJson(path.join(this.runDir,generationFile),{version:1,generation});
+      const manifestFile=path.join(this.runDir,prefix,'index-manifest.json');
+      await atomicJson(manifestFile,{version:1,generation,records,streams:previous.size,corruptCount});
+      await atomicJson(path.join(this.runDir,generationFile),{version:1,generation,manifestSha256:hashBytes(await fs.readFile(manifestFile))});
     } catch(error) { throw new EvidenceError('REPLAY_INDEX_WRITE_FAILED',`Replay index generation ${generation} remains unpublished after validation/publication failure: ${String(error)}`,507); }
     return { records, corruptCount, corrupt };
   }

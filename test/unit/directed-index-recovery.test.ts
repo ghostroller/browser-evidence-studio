@@ -90,6 +90,23 @@ describe('directed recording and resource index recovery',()=>{
       expect(staged.length).toBe(2);
     }finally{vi.restoreAllMocks();await f.cleanup();}
   });
+  it('rejects valid JSON manifest tampering before it can hide an observed URL or replay position',async()=>{
+    const f=await fixture();try{
+      await f.archive.rebuild();await f.resources.rebuildUrlIndex();
+      const replayPointer=JSON.parse(await fs.readFile(path.join(f.runDir,'replay-index-current.json'),'utf8'));
+      const resourcePointer=JSON.parse(await fs.readFile(path.join(f.runDir,'resource-url-index-current.json'),'utf8'));
+      const replayManifest=path.join(f.runDir,'replay-index-generations',replayPointer.generation,'index-manifest.json');
+      const resourceManifest=path.join(f.runDir,'resource-url-index-generations',resourcePointer.generation,'index-manifest.json');
+      const changedReplay=JSON.parse(await fs.readFile(replayManifest,'utf8'));changedReplay.records=0;await fs.writeFile(replayManifest,JSON.stringify(changedReplay));
+      const changedResource=JSON.parse(await fs.readFile(resourceManifest,'utf8'));changedResource.urls={};await fs.writeFile(resourceManifest,JSON.stringify(changedResource));
+      await expect(f.archive.window(f.position)).rejects.toMatchObject({code:'REPLAY_INDEX_CORRUPT'});
+      await expect(f.resources.resolve(f.url,f.position)).rejects.toMatchObject({code:'RESOURCE_INDEX_CORRUPT'});
+      const fake={root:f.root,runs:[{id:'recording',status:'sealed'}],active:undefined} as unknown as Studio;
+      expect(await inspectRunRecovery(fake,{runId:'recording'})).toMatchObject({indexDiagnostics:{replay:{state:'corrupt'},resources:{state:'corrupt'}}});
+      await f.archive.rebuild();await f.resources.rebuildUrlIndex();
+      expect((await f.resources.resolve(f.url,f.position))?.id).toBe(f.resource.id);
+    }finally{await f.cleanup();}
+  });
   it('keeps corrupt original bytes visible and rejects a live writer',async()=>{
     const f=await fixture();try{
       const live=await EvidenceStore.open(f.runDir);
