@@ -1,0 +1,17 @@
+{
+  "name": "browser-evidence-orders-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "packageManager": "npm@11.19.0",
+  "scripts": {
+    "start": "node standalone.mjs"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "puppeteer-core": "25.11.0"
+  }
+}
