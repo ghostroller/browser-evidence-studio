@@ -1,5 +1,18 @@
 # 实际验证记录
 
+## 2026-09-26 R1–R8 限界修复与真实 UI 闭环
+
+本批在主目录 `main` 集成 A/D/E 的必要提交后执行，Node `v24.21.0`、npm `11.19.0`；锁定依赖未改。只使用合成站点和独立 `output/desktop-*` 数据，不使用真实账号。原始录制、失败日志及工作树均保留。逐项范围见 [本批交接](refactor-handoffs/G-R1-R8-20260926.md)。
+
+| 实际命令 | 当前整合代码结果 / 证据 |
+| --- | --- |
+| `npm test` | **50 文件 / 298 项通过**；`output/full-unit-refactor-20260926-final.log`。含真实 rrweb 移动节点、导航 URL 与资产区分、连续播放及跨 full snapshot、选择回执、授权范围、坏目录隔离。 |
+| `npm run typecheck`、`npm run build` | 均通过；`output/typecheck-refactor-20260926-final.log`、`output/build-refactor-20260926-final.log`。构建仍有现有依赖的 `use client`/sourcemap 提示。 |
+| `node test/desktop/launch.js --refactor-recording` | record/offline **2/2 通过**；`output/desktop-1790384001917/refactor-recording-summary.json`、`output/refactor-recording-run-20260926-production-2.log`。源站关闭后新进程的生产 ReplayHost 实测主文档 CSSOM/adopted style、同源 frame CSS/图片及脚本阻断，资源状态 `ready`、拦截请求 0、缺失诊断 0；历史 CSS/字体/图片版本和源定位器也通过。 |
+| `node test/desktop/launch.js --refactor-system` | **通过**；`output/desktop-1790384521194/refactor-system-report.json`、`output/refactor-system-run-20260926-mixed-catalog-4.log`。关闭源站后真实 React UI 使用生产 ReplayHost 播放/暂停/前后精确定位 241 条事件，核对移动节点源属性；从卡片增改注释、就地关联需求、字段选择及固定版本派生；真实 worker 的正确值通过、错误值失败、辅助证据 partial 仍保留 2 条提交记录；任务授权撤销后读取拒绝。人为放入合成损坏目录后，UI 显示 `INDEX_RECOVERY_REQUIRED` 与非法目录诊断，好数据仍可打开，额外目录不能成为已完成执行的可选数据集。 |
+
+第一次受限桌面启动的 GPU 失败、生产回放将普通链接误判为缺失资源、坏目录断言与 UI fixture 定位失败均有原日志保留；最终通过不覆盖失败现场。已完成执行的目录新增/损坏项只读诊断，不改原件。此轮未运行完整旧桌面矩阵、跨源/其余资源边界、安装包、30 分钟新架构长测、新 Agent 独立交付或真人业务验收，不能由以上专项外推。
+
 ## 2026-09-26 S0 重构验收
 
 真实 Node 24.21.0 / npm 11.19.0，Electron 44.4.3 / Puppeteer 25.11.0 / rrweb 2.1.6；依赖锁未改。最终工作包命令、提交、产物、初次失败及未测项见 [S0 交接](refactor-handoffs/S0.md) 与 [基线](refactor-baseline.md)。本轮 28 文件/161 项 Vitest 通过，类型检查通过；真实 S0 专项 `npm.cmd run test:integration -- --refactor-s0` 通过，产物 `output/desktop-1790364663793`。
