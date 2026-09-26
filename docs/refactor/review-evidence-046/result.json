@@ -1,0 +1,20 @@
+{
+  "node": "v22.16.0",
+  "scope": "Extracted lifecycle methods and export-shape arithmetic; no project dependencies or Electron execution",
+  "lifecycle": {
+    "beforeStaleClose": 1,
+    "afterStaleClose": 2,
+    "staleCloseError": "Replay view is no longer active",
+    "wantedOpen": {
+      "id": "wanted-C",
+      "status": "closed"
+    },
+    "remainingActive": "current-B"
+  },
+  "exportSize": {
+    "checkpointCount": 250,
+    "checkpointProjectionBytes": 116916,
+    "manifestLimit": 65536,
+    "includesOtherManifestSections": false
+  }
+}
