@@ -21,6 +21,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "npm run build && node test/desktop/launch.js",
+    "test:journey": "npm run build && node test/desktop/launch.js --product-journey",
     "test:desktop": "npm run test:integration",
     "test:startup": "node test/desktop/launch.js --startup-only --dev",
     "test:soak": "npm run build && node test/desktop/launch.js --soak=30",
@@ -28,7 +29,8 @@
     "test:release-assets": "node test/release/package-assets.mjs",
     "example:jd-account": "node examples/jd-account-export/standalone.mjs",
     "package": "electron-forge package",
-    "make": "electron-forge make"
+    "make": "electron-forge make",
+    "demo:product": "node --import tsx scripts/product-demo.ts"
   },
   "dependencies": {
     "ajv": "8.20.0",
