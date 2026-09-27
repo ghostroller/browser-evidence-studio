@@ -101,7 +101,7 @@ Electron main 管生命周期、页面和控制权；可信 renderer 只管界�
 
 BrowserSession 是页面与控制权的主体：环境配置 → 无需 store/capture 的 SessionRuntime → 可选录制或执行。`ManagedPage.capture` 是录制附件，首次打开环境不创建 EvidenceStore 或伪录制。M1 沿用项目 profile 标识保存环境的非敏感入口、检查与 storageRef；更完整的环境管理按产品 M2 单列，不能将这些配置理解为 Cookie 快照。
 
-`state.session` 独立于 `state.active`。封存停止注入/监听、排空采集和 writer，保留 WebContentsView、profile、输入和 JS 现场；下一段使用新 Run/store 和 full snapshot，不导航、不续写封存原件。关闭页/会话是可信 UI 的显式操作，等待销毁确认，beforeunload 拒绝或超时保留现场。导航代际在未录制时继续维护。授权绑定项目/session/profile/page/能力，执行按需建立验证记录，原 Gate、撤销、取消和人工输入互斥不变。
+`state.session` 独立于 `state.active`。封存停止注入/监听、排空采集和 writer，保留 WebContentsView、profile、输入和 JS 现场；下一段使用新 Run/store 和 full snapshot，不导航、不续写封存原件。关闭页/会话是可信 UI 的显式操作，等待销毁确认，beforeunload 拒绝或超时保留现场。导航代际在未录制时继续维护。授权绑定项目/session/profile/page/能力，普通页面读写与后台页创建以当前 SessionRuntime 为主体，历史 run 路由仍要求精确的活动 run。操作连接、取消和来源核验共用原 Gate；无录制的命令与控制冲突进入 session audit，不能调用封存 writer。执行按需建立自己的验证记录，人工输入互斥不变。
 
 旧 profile 的 partition 映射固定为 `persist:bes-${projectId}-${profileId}`，新 storageRef 保留原 key。迁移仅追加非敏感元数据并保留备份，不复制或移动活动 profile 数据库、不改旧录制/资料 hash。历史 S0 的停录不关页证据见 [交接](refactor-handoffs/S0.md)，它不证明首次独立环境或本轮产品门已通过。
 
@@ -181,7 +181,7 @@ actor、controller、source 分开：当前处于人工控制不证明每个 DOM
 
 ### 4.4 原始 checkpoint 与用户保存点
 
-用户入口是 `captureAndAuthor` 编排：核对 session/page/generation 与选择意图 → 持久源位置与原始采集收据 → 取得工作草稿 → 幂等关联 CheckpointCard → 返回编辑定位。原始 checkpoint API 继续用于 runner 证据和诊断，不能再与卡片组成两套正式创作流程。收据与资料是两个存储边界，关联失败保留原件、operationId 和可重试状态，不删除已确认材料。
+用户入口是 `captureAndAuthor` 编排：核对 session/page/generation 与选择意图 → 持久源位置与原始采集收据 → 幂等关联指定草稿的 CheckpointCard → 返回原编辑意图的定位。operation 固定项目、草稿、用途与来源身份；采集前失败、采集中、原件已保存、关联完成和来源失效分别处理。响应未知先查询 operation；有收据的重试只关联，没有收据时重新核对原页面与文档代际，不以当前页替换旧来源。原始 checkpoint API 继续用于 runner 证据和诊断，不能再与卡片组成两套正式创作流程。收据与资料是两个存储边界，关联失败或取消均不删除已确认材料。
 
 实时选择先把源节点固化成耐久 HistoricalElementRef，再提交字段绑定。实时源时间与旧卡片 anchor 不同时新建例证，不能回填旧位置；历史选择在卡片 anchor 上进行。SelectionIntent 绑定选择 ID、目的、草稿修订、页面/导航或历史位置与交互代际；取消/切页/导航后的迟到回执失效。工具高亮不改业务节点 inline style，也不作为业务来源入录。
 
@@ -312,21 +312,21 @@ HTTP 写操作携带 leaseEpoch，旧控制权请求返回冲突；原生 Puppet
 
 请求重试只限安全动作；点击提交、下载触发等不盲目自动重复。崩溃后不直接重放最后一步，先显示页面状态和执行断点。
 
-## 8. 本机 HTTP API 目标
+## 8. 本机 HTTP API
 
-路径均以 /v1 开始；下面是实现合同草案，不是现有命令。
+路径均以 /v1 开始；下表为公共入口边界，完整字段与错误语义见 [API](api.md)。可信 UI 命令不因共享服务方法而成为 HTTP 权限。
 
 | 能力 | 主要路由 |
 | --- | --- |
-| 状态/能力 | GET /health，GET /capabilities |
-| 项目 | GET/POST /projects，GET/PATCH /projects/:id |
-| 登录环境 | GET/POST /projects/:id/profiles，POST /profiles/:id/save |
-| 录制 | POST /runs，GET /runs/:id，POST /runs/:id/pause、resume、seal |
-| 页面/操作 | GET /runs/:id/pages，POST /runs/:id/actions，GET /runs/:id/snapshot |
+| 状态/能力 | GET /health，GET /capabilities；GET /state 需任务授权 |
+| 项目 | GET /projects，GET /projects/:id；创建与设置由可信 UI 完成 |
+| 登录环境 | GET /projects/:id/profiles；创建、打开、检查、保存由可信 UI 完成 |
+| 录制 | GET /runs，GET /runs/:id；开始、暂停、继续、封存由可信 UI 完成 |
+| 页面/操作 | GET /sessions/:id/pages、snapshot，POST /sessions/:id/actions、pages；无录制可用。对应 run 路由只接受精确的当前活动 run |
 | checkpoint | POST /runs/:id/checkpoints，GET /runs/:id/checkpoints |
 | 证据 | GET /runs/:id/summary、gaps、events，GET /artifacts/:id/content |
-| 协作 | POST /runs/:id/handoffs，POST /handoffs/:id/release |
-| 执行/验收 | POST /validations，GET /validations/:id，GET/POST /validations/:id/reviews |
+| 协作 | POST /runs/:id/handoffs，POST /handoffs/:id/cancel；人工交还由可信 UI 完成 |
+| 执行/验收 | POST /validations，GET /validations/:id，GET /validations/:id/reviews；人工评审由可信 UI 完成 |
 | 异步任务 | GET /jobs/:id，POST /jobs/:id/cancel |
 
 actions 首版有限集合：navigate、click、fill、press、scroll、select；必须指定 run/page、定位依据和控制权。snapshot 返回 bounded DOM/可访问性摘要及带 generation 的短期元素 ref；ref 必须直接出现在响应里，过期拒绝执行，不要求人开 DevTools 找 ref。

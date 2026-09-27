@@ -10,11 +10,14 @@ HTTP 仍为 /v1。`state.session` 描述 sessionId/project/profile、可选 reco
 | --- | --- |
 | `createProfile` / `openEnvironment` / `checkEnvironment` / `saveProfile` / `closeSession` | 创建环境配置、独立打开、只读检查、保留持久状态与关闭。检查时间/来源与 savedAt 分开，保存不推断登录成功 |
 | `workingMaterialDraft` | 取得或建立任务工作草稿，不要求用户输入 UUID；新草稿可固定 TaskBrief，旧版本不回填 |
-| `captureAndAuthor` | operationId 对应原始收据与唯一卡片；核对实时身份、保存源位置，再关联草稿。关联失败返回部分成功与可重试收据，不能删原件重做 |
+| `captureAndAuthor` | operationId 固定项目、草稿、用途、来源身份和请求指纹；核对来源后采集并关联唯一卡片。已有原件只重试关联，关联成功恢复原来的字段取样目的，不能删原件重做 |
+| `authoringOperation` | 查询指定项目/草稿内原操作的采集与关联状态；响应未知时先查询，不能直接新建采集。没有收据且原来源失效时重新选择，不用旧位置采当前页面 |
 | `inspect` | 实时 SelectionIntent 含 selectionId；选中源节点先耐久保存，回执绑定页面、导航代际与本次意图。取消/迟到结果不能换掉既有绑定 |
 | `previewImplementation` / `confirmImplementation` | 读取登记目录内 implementation.json，以资料 hash/草稿修订/提案 hash 约束确认；只提交技术映射，不改字段含义或来源政策 |
 
-保存点/字段使用同一编辑工作区。历史绑定使用已保存 HistoricalElementRef，实时选择固化当下作为新的现场例证，不把当下节点回填旧 anchor。资料写命令在服务端补齐单一 requirement.dataset 并拒绝矛盾；旧固定版本读取/hash 不做默认补齐。普通说明修改与新绑定来源校验分开，保留、替换和解除绑定有显式语义。
+保存点/字段使用同一编辑工作区。发布前冻结当前 dirty 编辑，一次 `editMaterialDraft` 提交卡片、需求、字段和普通注释，关系在同一批内容中合并；`publishMaterialDraft` 使用该保存回执的准确修订，不能在新修订号下重新提交旧 render 的关系。保存失败或冲突时不发布。项目/草稿回执在任何编辑状态副作用前核对归属；旧修订及旧格式本机缓存保留输入并要求先核对，不代表服务端已保存。
+
+历史绑定使用已保存 HistoricalElementRef，实时选择固化当下作为新的现场例证，不把当下节点回填旧 anchor。资料写命令在服务端补齐单一 requirement.dataset 并拒绝矛盾；旧固定版本读取/hash 不做默认补齐。普通说明修改与新绑定来源校验分开，保留、替换和解除绑定有显式语义。
 
 startValidation 的 executionMode 为 current-page-test 或默认 from-start-validation。当前页必须携带匹配的 projectId/profileId/pageId/generation，使用新执行记录保留原 target；从起点总是新建页面，startUrl 可为 HTTP(S)/about:blank，省略则取当前 URL、空 session 为 about:blank。模式和起点写入 run/validation；共享 profile 不等于完整隔离。停止仍绕过业务队列，UI 目标绑定支持 validation 启动转运行的同一身份，旧执行不能停止新执行。旧一次启动 grant 只保留历史审计，当前 HTTP 使用任务授权。
 
@@ -60,7 +63,9 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 
 验收启动 job 也有独立的取消信号，覆盖服务队列等待、旧 run 封存、新 run 创建、控制权转换和 worker 准备。取消排队中的启动不会停止其他执行，也不会在队列恢复后继续启动。启动 job 成功仅表示获得验收记录；之后停止正在运行的脚本使用当前 run 的 `/stop`，而不是取消已经成功的启动 job。
 
-已有 run 的 HTTP 写操作要求当前 `leaseEpoch`。已活跃运行的普通 API 写操作要求 agent 控制；先由客户端交出控制权。取消人工交接和停止 runner 可由 agent 发起；人工交还控制只能在可信客户端确认，HTTP Bearer token 不能替代人工确认。`/state`、项目、profile、workflow 和 run 发现需要任务授权，并按项目和能力裁剪；`/health`、`/capabilities` 只需实例 Bearer。读取实际 `runId/pageId/generation/leaseEpoch`，不要按 URL 或当前活动窗口猜测目标。HTTP snapshot、checkpoint 和 action 必须携带 `pageId` 和 `generation`；服务按指定已登记且由当前任务授权的页面采集或操作，未知页面和过期代际返回错误。授权创建的后台页可以读取和操作，不改变前台选择。切换前台页面会递增 leaseEpoch，排队写操作在实际执行时重新核验。路由中的 ID 优先于请求体或查询中的 ID 别名。服务层继续核验运行、页面、导航代际和控制者；只通过 HTTP lease 校验不代表能控制原生 Puppeteer，managed runner 使用独立操作 transport 闸门。
+页面写操作要求当前 `leaseEpoch`、相应任务能力与 agent 控制权；只读页面查询不要求交出人工控制权。人工交还控制只能在可信客户端确认，HTTP Bearer token 不能替代人工确认。`/state`、项目、profile、workflow 和 run 发现需要任务授权，并按项目和能力裁剪；`/health`、`/capabilities` 只需实例 Bearer。从 state 读取实际 `sessionId/profileId/pageId/generation/leaseEpoch`；只有当前存在录制或执行时才有可用于实时 run 路由的 runId，不按 URL 或活动窗口猜目标。
+
+普通 pages/snapshot/action/createPage 使用 session 路由，无需 active run；capabilities 的 `pageCommands.session` 明确 `requiresRecording:false` 和路由，`pageCommands.run` 明确 `requiresCurrentRecording:true`。旧 run 实时路由仍严格核对当前活动 run，封存 runId 不能代指 session。HTTP snapshot、checkpoint 和 action 必须携带 `pageId/generation`；checkpoint 仍要求录制。未知页面、过期代际、撤销授权和错误来源被拒绝；授权创建的后台页可以读取和操作，不改变前台选择。切换前台页递增 leaseEpoch，排队写操作在实际执行时重新核验。路径 ID 优先于请求体或查询中的同名 ID。服务继续使用 managed Puppeteer 操作闸门及取消边界；无录制时命令审计进入 session audit，不能写封存 store。
 
 ## 路由
 
@@ -72,10 +77,10 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 | `GET /projects`、`GET /projects/:projectId` | 需任务授权，仅显示授权项目；项目创建/设置由可信客户端完成 |
 | `GET /projects/:projectId/profiles` | 需授权，按项目查看命名登录环境；创建由可信客户端完成 |
 | `GET /runs`、`GET /runs/:runId` | 需 `history-read`，按授权项目读取；创建由可信客户端完成 |
-| `GET /runs/:runId/pages`、`GET /runs/:runId/snapshot` | 页面登记和有界实时元素摘要。前者至少带 `authorizationId`；后者还带当前 `pageId/generation`。可选 `projectId/profileId/sessionId` 若提供必须匹配当前身份；服务仍核对 run、授权的 page/target/origin 与撤销状态。只读 GET 不要求重复提交这些身份字段或写操作的 lease |
-| `POST /runs/:runId/pages` | 需 `page-create`、当前 session/profile/page/generation/lease 及授权来源域；创建后台页并返回新 page/target/generation，不切换前台。取消中的创建不会遗留可操作页面 |
+| `GET /sessions/:sessionId/pages`、`GET /sessions/:sessionId/snapshot` | 无录制也可读取页面登记和有界实时摘要。需 `authorizationId`；snapshot 另带 `pageId/generation`。可省略只读请求的 project/profile，若提供则必须匹配；校验授权 page/target/origin。只读不要求写 lease。对应 `/runs/:runId/pages`、`snapshot` 仅在该 run 当前活动时可用 |
+| `POST /sessions/:sessionId/pages` | 需 `page-create`、当前 project/profile/page/generation/lease 及授权来源域；创建后台页并返回新 page/target/generation，不切换前台，不自动开启示范。取消中的创建不会遗留可操作页面；对应 `/runs/:runId/pages` 另要求精确活动 run |
 | `POST /runs/:runId/control` | 旧路由保留为拒绝；控制权只由可信客户端管理 |
-| `POST /runs/:runId/actions` | `pageId/leaseEpoch/generation/type`；支持 navigate、click、fill、press、scroll、select 的有限参数 |
+| `POST /sessions/:sessionId/actions` | `authorizationId/projectId/profileId/pageId/leaseEpoch/generation/type`；需 `page-act`，支持 navigate、click、fill、press、scroll、select。无录制可用；对应 `/runs/:runId/actions` 另要求精确活动 run |
 | `POST /runs/:runId/select-page` | 选择已登记页面；人工元素检查和暂停/继续人工输入仅在可信客户端界面提供 |
 | `POST /runs/:runId/pause-capture`、`resume-capture` | 暂停/继续采集，会形成显式证据缺口 |
 | `POST /runs/:runId/checkpoints`、`GET /runs/:runId/checkpoints` | runner/诊断的原始采集收据；保存/读取 `key/title/description/requirementIds` 和材料引用。普通用户创作使用可信 UI captureAndAuthor，不能要求再手工建卡片 |

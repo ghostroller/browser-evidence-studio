@@ -6,9 +6,10 @@
 | --- | --- |
 | 发现 | `GET /v1/health`、`GET /v1/capabilities` 只需当前连接 Bearer；`GET /v1/state?authorizationId=...` 返回授权裁剪后的 session、可选活动 run、页面、generation 与 lease |
 | 固定资料 | `POST /v1/projects/:projectId/query/materialRevision` 传 `authorizationId/revisionId/contentHash`；`materialCollection` 另传 `kind:"revision"/collection/limit/maxBytes` 和本次分页 `cursor` |
-| 现场页面 | `GET /v1/runs/:runId/pages?authorizationId=...`；`GET /v1/runs/:runId/snapshot?authorizationId=...&pageId=...&generation=...`。只读 GET 可省略 `projectId/profileId/sessionId`；若提供，必须匹配当前身份。服务仍核对授权的 run、page、target、origin 与撤销状态 |
+| 现场页面 | `GET /v1/sessions/:sessionId/pages?authorizationId=...`；`GET /v1/sessions/:sessionId/snapshot?authorizationId=...&pageId=...&generation=...`。无录制可用；只读 GET 可省略 project/profile，若提供必须匹配。核对授权的 page/target/origin 与撤销状态，不要求写 lease。旧 `/runs/:runId/...` 对应路由仅接受当前活动 run |
 | 历史证据 | `GET /v1/runs/:runId/summary?authorizationId=...`、`gaps`、`events`、`checkpoints`、`artifacts`，随后按 ID 有界读正文；须有 `history-read` |
-| 页面动作 | `POST /v1/runs/:runId/actions` 传 `authorizationId/projectId/profileId/sessionId/pageId/generation/leaseEpoch/type` 和该动作的受支持参数；需 `page-act`，人工持有控制权时拒绝 |
+| 页面动作 | `POST /v1/sessions/:sessionId/actions` 传 `authorizationId/projectId/profileId/pageId/generation/leaseEpoch/type` 和受支持参数；需 `page-act`，人工持有控制权时拒绝；无录制时写 session audit，旧 run 对应路由仍要求精确活动身份 |
+| 后台页面 | `POST /v1/sessions/:sessionId/pages` 传 `authorizationId/projectId/profileId/pageId/generation/leaseEpoch/startUrl`；需 page-create 及目标来源域授权。返回新 page/target/generation，不切换前台，不开启示范 |
 | 固定版验收 | `POST /v1/validations` 传 `authorizationId/projectId/sessionId/profileId/pageId/leaseEpoch/materialRevisionId/materialContentHash/input`，当前页模式另传 generation；停录后的 session 可独立启动。已有活动 run 可用 `/v1/runs/:runId/validations`。保存 jobId，查询终态后读实际 validationId 结果 |
 | 独立资料评估 | 执行结束后，`POST /v1/projects/:projectId/query/executionItems` 传 `authorizationId/executionId/collection:"datasets"/limit/maxBytes`，从持久结果取得 `executionId/attemptId/datasetId`；`POST /v1/projects/:projectId/operations/assessExecution` 传 `authorizationId/executionId/datasetIdentities:[{executionId,attemptId,datasetId}]`，轮询 job，保存返回的 `reportId/overall` |
 | 评估报告 | `POST /v1/projects/:projectId/query/executionReport` 传 `authorizationId/executionId/reportId`；`executionReportItems` 另传 `collection:"requirements"` 或 `"datasets"`、`limit/maxBytes`，逐项核对机器结论和来源状态 |
@@ -25,4 +26,4 @@
 
 `GET /runs/:runId/artifacts/:artifactId?jsonPath=/field/0` 返回 present/null、missing 或解析失败，不能合并为“无数据”。文本片段按 UTF-8 分页，binary 单独走 `/content`，不要请求或生成 base64。
 
-409 的旧控制权/错误页面需要重新读取状态并重新判断当前授权；不能直接换成较新的 lease 继续盲目点击。未知 action/eval/CDP 路由不属于公共协议。
+capabilities 的 `pageCommands.session.requiresRecording=false` 明确无录制入口，`pageCommands.run.requiresCurrentRecording=true` 明确旧 run 实时路由的限制。409 的旧控制权/错误页面需要重新读取状态并重新判断当前授权；不能直接换成较新的 lease 继续盲目点击，也不能改用封存 runId。未知 action/eval/CDP 路由不属于公共协议。

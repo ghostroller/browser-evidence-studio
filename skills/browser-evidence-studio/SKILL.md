@@ -7,7 +7,7 @@ description: 接续 Browser Evidence Studio 已固定资料版本的项目任务
 
 开发实例可以用 `npm run start:agent` 的 `output/dev/latest.json` 定位连接及日志；安装版以可信客户端展示或交接文件为准。再读 `/v1/capabilities`、带 `authorizationId` 的 `/v1/state` 和固定资料，按 ID 读取有界证据。不要输出 Cookie、登录 profile、完整 DOM 或 base64。
 
-用户先在独立登录环境准备网站状态，再示范并通过统一保存点/字段工作区形成资料。`active=null` 可以同时有已准备的 session，停录后不要求重录登录或示范才能接续执行。规范目标读取固定资料的 `taskBrief`；旧版本缺失时保持未固定，不用当前 Project.objective 补写历史。技术输出/来源映射由 Agent 根据这些资料提出，经正常可读确认入口固定为新版本，不让用户填写内部 ID 或 proof JSON。具体映射与执行见 validation.md。
+用户先在独立登录环境准备网站状态，再示范并通过统一保存点/字段工作区形成资料。`active=null` 可以同时有已准备的 session；在相应授权范围内，通过 session 页面路由探索或接续执行，不需要重录登录或示范。规范目标读取固定资料的 `taskBrief`；旧版本缺失时保持未固定，不用当前 Project.objective 补写历史。技术输出/来源映射由 Agent 根据这些资料提出，经正常可读确认入口固定为新版本，不让用户填写内部 ID 或 proof JSON。具体映射与执行见 validation.md。
 
 按当前工作阅读一份说明：
 

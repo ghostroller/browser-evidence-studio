@@ -4,7 +4,7 @@
 
 优先读取已有 JSON 字段、内嵌 JSON 和已保存 DOM 片段。区分请求跳转 hop、page/frame、导航代际。HTML 与 API 都可作为来源，不预先假设某一种一定完整。时间邻近只能标注 temporal 关联，不推断因果。脚本侧 Node fetch/Axios 不是浏览器网络记录器的自动覆盖范围。
 
-需要有限浏览器探索时，先从 state 获取实际 session/profile/page/generation/lease 与当前能力；有录制时再使用其 runId。各路由的录制前置以 capabilities/API 为准，不为补齐一个 ID 擅自开始人工示范。通过受支持的 actions 操作，不访问内部 CDP或任意 eval。不把 snapshot 的短期 ref/坐标当成最终可迁移定位器。
+需要有限浏览器探索时，先从 state 获取实际 session/profile/page/generation/lease 与当前能力。按 capabilities 的 pageCommands 使用 `/v1/sessions/:sessionId/pages`、`snapshot`、`actions`；创建后台页用 `POST .../pages`。这些操作无需 active run，读取与写操作分别要求 page-read 和相应写能力；人工控制时仍拒绝写操作。旧 run 路由只接受当前活动 run，不能用封存 runId 代替 session，也不为补齐 ID 开始人工示范。通过受支持的 actions 操作，不访问内部 CDP 或任意 eval。不把 snapshot 的短期 ref/坐标当成最终可迁移定位器。
 
 实时选取的可靠依据是客户端已耐久固化的 HistoricalElementRef，不是 active.selection 中的描述文字。实时当下不能回填到旧 anchor；请求补例证时新增现场保存点并保留旧来源。无录制只能普通检查，绑定需用户明确开始录制或受支持的单次取样。取消选取或浏览卡片不意味着解除旧字段绑定；资料编辑保留/替换/解除必须明确。
 
