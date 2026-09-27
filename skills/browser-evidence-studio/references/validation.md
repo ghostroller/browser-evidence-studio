@@ -8,7 +8,7 @@ checkpointKey 与 requirementId 稳定对应。结构化输出声明 sourceRefs/
 
 固定任务的数据集用 `beginDataset → appendBatch → finishDataset` 保存，绑定真实 executionId/step attemptId/datasetId；每批带来源与耐久回执，取得数据后及时提交。旧 emitData 返回值不能代替这些持久数据集。后续失败时保留已提交批次和真实错误，未完成阶段不补空占位；失败执行不判通过。断线先读 `errorSource`、`error` 与 `operationTransportClose`，worker 本地主动关闭可能只是异常清理；旧报告没有这些字段时保留未知。
 
-用户提供字段含义，Agent 提供技术映射。在登记代码目录生成 `implementation.json`：`{materialContentHash,fields:[{fieldId,outputPath,sourceProof?}]}`，依据读到的真实固定资料引用 fieldId 和 hash。当前 M1 可用既有 dom-text/json-record proof 类型；未知时不造 proof。用户在保存点工作区“读取实现器映射”并确认可读摘要，应用核验提案与草稿修订后形成待固定的新草稿；随后使用新固定版执行。不可修改 description/dataset/sourcePolicy 或完整性要求来获取通过。语义变更需新的任务候选与明确确认，映射确认不是人工接受执行结果。
+用户提供字段含义，Agent 提供技术映射。在登记代码目录生成 `implementation.json`：`{materialContentHash,fields:[{fieldId,outputPath,sourceProof?}]}`，依据读到的真实固定资料引用 fieldId 和 hash。完整 dom-text/json-record 字段、指针语义、字符串显示值与类型限制见 [workflow.md 的来源证明](workflow.md#来源证明的完整形状)，未知时不造 proof。用户在保存点工作区“读取实现器映射”并确认可读摘要，应用核验提案与草稿修订后形成待固定的新草稿；随后使用新固定版执行。不可修改 description/dataset/valueType/sourcePolicy 或完整性要求来获取通过。语义矛盾应报告；真正需要变更时先取得明确确认、形成新的任务候选，保留原版本及失败记录。映射确认不是人工接受执行结果。
 
 需要人工协助的点在 manifest 中声明。requestHuman 在 transport 闸门静默后等待，完成条件由脚本给出。不要注入跨交接继续点击的定时器。强制接管会停止 runner，不承诺恢复原执行栈；从显式恢复入口或新 run 重试。
 

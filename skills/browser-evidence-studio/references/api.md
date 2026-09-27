@@ -16,6 +16,22 @@
 
 普通 Puppeteer 工作流的文件形状与 reporter 接口见 [workflow.md](workflow.md)，验收顺序见 [validation.md](validation.md)。路径 `/v1` 已写入上表；不要重复附加此前废弃的一次性启动授权字段。
 
+## 固定示范节点与历史定位
+
+以下是同步只读 `POST /v1/projects/:projectId/query/<operation>`，直接返回结果，不返回 jobId。需本项目 `history-read` 授权；不要求实时 session、写 lease 或活动录制。请求公共部分为 `{authorizationId,maxBytes:24576,limit:10}`；路径中的 projectId 为准。
+
+| operation | 另传的请求字段 | 返回 |
+| --- | --- | --- |
+| `historicalState` | `position`：直接使用固定卡片 `anchor` 或字段 `target.position` | `{position,reliability,gaps,viewport}`；状态摘要，不是完整 DOM |
+| `historicalNode` | `target`：直接使用固定字段或注释的完整 `target` | SourceNode：`ref/tagName/namespaceURI/documentUrl/baseURI/attributes/properties/text/metadataComplete`，可能含 `presentation` |
+| `historicalLocators` | 相同 `target`，续页传上次 `nextCursor` 为 `cursor` | `{items,nextCursor?,returnedBytes,outputTruncated}`；每项有 `steps/source/historical/live/warnings` |
+
+`position` 完整形状为 `{recordingId,pageId,documentId,streamEpoch,sourceTimeMs,eventSeq}`；DOM `target` 为 `{kind:"dom-node",position,frameId,mirrorScopeId,nodeId}`。直接传从固定资料读到的对象，不从 nodeId、时间、当前 live 页或文件路径拼造身份。`historicalNode` 不接受 visual-region。
+
+SourceNode 的属性、文本和源 URL 使用 `{status:"present",value:...}`、`{status:"absent"}` 或 `{status:"redacted"|"missing"|"unsupported",reason}`。缺失与空字符串不同。`presentation` 若 present，其 value 含 `text/visibility/sampledAt/rect/basis`；只有该事件边界上的真实可见采样才表示显示值。定位器 `steps` 为 `{kind:"frame"|"shadow"|"target",strategy:"css"|"xpath",expression}` 数组；`historical.status` 说明历史唯一性，`live.status:"not-live-checked"` 不证明当前页面仍有效。
+
+节点/状态超过预算明确返回 413，不能当作空节点；定位器按 cursor 分页。源不可用、结构有 gap 或元数据不完整时保留实际状态，不从变形回放 DOM 或当前页面回填过去。来源证明结构与这些历史引用是不同协议，见 [workflow.md](workflow.md#来源证明的完整形状)。
+
 从客户端显示的 `connection/agent-connection.json` 读取 `address/token`，请求统一带 `Authorization: Bearer ...`。连接每次启动变化。不要打印连接对象、认证头或寻找内部 CDP 端口。401 时重读已知连接文件一次；连接失效时检查客户端是否启动，不改 profile 或锁文件。
 
 开发诊断入口 `output/dev/latest.json` 的 `summary` 指向本次 `launch.json`；其中有日志、数据根、`connection` 和 `lifecycleLatest` 的绝对路径（路径位于 `files`）。先读摘要和日志末尾。Forge 的 `running` / 退出码 0 不证明应用就绪；应用需由 health 确认。连接文件的 `createdAt`、生命周期的 `startedAt` 应不早于 launch.startedAt，连接与 health 的 `instanceId` / `processId` 应相同，生命周期 `processId` 也应匹配。时间或身份不符表示旧实例或关联未确认，不把它报告为本次启动成功；不可为查连接自动重启用户客户端。此入口不含 token，历史 `npm start` 的控制台不能补录。默认 Windows 开发连接路径为 `%APPDATA%/BrowserEvidenceStudio-dev/connection/agent-connection.json`，自定义 `BES_DATA` 优先以启动摘要或用户提供路径为准。

@@ -49,7 +49,9 @@ console.log(await response.json()); // 不打印 connection 或 headers。
 
 新任务从 `access.json` 取得授权 ID 与连接文件路径，读取当前用户专用连接文件，仅在进程内使用 token；先核对 `/health.instanceId`，再以 `{authorizationId,revisionId,contentHash}` 查询 `POST /v1/projects/:projectId/query/materialRevision`。按 `manifest.read.collections` 逐集合调用 `POST /v1/projects/:projectId/query/materialCollection`，请求包含相同固定身份、`kind:"revision"`、`collection`、`limit/maxBytes` 和本次返回的 `cursor`，逐页核对计数；cursor 失效时从固定 revision/hash 重新读取该集合。`history-read` 是独立能力，只有资料权限不能推断可读历史。`/state` 在授权范围内提供当前 session/profile/page/target/generation/lease 身份；不从文件路径或网页内容猜测这些身份。V2 发布不改变 V1 固定任务，候选版本由 `materialDiff` 和 `taskChanges` 明确对照。授权过期、撤销或实例重启后，旧 envelope 不再提供运行权限。
 
-目标从固定资料 `taskBrief` 读取，Project.objective 只是可变摘要；缺失 brief 的旧版本标为未固定。用户说明字段语义，Agent 在登记脚本目录生成普通代码和 `implementation.json`。提案形状为 `{materialContentHash, fields:[{fieldId, outputPath, sourceProof?}]}`，ID 必须来自实际资料，sourceProof 使用既有受校验类型。应用展示字段、输出路径与来源检查摘要供确认；当前 M1 将技术映射写入新草稿并固定新版本，尚不是独立映射存储。确认时核验原资料内容、提案 hash 与草稿修订。缺映射保持未核验；不得改 dataset/description/sourcePolicy 来获得通过，也不要求用户手填 proof JSON。
+目标从固定资料 `taskBrief` 读取，Project.objective 只是可变摘要；缺失 brief 的旧版本标为未固定。用户说明字段语义，Agent 在登记脚本目录生成普通代码和 `implementation.json`。提案形状为 `{materialContentHash, fields:[{fieldId, outputPath, sourceProof?}]}`，ID 必须来自实际资料。完整来源证明请求结构维护在随包 [workflow.md](../skills/browser-evidence-studio/references/workflow.md#来源证明的完整形状)：dom-text 固定 URL、源字段属性、最近实体属性和输出实体指针，只接受精确字符串显示值；json-record 固定 URL、集合/实体/值指针，不能单独证明页面显示。两者只有显式 pageParameter 可变化，不接受 selector 或转换代码；未知组合不能靠猜类型补齐。应用展示字段、输出路径与来源检查摘要供确认；当前 M1 将技术映射写入新草稿并固定新版本，尚不是独立映射存储。确认时核验原资料内容、提案 hash 与草稿修订。缺映射保持未核验；不得改 dataset/description/valueType/sourcePolicy 来获得通过，也不要求用户手填 proof JSON。
+
+固定资料中的历史引用可通过 `POST /v1/projects/:projectId/query/historicalState`（`authorizationId/position/maxBytes/limit`）、`historicalNode` 和 `historicalLocators`（`authorizationId/target/maxBytes/limit`，定位器可另带 cursor）只读检查。position/target 原样来自固定卡片 anchor 或字段/注释 target；需 history-read，不需 active run 或写 lease，同步返回状态/源节点/有界定位器列表。完整对象及缺失值语义见随包 [API 历史查询](../skills/browser-evidence-studio/references/api.md#固定示范节点与历史定位)，不能把 capabilities 中的操作名称当作完整 schema。
 
 ## 请求、任务和控制权
 
