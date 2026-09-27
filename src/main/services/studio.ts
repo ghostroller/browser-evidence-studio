@@ -113,10 +113,22 @@ export class Studio {
   });}
   async revokeTask(body:any){
     const grant=this.tasks.get(body.authorizationId);ensure(grant.projectId===body.projectId,'Task belongs to another project',403);
-    this.tasks.revoke(grant.authorizationId);await this.sessionAudit('task-authorization-revoked',{authorizationId:grant.authorizationId});
-    if(this.executingAuthorizationId===grant.authorizationId)await this.stopRunner();
-    if(this.browserAuthorizationId===grant.authorizationId)this.browserAuthorizationId=undefined;
-    const r=this.browser?.runtime;if(r&&this.browserSessionId===grant.sessionId){await this.revokeOperation(r);if(r.controller==='agent'&&!this.workflow&&!this.workflowStarting&&!this.workflowSettlement)await this.control('human');if(this.active===r)await r.store!.appendEvent({type:'task-authorization-revoked',source:'ui',data:{authorizationId:grant.authorizationId}});}
+    this.tasks.revoke(grant.authorizationId);
+    let auditFailure:unknown;
+    try{await this.sessionAudit('task-authorization-revoked',{authorizationId:grant.authorizationId});}catch(error){auditFailure=error;}
+    // Persistence failure must never prevent closing the revoked transport and
+    // returning control. The failure is reported after those safety transitions.
+    try{if(this.executingAuthorizationId===grant.authorizationId)await this.stopRunner();}
+    finally{
+      if(this.browserAuthorizationId===grant.authorizationId)this.browserAuthorizationId=undefined;
+      const r=this.browser?.runtime;
+      if(r&&this.browserSessionId===grant.sessionId){
+        try{await this.revokeOperation(r);}
+        finally{if(r.controller==='agent'&&!this.workflow&&!this.workflowStarting&&!this.workflowSettlement)await this.control('human');}
+        if(this.active===r)await r.store!.appendEvent({type:'task-authorization-revoked',source:'ui',data:{authorizationId:grant.authorizationId}});
+      }
+    }
+    if(auditFailure)throw auditFailure;
     return this.tasks.get(grant.authorizationId);
   }
   async authorizedOperation<T>(body:any,capability:TaskCapability,operation:(signal:AbortSignal)=>Promise<T>,signal?:AbortSignal):Promise<T>{
@@ -276,7 +288,7 @@ export class Studio {
       const opener=identity.openerPageId?r.pages.get(identity.openerPageId):undefined;
       const replacement=opener&&this.pageContents(opener)?opener:[...r.pages.values()].reverse().find(page=>this.pageContents(page));
       r.selectedPageId=replacement?.pageId||'';
-      if(this.active===r&&!r.ending&&!this.closing){this.window.show(replacement?.view);this.window.lock(r.locked||r.controller!=='human');}
+      if(this.browser?.runtime===r&&!r.ending&&!this.closing){this.window.show(replacement?.view);this.window.lock(r.locked||r.controller!=='human');}
       if(this.active===r&&!r.ending&&!this.closing)foregroundWrite=this.recordForeground(r as ActiveRun,identity.pageId,'page-closed',Date.parse(closedAt));
     }
     if(r.ending||this.closing||this.active!==r){if(!r.pages.size)r.controller='none';this.onChanged();void revoked.catch(error=>console.error('Could not revoke closed-page operation',error));return;}
@@ -374,7 +386,7 @@ export class Studio {
     ensure(!r.locked&&!r.ending&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Cannot change execution target while running or locked',409);
     ensure(!r.pendingOperation,'Operation connection is still starting',409);
     const operation=r.operation;if(operation){await operation.gate.quiesce();await operation.browser.disconnect();if(r.operation===operation)r.operation=undefined;}
-    ensure(this.browser?.runtime===r&&r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Page selection was cancelled',409);const previousPageId=r.selectedPageId||null;r.selectedPageId=p.pageId;r.leaseEpoch++;this.window.show(p.view);if(previousPageId!==p.pageId)await this.recordForeground(r as ActiveRun,previousPageId,'page-selected');this.onChanged();return this.state();
+    ensure(this.browser?.runtime===r&&r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Page selection was cancelled',409);const previousPageId=r.selectedPageId||null;r.selectedPageId=p.pageId;r.leaseEpoch++;this.window.show(p.view);if(this.active===r&&previousPageId!==p.pageId)await this.recordForeground(r as ActiveRun,previousPageId,'page-selected');this.onChanged();return this.state();
   }
   async closePage(pageId:string){
     const r=this.live(),p=r.pages.get(pageId);ensure(p,'Unknown page',404);
