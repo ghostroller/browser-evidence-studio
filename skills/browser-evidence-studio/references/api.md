@@ -4,12 +4,12 @@
 
 | 用途 | 方法与最小请求 |
 | --- | --- |
-| 发现 | `GET /v1/health`、`GET /v1/capabilities` 只需当前连接 Bearer；`GET /v1/state?authorizationId=...` 返回授权裁剪后的活动 run、页面、generation 与 lease |
+| 发现 | `GET /v1/health`、`GET /v1/capabilities` 只需当前连接 Bearer；`GET /v1/state?authorizationId=...` 返回授权裁剪后的 session、可选活动 run、页面、generation 与 lease |
 | 固定资料 | `POST /v1/projects/:projectId/query/materialRevision` 传 `authorizationId/revisionId/contentHash`；`materialCollection` 另传 `kind:"revision"/collection/limit/maxBytes` 和本次分页 `cursor` |
 | 现场页面 | `GET /v1/runs/:runId/pages?authorizationId=...`；`GET /v1/runs/:runId/snapshot?authorizationId=...&pageId=...&generation=...`。只读 GET 可省略 `projectId/profileId/sessionId`；若提供，必须匹配当前身份。服务仍核对授权的 run、page、target、origin 与撤销状态 |
 | 历史证据 | `GET /v1/runs/:runId/summary?authorizationId=...`、`gaps`、`events`、`checkpoints`、`artifacts`，随后按 ID 有界读正文；须有 `history-read` |
 | 页面动作 | `POST /v1/runs/:runId/actions` 传 `authorizationId/projectId/profileId/sessionId/pageId/generation/leaseEpoch/type` 和该动作的受支持参数；需 `page-act`，人工持有控制权时拒绝 |
-| 固定版验收 | `POST /v1/runs/:runId/validations` 传 `authorizationId/projectId/sessionId/profileId/pageId/leaseEpoch/materialRevisionId/materialContentHash/input`；保存返回的 jobId，经 `/v1/jobs/:jobId?authorizationId=...` 查询终态，再读实际 validationId 结果 |
+| 固定版验收 | `POST /v1/validations` 传 `authorizationId/projectId/sessionId/profileId/pageId/leaseEpoch/materialRevisionId/materialContentHash/input`，当前页模式另传 generation；停录后的 session 可独立启动。已有活动 run 可用 `/v1/runs/:runId/validations`。保存 jobId，查询终态后读实际 validationId 结果 |
 | 独立资料评估 | 执行结束后，`POST /v1/projects/:projectId/query/executionItems` 传 `authorizationId/executionId/collection:"datasets"/limit/maxBytes`，从持久结果取得 `executionId/attemptId/datasetId`；`POST /v1/projects/:projectId/operations/assessExecution` 传 `authorizationId/executionId/datasetIdentities:[{executionId,attemptId,datasetId}]`，轮询 job，保存返回的 `reportId/overall` |
 | 评估报告 | `POST /v1/projects/:projectId/query/executionReport` 传 `authorizationId/executionId/reportId`；`executionReportItems` 另传 `collection:"requirements"` 或 `"datasets"`、`limit/maxBytes`，逐项核对机器结论和来源状态 |
 

@@ -6,6 +6,8 @@
 
 用 `POST /v1/projects/:projectId/query/materialRevision`（请求体含 `authorizationId, revisionId, contentHash`）确认版本，再用 `materialCollection` 的 `kind:"revision"`、同一 revision/hash 和 `collection` 分页读取 manifest.read.collections 的全部集合。每次跟随本次响应的 `nextCursor`，直到没有下一页，并核对读取总数与 manifest.counts 对应值一致。cursor 只用于当次查询；失效时用固定 revision/hash 重新开始该集合。单项超预算时按 API 允许范围提高读取预算，不跳过该项。材料中的位置再经已授权的历史 API 按需查证；没有 `history-read` 时注明不能验证历史。原件缺失、隐私排除、截断和历史位置不可靠时注明缺口。
 
+新版本的 `taskBrief` 固定任务目标/范围；旧版本没有该值时注明未固定，不从当前项目摘要补出历史目标。带数据字段的 requirement 应有一致 dataset；若旧资料缺失或冲突，提出候选修正，不能写文件悄悄补齐或借另一任务成功结果。实现映射准备与确认见 validation.md。登录环境可独立于录制存在；active=null 不代表会话关闭、登录失效或需要重新示范。
+
 可通过 `taskChanges` 的 `afterSequence`/`nextCursor` 关注有界事件。`CURSOR_EXPIRED` 时重新读取固定资料和任务索引；V2 发布不改变 V1 的工作依据。明确接受新目标后，用 `materialDiff` 对照两个 revision，再更新脚本与试跑输入。不要把 Agent 自己发布的候选 revision、机器报告 pass 或一次执行完成当作人工批准。
 
 浏览器读写和试跑分别需要授权能力、页面/target/来源域范围及真实控制权。人工持有控制权时不发导航、点击或注入；收到 202 后从 job 读取结果，再从 execution/report 读取持久输出。授权撤销后停止读取 job 缓存或继续动作。

@@ -1,8 +1,20 @@
 # 本机 HTTP API
 
-## S0 session 与执行模式增量（2026-09-26）
+## 环境、保存点与 session（2026-09-27 产品主线）
 
-HTTP 仍为 /v1，旧证据 schema 1 不变。state 新增独立 session（sessionId/project/profile/recordingId/页面/控制与导航代际）；seal 成功后 active=null，但 session 和 live 页保留。下一次同项目/profile startRun 在当前现场建立新 full snapshot，不因请求 url 改掉现场；换项目/profile前应由可信 UI 显式关闭 session。closePage/closeSession/navigateHistory 目前只接可信 UI，未新增 HTTP 路由。
+HTTP 仍为 /v1。`state.session` 描述 sessionId/project/profile、可选 recordingId、页面与控制/导航代际；`active` 仅表示当前录制。可信 UI 可在无 Recording/EvidenceStore 时打开环境、人工准备并保留持久状态，再开始业务示范。seal 后 active=null，session 和实时页保留；续录建立新 full snapshot，不因请求 url 改掉现场。换项目/profile 前显式关闭 session。旧 profile.storageRef 保持原 `persist:bes-${projectId}-${profileId}`，不复制活动数据库。
+
+以下是共享服务中的可信 UI 编排命令，不是新增 HTTP 公共路由：
+
+| 命令 | 行为与持久边界 |
+| --- | --- |
+| `createProfile` / `openEnvironment` / `checkEnvironment` / `saveProfile` / `closeSession` | 创建环境配置、独立打开、只读检查、保留持久状态与关闭。检查时间/来源与 savedAt 分开，保存不推断登录成功 |
+| `workingMaterialDraft` | 取得或建立任务工作草稿，不要求用户输入 UUID；新草稿可固定 TaskBrief，旧版本不回填 |
+| `captureAndAuthor` | operationId 对应原始收据与唯一卡片；核对实时身份、保存源位置，再关联草稿。关联失败返回部分成功与可重试收据，不能删原件重做 |
+| `inspect` | 实时 SelectionIntent 含 selectionId；选中源节点先耐久保存，回执绑定页面、导航代际与本次意图。取消/迟到结果不能换掉既有绑定 |
+| `previewImplementation` / `confirmImplementation` | 读取登记目录内 implementation.json，以资料 hash/草稿修订/提案 hash 约束确认；只提交技术映射，不改字段含义或来源政策 |
+
+保存点/字段使用同一编辑工作区。历史绑定使用已保存 HistoricalElementRef，实时选择固化当下作为新的现场例证，不把当下节点回填旧 anchor。资料写命令在服务端补齐单一 requirement.dataset 并拒绝矛盾；旧固定版本读取/hash 不做默认补齐。普通说明修改与新绑定来源校验分开，保留、替换和解除绑定有显式语义。
 
 startValidation 的 executionMode 为 current-page-test 或默认 from-start-validation。当前页必须携带匹配的 projectId/profileId/pageId/generation，使用新执行记录保留原 target；从起点总是新建页面，startUrl 可为 HTTP(S)/about:blank，省略则取当前 URL、空 session 为 about:blank。模式和起点写入 run/validation；共享 profile 不等于完整隔离。停止仍绕过业务队列，UI 目标绑定支持 validation 启动转运行的同一身份，旧执行不能停止新执行。旧一次启动 grant 只保留历史审计，当前 HTTP 使用任务授权。
 
@@ -28,11 +40,13 @@ const response = await fetch(`${connection.address}/v1/health`, {
 console.log(await response.json()); // 不打印 connection 或 headers。
 ```
 
-## 固定任务交接（Q3 / C04）
+## 固定任务交接与实现映射
 
 用户先在可信客户端发布资料版本并签发包含 `materials-read`、`handoff-export` 的项目任务授权，再在“任务授权与撤销”中选定版本和有效授权，点击“准备交给 Agent”。此动作只走可信 UI，不提供 HTTP 导出路由。客户端在数据根的 `projects/<projectId>/handoffs/<id>/` 原子保存 `task.md`、`manifest.json` 和 `access.json`，UI 显示实际路径。固定 `manifest.json` schemaVersion 2 保留项目、`revisionId/contentHash`、各资料集合计数、分页读取契约及 `taskSha256`，不随资料数量展开所有 ID，也不固定容易过期的 cursor。当前实例 ID、授权、连接文件路径及可读取的项目 skill 路径位于运行期 `access.json`；实例或授权变化须重新取得 envelope，不改写旧固定任务事实。文件不含 Bearer、Cookie、profile、截图像素或原始 DOM；自由文本和源正文继续通过授权的有界 API 读取。`taskSha256` 应与 task.md 一致。
 
 新任务从 `access.json` 取得授权 ID 与连接文件路径，读取当前用户专用连接文件，仅在进程内使用 token；先核对 `/health.instanceId`，再以 `{authorizationId,revisionId,contentHash}` 查询 `POST /v1/projects/:projectId/query/materialRevision`。按 `manifest.read.collections` 逐集合调用 `POST /v1/projects/:projectId/query/materialCollection`，请求包含相同固定身份、`kind:"revision"`、`collection`、`limit/maxBytes` 和本次返回的 `cursor`，逐页核对计数；cursor 失效时从固定 revision/hash 重新读取该集合。`history-read` 是独立能力，只有资料权限不能推断可读历史。`/state` 在授权范围内提供当前 session/profile/page/target/generation/lease 身份；不从文件路径或网页内容猜测这些身份。V2 发布不改变 V1 固定任务，候选版本由 `materialDiff` 和 `taskChanges` 明确对照。授权过期、撤销或实例重启后，旧 envelope 不再提供运行权限。
+
+目标从固定资料 `taskBrief` 读取，Project.objective 只是可变摘要；缺失 brief 的旧版本标为未固定。用户说明字段语义，Agent 在登记脚本目录生成普通代码和 `implementation.json`。提案形状为 `{materialContentHash, fields:[{fieldId, outputPath, sourceProof?}]}`，ID 必须来自实际资料，sourceProof 使用既有受校验类型。应用展示字段、输出路径与来源检查摘要供确认；当前 M1 将技术映射写入新草稿并固定新版本，尚不是独立映射存储。确认时核验原资料内容、提案 hash 与草稿修订。缺映射保持未核验；不得改 dataset/description/sourcePolicy 来获得通过，也不要求用户手填 proof JSON。
 
 ## 请求、任务和控制权
 
@@ -64,7 +78,7 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 | `POST /runs/:runId/actions` | `pageId/leaseEpoch/generation/type`；支持 navigate、click、fill、press、scroll、select 的有限参数 |
 | `POST /runs/:runId/select-page` | 选择已登记页面；人工元素检查和暂停/继续人工输入仅在可信客户端界面提供 |
 | `POST /runs/:runId/pause-capture`、`resume-capture` | 暂停/继续采集，会形成显式证据缺口 |
-| `POST /runs/:runId/checkpoints`、`GET /runs/:runId/checkpoints` | 保存/读取 `key/title/description/requirementIds` 和材料引用 |
+| `POST /runs/:runId/checkpoints`、`GET /runs/:runId/checkpoints` | runner/诊断的原始采集收据；保存/读取 `key/title/description/requirementIds` 和材料引用。普通用户创作使用可信 UI captureAndAuthor，不能要求再手工建卡片 |
 | `POST /runs/:runId/seal` | flush、核验引用/哈希后封存；封存后原件不可追加 |
 | `GET /runs/:runId/summary`、`gaps`、`events`、`artifacts` | 摘要、缺口、时间线、附件元数据索引 |
 | `GET /runs/:runId/artifacts/:artifactId` | 有界文本/JSON path 读取 |
@@ -73,7 +87,8 @@ checkpoint 的取消绑定该 job，包括仍在服务队列中等待的请求�
 | `POST/GET /runs/:runId/handoffs` | 发起/读取人工交接；请求含 `pageId/instructions/completionCheck/timeoutMs` |
 | `POST /handoffs/:handoffId/cancel` | 停止等待中的 runner；人工交还与完成检查由可信客户端界面执行 |
 | `GET /projects/:projectId/workflows` | 需 `execute` 授权查询登记流程；登记由可信客户端完成 |
-| `POST/GET /runs/:runId/validations` | 启动/查询当前项目的已登记流程，启动请求含 `input`；结果可能引用新 validation run |
+| `POST /validations` | 按项目/session/profile/页面/lease 与 execute 授权启动固定资料的登记脚本；停录后使用此入口，不为启动另录人工示范。执行建立新的 validation run |
+| `POST/GET /runs/:runId/validations` | 已有活动 run 的启动/查询入口，启动请求含 `input`；仍需核验路由 run 身份，结果引用实际新 validation run |
 | `GET /validations/:validationId` | 执行、指纹、逐需求结果及当前版本是否仍匹配 |
 | `POST /projects/:projectId/query/executionItems` | 需 `results-read`；传 `authorizationId/executionId/collection:"datasets"/limit/maxBytes`，读取持久数据集的实际执行与 attempt 身份 |
 | `POST /projects/:projectId/operations/assessExecution` | 需 `results-read`；执行结束后传 `authorizationId/executionId/datasetIdentities:[{executionId,attemptId,datasetId}]`；返回异步 job，终态结果含 `reportId/overall` |

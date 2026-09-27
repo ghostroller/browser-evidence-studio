@@ -1,6 +1,6 @@
 # 技术架构与协议
 
-状态：首版实现进行中。日期：2026-09-22。本文保留目标与边界；实际已验证范围以 verification.md 为准，不能将所有目标当作已通过。
+状态：实现与产品主线纠偏进行中，更新于 2026-09-27。产品行为以 refactor/08-product-realignment.md 与 09-user-journey-acceptance.md 为准；实际已验证范围以 verification.md 为准。旧低层结果与新 U01–U06 旅程分别记录。
 
 ## 1. 技术决策
 
@@ -99,7 +99,11 @@ Electron main 管生命周期、页面和控制权；可信 renderer 只管界�
 
 ## 3. 浏览器与 CDP
 
-2026-09-26 S0 已把 live session 所有权抽至 `main/services/browser-session.ts`。封存停止注入/监听、排空采集和 writer，保留 WebContentsView、profile、输入和 JS 现场；下一段使用新 Run/store 和 full snapshot，不导航、不续写封存原件。`state.session` 独立于 `state.active`；关闭页/会话是可信 UI 的显式操作，等待销毁确认，beforeunload 拒绝或超时保留现场。导航代际由 session observer 在未录制时继续维护。新录制/资料/执行共享类型与尚未接入的能力见 [refactor-contracts.md](refactor-contracts.md)，真实 S0 证据见 [交接](refactor-handoffs/S0.md)。
+BrowserSession 是页面与控制权的主体：环境配置 → 无需 store/capture 的 SessionRuntime → 可选录制或执行。`ManagedPage.capture` 是录制附件，首次打开环境不创建 EvidenceStore 或伪录制。M1 沿用项目 profile 标识保存环境的非敏感入口、检查与 storageRef；更完整的环境管理按产品 M2 单列，不能将这些配置理解为 Cookie 快照。
+
+`state.session` 独立于 `state.active`。封存停止注入/监听、排空采集和 writer，保留 WebContentsView、profile、输入和 JS 现场；下一段使用新 Run/store 和 full snapshot，不导航、不续写封存原件。关闭页/会话是可信 UI 的显式操作，等待销毁确认，beforeunload 拒绝或超时保留现场。导航代际在未录制时继续维护。授权绑定项目/session/profile/page/能力，执行按需建立验证记录，原 Gate、撤销、取消和人工输入互斥不变。
+
+旧 profile 的 partition 映射固定为 `persist:bes-${projectId}-${profileId}`，新 storageRef 保留原 key。迁移仅追加非敏感元数据并保留备份，不复制或移动活动 profile 数据库、不改旧录制/资料 hash。历史 S0 的停录不关页证据见 [交接](refactor-handoffs/S0.md)，它不证明首次独立环境或本轮产品门已通过。
 
 执行明确使用 `current-page-test` 或默认 `from-start-validation`；前者校验 pageId/导航代际，在新验证记录中保留原页，后者在同 profile 新建页面并使用明确 startUrl（默认当前 URL，空会话为 about:blank）。两者均写入 manifest/validation 记录，不能声称不同页等于完整环境隔离。旧单次启动授权只允许从起点模式，不能借它扩大为原位试跑；任务级授权仍待 E。旧档没有模式值时保留未知，不回填历史。
 
@@ -149,7 +153,7 @@ requestHuman 在闸门确认关闭后进入 await，正常交还经真实状态�
 
 ### 4.1 开始与连续性
 
-创建 run → 打开独立 profile/页面 → 建立 CDP 与 rrweb → 写入能力探测结果 → ready → 开放操作。首次导航前尽量建立观察，注入不到的时间和 frame 明确记录。
+环境可以先打开页面并供人工准备，此时没有业务录制。点击开始录制后：在已有 session 建立新 run/store → 为页面附着 CDP 与 rrweb → 建立完整基线、写入能力与此前未录制边界 → ready → 开放操作。执行也可以从已准备 session 自行建立验证 run。注入不到的时间和 frame 明确记录，不能补造登录前史。
 
 rrweb 使用固定稳定版本，跨导航重新注入，保存完整快照和增量事件。定期产生可独立回放的块；checkpoint 引用所在块和偏移，不重新启动录制。回放器离线、不执行原站脚本，不任意请求原站资源。
 
@@ -175,7 +179,11 @@ actor、controller、source 分开：当前处于人工控制不证明每个 DOM
 
 候选定位器优先语义/稳定属性，保存 role/name/text 与 DOM 依据、frame/shadow 路径。只保存 ref 或 x/y 不足以构成可迁移执行逻辑。
 
-### 4.4 checkpoint
+### 4.4 原始 checkpoint 与用户保存点
+
+用户入口是 `captureAndAuthor` 编排：核对 session/page/generation 与选择意图 → 持久源位置与原始采集收据 → 取得工作草稿 → 幂等关联 CheckpointCard → 返回编辑定位。原始 checkpoint API 继续用于 runner 证据和诊断，不能再与卡片组成两套正式创作流程。收据与资料是两个存储边界，关联失败保留原件、operationId 和可重试状态，不删除已确认材料。
+
+实时选择先把源节点固化成耐久 HistoricalElementRef，再提交字段绑定。实时源时间与旧卡片 anchor 不同时新建例证，不能回填旧位置；历史选择在卡片 anchor 上进行。SelectionIntent 绑定选择 ID、目的、草稿修订、页面/导航或历史位置与交互代际；取消/切页/导航后的迟到回执失效。工具高亮不改业务节点 inline style，也不作为业务来源入录。
 
 持有短暂输入锁 → 记录页面代际/时间并等待操作静默 → 并行采截图与 DOM → 在完成、10 秒总采集期限或显式取消时冻结材料 → 核对页面代际并安全释放输入 → 写入 artifact 和 checkpoint，确认耐久后返回保存结果。当前索引写入仍在主进程，进程分工属于后续工作。
 
@@ -190,8 +198,11 @@ actor、controller、source 分开：当前处于人工控制不证明每个 DOM
 ~~~text
 appData/
   workspace.json
-  projects/<projectId>/project.json
-  profiles/<profileId>/                  与证据目录分离
+  projects/<projectId>/materials/        工作草稿与不可变 revisions
+  projects/<projectId>/handoffs/         固定资料身份与临时授权 envelope
+  Partitions/                           Electron 管理的持久 profile；不随资料迁移
+  authoring/                            原件→卡片关联操作及恢复身份
+  session-audit/                        未录制 session 的授权/撤销记录
   runs/<runId>/
     manifest.json
     journal/events-000001.jsonl          分块追加
@@ -216,13 +227,18 @@ appData/
 | Run | schemaVersion、ID、kind/mode、objective、状态、实际工具/浏览器/依赖版本、能力、源运行引用 |
 | Event | 稳定 ID/sequence、发生/接收时间及 timeBasis、source、页面/frame/导航、关联标识、artifactRefs |
 | Artifact | kind、mediaType、path、sha256、capturedBytes、captureStatus、reason、limit、来源 |
-| Checkpoint | key/ID、说明、需求版本、采集时间范围、页面代际、图/DOM/事件区间引用、一致性 |
-| Requirement | 输入/输出 schema、范围、变体、完成条件、允许人工点、比较规则、修订版本 |
+| 原始 Checkpoint | key/ID、采集时间范围、页面代际、图/DOM/事件区间引用、一致性；确认后不改写 |
+| CheckpointCard | 用户说明、精确 anchor、sourceReceiptRef/operationId、需求/注释关联、复制 derivedFrom；同一工作草稿编辑 |
+| MaterialRequirement / Field | 自然语言含义、dataset、fieldIds、来源语义与历史例证；含数据字段的需求须有唯一一致数据集 |
+| TaskMaterialRevision / TaskBrief | 固定目标/范围、卡片/字段/需求集合与 contentHash；旧版不补当前目标或默认 dataset |
+| 实现映射 | 引用资料 hash 的字段→输出路径/来源检查技术提案；用户可读确认，不能改任务语义；M1 先沿用 sourceProof 类型 |
 | Validation | 代码/构建/配置/依赖指纹、实际入口、执行事件、模式、断言、覆盖和人工评审 |
 | Handoff | 对象/任务/完成检查/超时策略、控制权代际、恢复位置、attempt、等待状态 |
 
 captureStatus：complete / empty / missing / truncated / read-failed / not-applicable / excluded / unknown。
 query outputTruncated 与原件 captureStatus 独立；字段不存在与真实 null 分开。时间邻近的关联标 temporal，不声称是点击导致的请求。
+
+资料编辑按任务保持工作草稿与未完成表单，不能因 tab 卸载、刷新或冲突静默 reset。绑定使用 keep/set/clear 语义；浏览卡片不等于解除。复制卡片后改说明保留出处。关联数据集及注释反向关系在服务端全图维护，不能依赖 renderer 当前页。普通说明编辑保留旧不可用来源并报告状态；新增/更换绑定必须校验新来源，执行时仍重新核验。发布、人工任务确认、执行授权与结果人工评审是不同动作。
 
 存储规则：
 - 单写者串行提交；确认持久化后才报告保存。更新小元数据用临时文件加替换。
