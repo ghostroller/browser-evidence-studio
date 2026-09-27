@@ -28,6 +28,7 @@ protocol.registerSchemesAsPrivileged([
   {scheme:'bes-resource',privileges:{standard:true,secure:true,corsEnabled:true,supportFetchAPI:true}}
 ]);
 let studio:Studio|undefined;let api:ApiHandle|undefined;let quitting=false;let lifecycle:LifecycleLog|undefined;
+let visibleEvidence:Awaited<ReturnType<typeof import('../../test/desktop/native-window-evidence').recordNativeWindow>>|undefined;
 let shutdownTask:Promise<void>|undefined;let shutdownExitCode=0;
 async function endpoint(){for(let i=0;i<100;i++){try{const [port,browserPath]=(await readFile(path.join(dataRoot,'DevToolsActivePort'),'utf8')).trim().split(/\r?\n/);const url=`http://127.0.0.1:${port}/json/version`;const data=await fetch(url).then(r=>r.json()) as any;if(data.webSocketDebuggerUrl)return `ws://127.0.0.1:${port}${browserPath}`;}catch{}await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('Internal CDP endpoint did not become ready');}
 if(!app.requestSingleInstanceLock())app.quit();
@@ -53,6 +54,7 @@ else app.whenReady().then(async()=>{
   try{await window.load();}
   catch(error){await lifecycle.record('ui-startup-failed',window.startupStatus());throw error;}
   await lifecycle.record('ui-ready');
+  if(process.env.BES_VISIBLE_EVIDENCE==='1'){ensure(!app.isPackaged&&process.env.BES_DATA&&path.isAbsolute(process.env.BES_DATA),'Visible demo evidence requires an explicit local data root');const {recordNativeWindow}=await import('../../test/desktop/native-window-evidence');visibleEvidence=await recordNativeWindow(window.window,path.join(dataRoot,'visible-evidence-'+Date.now()));console.log('VISIBLE EVIDENCE: '+visibleEvidence.directory);}
   window.window.on('close',event=>{event.preventDefault();void shutdown('window-close');});
   if(process.env.BES_TEST){
     const phase=process.env.BES_TEST_PHASE||'main';
@@ -173,6 +175,7 @@ function shutdown(reason:string,code=0):Promise<void>{
   shutdownTask=(async()=>{
     const record=async(stage:string,details:Record<string,unknown>={})=>{try{await lifecycle?.record(stage,{reason,...details});}catch(error){shutdownExitCode=1;console.error('Lifecycle diagnostic could not be saved',error);}};
     await record('shutdown-requested',{exitCode:shutdownExitCode,runId:studio?.active?.id,execution:studio?.active?.execution});
+    if(visibleEvidence){visibleEvidence.mark('Application shutdown: '+reason);try{await visibleEvidence.stop({kind:'independent visible demonstration',automatedJourney:false});}catch(error){console.error('Visible evidence finalization failed',error);}}
     for(const [stage,close] of [['api',()=>api?.close()],['studio',()=>studio?.close()]] as const){
       await record('closing-'+stage);
       try{await close();await record(stage+'-closed');}
