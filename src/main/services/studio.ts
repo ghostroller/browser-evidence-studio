@@ -22,7 +22,7 @@ import { captureCheckpointMaterials } from '@/capture/checkpoint';
 import { snapshotElements } from '@/capture/privacy';
 import { appendReview, readReviews, type ReviewQuery } from './reviews';
 import { BrowserSessionLifecycle } from './browser-session';
-import { ProjectMaterials } from './project-materials';
+import { ProjectMaterials, materialSummary } from './project-materials';
 import { TaskAuthorizations, type TaskCapability } from './task-authorization';
 import { ReplayHost } from './replay-host';
 import { prepareReplayEvents } from '@/replay/rrweb-player';
@@ -519,37 +519,62 @@ export class Studio {
       throw error;
     }finally{op?.gate.setCommandGuard();combined.removeEventListener('abort',abort);await stopping;}
   }
+  private authoringFile(body:any){
+    ensure(typeof body.operationId==='string'&&/^[a-zA-Z0-9-]{1,128}$/.test(body.operationId),'Operation identity required');
+    return path.join(this.root,'authoring',body.operationId+'.json');
+  }
+  private authoringIdentity(body:any){return JSON.stringify([body.projectId,body.draftId,body.purpose??(body.selection?'field':'observation'),body.fieldId??'',!!body.selection,body.selectionId??'',body.pageId??'',body.generation??null,body.leaseEpoch??null,body.derivedFrom??'',body.title??'',body.notes??'']);}
+  private async readAuthoring(body:any){
+    let operation:any;try{operation=JSON.parse(await readFile(this.authoringFile(body),'utf8'));}catch(error:any){if(error.code==='ENOENT')return null;throw error;}
+    ensure(operation.projectId===body.projectId&&operation.draftId===body.draftId,'Operation project/draft identity changed',403);
+    if(operation.fingerprint)ensure(operation.fingerprint===this.authoringIdentity(body),'Operation request identity changed',409);
+    return operation;
+  }
+  private async recoverAuthoringReceipt(operation:any){
+    if(operation.receiptId)return;
+    let cursor:string|undefined;
+    do{const checkpoints=await this.reader(operation.recordingId).checkpoints({limit:100,maxBytes:32768,cursor});
+      const found=checkpoints.items.find((item:any)=>item.metadata?.authoring?.operationId===operation.operationId) as any;
+      if(found){operation.receiptId=found.id;operation.stage='receipt-saved';if(operation.fingerprint&&(found.captureConsistency!=='consistent'||found.pageId!==operation.source?.pageId||found.navigationGeneration!==operation.source?.generation))operation.sourceExpired=true;return;}cursor=checkpoints.nextCursor;
+    }while(cursor);
+  }
+  async authoringOperation(body:any){
+    const operation=await this.readAuthoring(body);if(!operation)return {stage:'not-captured',operationId:body.operationId};
+    await this.recoverAuthoringReceipt(operation);
+    const common={operationId:operation.operationId,receiptId:operation.receiptId,purpose:operation.purpose??(operation.target?'field':'observation'),fieldId:operation.fieldId,target:operation.target};
+    if(operation.sourceExpired)return {...common,stage:'source-expired',status:'partial'};
+    if(operation.receiptId){const draft=await this.materials.service.getDraft(operation.projectId,operation.draftId);const card=draft.content.checkpoints.find(item=>item.operationId===operation.operationId);if(card)return {...common,stage:'associated',status:'saved',card,draft:materialSummary(draft)};}
+    return {...common,stage:operation.receiptId?'receipt-saved':operation.stage??'not-captured',status:'partial'};
+  }
   async captureAndAuthor(body:any){
     const run=this.active;ensure(!run||run.controller==='human','Authoring requires human ownership',409);
-    ensure(typeof body.operationId==='string'&&/^[a-zA-Z0-9-]{1,128}$/.test(body.operationId),'Operation identity required');
-    const directory=path.join(this.root,'authoring');await mkdir(directory,{recursive:true});
-    const file=path.join(directory,body.operationId+'.json');let operation:any;
-    try{operation=JSON.parse(await readFile(file,'utf8'));ensure(operation.projectId===body.projectId,'Operation belongs to another project',403);}catch(error:any){if(error.code!=='ENOENT')throw error;}
+    const file=this.authoringFile(body);await mkdir(path.dirname(file),{recursive:true});let operation=await this.readAuthoring(body);
     if(!operation){
-      ensure(run,'Start recording before creating a new live savepoint',409);const page=this.current();
+      ensure(run&&run.projectId===body.projectId,'Start recording in this project before creating a live savepoint',409);const page=this.current();
       const selected=(run.selection as any)?.sample?.ref;
       if(body.selection)ensure(page.capture?.inspecting&&page.capture.selectionId===body.selectionId&&selected&&(run.selection as any).selectionId===body.selectionId&&typeof body.selectionId==='string'&&(run.selection as any).generation===page.navigationGeneration&&body.generation===page.navigationGeneration&&body.pageId===page.pageId&&body.leaseEpoch===run.leaseEpoch&&selected.position.recordingId===run.id&&selected.position.pageId===page.pageId,'Live selection has no current durable source',409);
+      const source={sessionId:this.browserSessionId,pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration,leaseEpoch:run.leaseEpoch};
       const position=body.selection?selected.position:await page.capture!.snapshotPosition();
-      operation={projectId:run.projectId,recordingId:run.id,operationId:body.operationId,position,title:body.title||'当前结果',notes:body.notes||'',draftId:body.draftId,derivedFrom:body.derivedFrom,...(body.selection?{target:selected}:{})};
-      // A durable intent precedes raw capture. Retry can discover its receipt even
-      // when the association journal write failed after appendCheckpoint.
+      operation={projectId:run.projectId,recordingId:run.id,operationId:body.operationId,position,title:body.title||'当前结果',notes:body.notes||'',draftId:body.draftId,derivedFrom:body.derivedFrom,purpose:body.purpose??(body.selection?'field':'observation'),fieldId:body.fieldId,source,fingerprint:this.authoringIdentity(body),stage:'not-captured',...(body.selection?{target:selected}:{})};
       await atomicJson(file,operation);
     }
+    await this.recoverAuthoringReceipt(operation);
+    if(operation.sourceExpired)return {status:'partial',stage:'source-expired',receiptId:operation.receiptId,reason:'采集期间来源变化；原件保留，请重新选择。'};
     if(!operation.receiptId){
-      let cursor:string|undefined;
-      do{const checkpoints=await this.reader(operation.recordingId).checkpoints({limit:100,maxBytes:32768,cursor});
-        const found=checkpoints.items.find((item:any)=>item.metadata?.authoring?.operationId===operation.operationId) as any;
-        if(found){operation.receiptId=found.id;break;}cursor=checkpoints.nextCursor;
-      }while(cursor);
-      if(!operation.receiptId){
-        ensure(run&&operation.recordingId===run.id,'The source recording is no longer active; original intent is retained',409);
-        const receipt=await this.checkpoint({title:operation.title,description:operation.notes},{authoring:operation});
-        operation.receiptId=receipt.id;await run.store.flush();
-      }
+      const source=operation.source,page=run?.pages.get(source?.pageId);
+      const current=()=>!!(source&&run&&this.active===run&&operation.recordingId===run.id&&this.browserSessionId===source.sessionId&&run.controller==='human'&&run.leaseEpoch===source.leaseEpoch&&run.selectedPageId===source.pageId&&page&&run.pages.get(source.pageId)===page&&page.targetId===source.targetId&&page.navigationGeneration===source.generation);
+      if(!current()){operation.stage='source-expired';await atomicJson(file,operation);return {stage:'source-expired',status:'partial',operationId:operation.operationId,reason:'原页面身份已过期；旧意图已保留，请重新选择。'};}
+      operation.stage='acquiring';await atomicJson(file,operation);
+      // Recheck after the durable intent write, immediately before acquisition.
+      if(!current()){operation.stage='source-expired';await atomicJson(file,operation);return {stage:'source-expired',status:'partial',operationId:operation.operationId,reason:'原页面身份已过期；请重新选择。'};}
+      let receipt:any;try{receipt=await this.checkpoint({title:operation.title,description:operation.notes,generation:source.generation},{pageId:source.pageId,authoring:operation});}catch(error){await this.recoverAuthoringReceipt(operation);if(!operation.receiptId)operation.stage='not-captured';await atomicJson(file,operation);throw error;}
+      operation.receiptId=receipt.id;operation.stage='receipt-saved';await run!.store.flush();
+      if(!current()||receipt.captureConsistency!=='consistent'||receipt.pageId!==source.pageId||receipt.navigationGeneration!==source.generation){operation.sourceExpired=true;operation.stage='source-expired';await atomicJson(file,operation);return {status:'partial',stage:'source-expired',receiptId:operation.receiptId,reason:'采集期间来源变化；原件保留，请重新选择。'};}
     }
     try{await atomicJson(file,operation);const authored=await this.materials.authorReceipt(operation.projectId,operation);
-      return {status:'saved',...authored,receiptId:operation.receiptId,target:operation.target,operationId:operation.operationId};
-    }catch(error){return {status:'partial',receiptId:operation.receiptId,operationId:operation.operationId,error:String(error),reason:'原始收据已保存，资料关联未完成。使用同一操作重试，不会再次采集。'};}
+      operation.stage='associated';await atomicJson(file,operation);
+      return {status:'saved',stage:'associated',...authored,receiptId:operation.receiptId,target:operation.target,purpose:operation.purpose,fieldId:operation.fieldId,operationId:operation.operationId};
+    }catch(error){return {status:'partial',stage:'receipt-saved',receiptId:operation.receiptId,operationId:operation.operationId,purpose:operation.purpose,fieldId:operation.fieldId,error:String(error),reason:'原始收据已保存，资料关联未完成。使用同一操作重试，不会再次采集。'};}
   }
   async checkpoint(body:any,options:{fromRunner?:boolean;pageId?:string;signal?:AbortSignal;authoring?:unknown}={}){
     options.signal?.throwIfAborted();

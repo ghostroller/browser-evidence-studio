@@ -85,6 +85,7 @@ export function makeDispatch(studio:Studio){
       case 'navigateHistory':ensure(source==='ui','Session navigation requires the trusted UI',403);ensure(['back','forward','reload'].includes(body.direction),'Unknown navigation direction');return studio.navigateHistory(body.direction);
       case 'closePage':ensure(source==='ui','Closing live pages requires the trusted UI',403);return studio.closePage(body.pageId);
       case 'closeSession':ensure(source==='ui','Closing the browser session requires the trusted UI',403);return studio.closeSession();
+      case 'authoringOperation':ensure(source==='ui','Authoring status requires trusted UI',403);return studio.authoringOperation(body);
       case 'captureAndAuthor':ensure(source==='ui','Authoring requires trusted UI',403);return studio.captureAndAuthor(body);
       case 'workingMaterialDraft':ensure(source==='ui','Working draft requires trusted UI',403);return studio.materials.workingDraft(body.projectId);
       case 'checkpoint':return studio.checkpoint(body,{signal:context.signal});
