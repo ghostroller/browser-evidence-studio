@@ -5,6 +5,7 @@ import { loadWorkflow } from '@/runner/fingerprint';
 import { inspectRunRecovery, recoverRun, recoverRunIndexes } from './run-recovery';
 import { dispatchProject, PROJECT_METHODS } from './project-dispatch';
 const READ=new Set(['state','projects','project','profiles','workflows','runs','run','pages','snapshot','checkpoints','summary','gaps','events','artifacts','artifact','artifactContent','handoffs','validations','validation','validationStartGrant','reviews','history','replay']);
+function originAllowed(grant:{origins:string[]},url:string){try{return grant.origins.includes(new URL(url).origin);}catch{return false;}}
 export function makeDispatch(studio:Studio){
   return async function dispatch(method:string,body:any={},source:'api'|'ui'='ui',context:{signal?:AbortSignal}={}):Promise<any>{
     if(method==='action')context={...context,signal:context.signal?AbortSignal.any([context.signal,AbortSignal.timeout(15_000)]):AbortSignal.timeout(15_000)};
@@ -52,17 +53,20 @@ export function makeDispatch(studio:Studio){
     }
     const execute=async()=>{
     if(['checkpoint','startValidation'].includes(method))context.signal?.throwIfAborted();
-    const runMethods=new Set(['action','createPage','checkpoint','control','pauseOperations','pauseCapture','seal','inspect','selectPage','requestHuman','cancelHandoff','startValidation','stopRunner','saveProfile']);
+    const runMethods=new Set(['checkpoint','control','pauseOperations','pauseCapture','seal','inspect','selectPage','requestHuman','cancelHandoff','startValidation','stopRunner','saveProfile']);
     if(source==='api'&&method==='startValidation'&&!studio.active){ensure(body.runId===undefined,'A stopped recording cannot be an execution target; use POST /v1/validations',409);const session=studio.state().session;ensure(session&&body.sessionId===session.sessionId&&body.profileId===session.profileId&&body.leaseEpoch===session.leaseEpoch&&session.controller==='agent','Session lease is stale or not agent-owned',409);}
     if(source==='api'&&runMethods.has(method)&&!(method==='startValidation'&&!studio.active)){
       const r=studio.required();ensure(body.leaseEpoch===r.leaseEpoch,'Stale control lease',409);if(body.runId)ensure(body.runId===r.id,'Run is not active',409);if(body.profileId)ensure(body.profileId===r.profileId,'Profile is not active',409);
       if(!['cancelHandoff','stopRunner'].includes(method))ensure(r.controller==='agent','Human owns this browser; use the client to grant agent control',409);
     }
-    if(source==='api'&&['snapshot','checkpoint','action','createPage'].includes(method)){
-      const r=studio.required();ensure(body.runId===r.id,'Run is not active',409);
-      ensure(typeof body.pageId==='string'&&Number.isSafeInteger(body.generation)&&body.generation>=0,'pageId and navigation generation are required',409);
-      const page=r.pages.get(body.pageId);ensure(page&&page.navigationGeneration===body.generation,'Unknown page or stale navigation generation',409);
+    if(source==='api'&&['pages','snapshot','action','createPage'].includes(method)){
+      const session=studio.state().session;ensure(session,'No live browser session',409);
+      if(body.runId!==undefined)ensure(studio.active&&studio.active.id===body.runId,'Run is not active; use the current session route',409);
+      else ensure(body.sessionId===session.sessionId,'Session identity is stale',409);
+      if(['action','createPage'].includes(method)){ensure(body.leaseEpoch===session.leaseEpoch,'Stale control lease',409);ensure(session.controller==='agent','Human owns this browser',409);}
+      if(method!=='pages'){ensure(typeof body.pageId==='string'&&Number.isSafeInteger(body.generation)&&body.generation>=0,'pageId and navigation generation are required',409);const page=session.pages.find(page=>page.pageId===body.pageId);ensure(page&&page.generation===body.generation,'Unknown page or stale navigation generation',409);}
     }
+    if(source==='api'&&method==='checkpoint'){const r=studio.required();ensure(body.runId===r.id,'Run is not active',409);ensure(typeof body.pageId==='string'&&Number.isSafeInteger(body.generation)&&r.pages.get(body.pageId)?.navigationGeneration===body.generation,'Unknown page or stale navigation generation',409);}
     if(source==='api'&&['createProject','updateProject'].includes(method))ensure(!body.scriptDirectory,'Workflow directories are registered in the trusted client UI',403);
     if(source==='api'&&method==='startValidation')ensure(!['directory','scriptDirectory','entry','code','manifest'].some(key=>body[key]!==undefined),'Validation only runs the registered workflow; paths and code are not accepted',403);
     switch(method){
@@ -77,8 +81,8 @@ export function makeDispatch(studio:Studio){
       case 'createProject':return studio.createProject(body);case 'updateProject':return studio.updateProject(body);case 'createProfile':return studio.createProfile(body);case 'startRun':ensure(source==='ui','Browser session creation requires the trusted client',403);return studio.startRun(body);
       case 'workflows':{const p=studio.projects.find(p=>p.id===body.projectId);ensure(p,'Unknown project',404);return {items:p.scriptDirectory?[{directory:p.scriptDirectory,manifest:(await loadWorkflow(p.scriptDirectory)).manifest}]:[]};}
       case 'registerWorkflow':{const p=studio.projects.find(p=>p.id===body.projectId);ensure(p?.scriptDirectory,'Register directory in the client UI first',409);ensure(!body.directory||body.directory===p.scriptDirectory,'Directory does not match registration',403);return (await loadWorkflow(p.scriptDirectory)).manifest;}
-      case 'pages':ensure(studio.active?.id===body.runId,'Run is not active',409);return {items:studio.state().active!.pages};
-      case 'snapshot':if(source==='api')ensure(studio.active?.id===body.runId,'Run is not active',409);return studio.snapshot(body);
+      case 'pages':return {items:studio.state().session?.pages??[]};
+      case 'snapshot':return studio.snapshot(body);
       case 'navigate':ensure(source==='ui','Direct navigation is available in the trusted client only; use actions with a page identity',403);return studio.navigate(body.url);case 'action':return studio.action(body,context.signal);
       case 'createPage':return studio.createTaskPage(body,context.signal);
       case 'selectPage':return studio.selectPage(body.pageId);
@@ -130,11 +134,11 @@ export function makeDispatch(studio:Studio){
         if(method==='state'){
           const state=result as ReturnType<Studio['state']>;
           const active=state.active;
-          const visiblePages=active?.pages.filter(page=>grant.pages.some(allowed=>allowed.pageId===page.pageId&&allowed.targetId===page.targetId))??[];
-          const activeView=active&&active.projectId===projectId&&grant.capabilities.some(item=>['page-read','page-act','page-create','execute'].includes(item))?
+          const visiblePages=active?.pages.filter(page=>grant.pages.some(allowed=>allowed.pageId===page.pageId&&allowed.targetId===page.targetId)&&originAllowed(grant,page.url))??[];
+          const activeView=active&&active.projectId===projectId&&active.profileId===grant.profileId&&state.session?.sessionId===grant.sessionId&&grant.capabilities.some(item=>['page-read','page-act','page-create','execute'].includes(item))?
             {id:active.id,projectId:active.projectId,profileId:active.profileId,sessionId:state.session?.sessionId,controller:active.controller,leaseEpoch:active.leaseEpoch,capture:active.capture,execution:active.execution,locked:active.locked,pages:visiblePages,selectedPageId:visiblePages.some(page=>page.pageId===active.selectedPageId)?active.selectedPageId:null}:null;
           const session=state.session;
-          const sessionPages=session?.pages.filter(page=>grant.pages.some(allowed=>allowed.pageId===page.pageId&&allowed.targetId===page.targetId))??[];
+          const sessionPages=session?.pages.filter(page=>grant.pages.some(allowed=>allowed.pageId===page.pageId&&allowed.targetId===page.targetId)&&originAllowed(grant,page.url))??[];
           const sessionView=session&&session.projectId===projectId&&session.sessionId===grant.sessionId&&session.profileId===grant.profileId&&grant.capabilities.some(item=>['page-read','page-act','page-create','execute'].includes(item))?
             {sessionId:session.sessionId,projectId:session.projectId,profileId:session.profileId,recordingId:session.recordingId,controller:session.controller,leaseEpoch:session.leaseEpoch,locked:session.locked,pages:sessionPages,selectedPageId:sessionPages.some(page=>page.pageId===session.selectedPageId)?session.selectedPageId:null}:null;
           return {instanceId:state.instanceId,projects:state.projects.filter(item=>item.id===projectId),
@@ -149,12 +153,13 @@ export function makeDispatch(studio:Studio){
       const capability=['snapshot','pages'].includes(method)?'page-read':['startValidation','validate'].includes(method)?'execute':method==='createPage'?'page-create':'page-act';
       const scopedBody=capability==='page-read'?{
         ...body,
-        projectId:body.projectId===undefined?studio.required().projectId:body.projectId,
-        profileId:body.profileId===undefined?studio.required().profileId:body.profileId,
+        projectId:body.projectId===undefined?studio.state().session?.projectId:body.projectId,
+        profileId:body.profileId===undefined?studio.state().session?.profileId:body.profileId,
         sessionId:body.sessionId===undefined?studio.state().session?.sessionId:body.sessionId,
       }:body;
-      return studio.authorizedOperation(scopedBody,capability,async signal=>{context={...context,signal};signal.throwIfAborted();const result=await invoke();
-        if(method==='pages'){const grant=studio.tasks.get(body.authorizationId);return {...result,items:result.items.filter((page:any)=>grant.pages.some(allowed=>allowed.pageId===page.pageId&&allowed.targetId===page.targetId))};}
+      body=scopedBody;
+      return studio.authorizedOperation({...scopedBody,type:method==='action'?body.type:undefined},capability,async signal=>{context={...context,signal};signal.throwIfAborted();const result=await invoke();
+        if(method==='pages'){const grant=studio.tasks.get(body.authorizationId);return {...result,items:result.items.filter((page:any)=>grant.pages.some(allowed=>allowed.pageId===page.pageId&&allowed.targetId===page.targetId)&&originAllowed(grant,page.url))};}
         return result;},context.signal);
     }
     if(source==='api'&&['run','summary','gaps','events','checkpoints','artifacts','artifact','artifactContent','history','validations','validation','reviews'].includes(method)){

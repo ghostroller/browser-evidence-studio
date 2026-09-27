@@ -54,17 +54,18 @@ type ValidationOptions = { signal?: AbortSignal; requireGrant?: boolean };
 async function fakeStudio(validate: (body: any, options: ValidationOptions) => Promise<unknown>, controller: 'human' | 'agent' = 'agent') {
   let queue: Promise<unknown> = Promise.resolve();
   const calls: string[] = [];
-  const run = { id: 'run-1', projectId: 'project-1', profileId: 'profile-1', leaseEpoch: 1, controller };
+  const run = { id: 'run-1', projectId: 'project-1', profileId: 'profile-1', leaseEpoch: 1, controller, pages:new Map([['page-1',{pageId:'page-1',targetId:'target-1',navigationGeneration:1}]]) };
   const tasks = new TaskAuthorizations(); authorizations.push(tasks);
   const scope = { projectId: run.projectId, profileId: run.profileId, sessionId: 'session-1', directory: process.cwd(), pageId: 'page-1', targetId: 'target-1', url: 'https://fixture.test/' };
   const grant = await tasks.issue(scope, { origins: ['https://fixture.test'], pages: [{ pageId: scope.pageId, targetId: scope.targetId }], capabilities: ['execute', 'page-act'], durationMs: 60000, maxOperations: 100 });
   const studio = {
+    active:run,
     tasks,
     instanceId:'fixture-instance',
     projects:[{id:'project-1',name:'One'},{id:'project-2',name:'Two'}],
     profiles:[{id:'profile-1',projectId:'project-1'},{id:'profile-2',projectId:'project-2'}],
     runs:[{id:'run-1',projectId:'project-1',profileId:'profile-1',status:'open',createdAt:'2026-09-26T00:00:00.000Z'}],
-    state(){return {instanceId:'fixture-instance',projects:this.projects,profiles:this.profiles,runs:this.runs,validations:[],active:null};},
+    state(){return {instanceId:'fixture-instance',projects:this.projects,profiles:this.profiles,runs:this.runs,validations:[],active:null,session:{sessionId:'session-1',projectId:run.projectId,profileId:run.profileId,controller:run.controller,leaseEpoch:run.leaseEpoch,pages:[...run.pages.values()].map(page=>({...page,generation:page.navigationGeneration,url:'https://fixture.test/'}))}};},
     authorizedOperation: (body: any, capability: TaskCapability, operation: (signal: AbortSignal) => Promise<unknown>, signal?: AbortSignal) => tasks.run(body.authorizationId, capability, scope, operation, signal),
     required: () => run,
     serialized<T>(action: () => Promise<T>) { const result = queue.then(action); queue = result.catch(() => {}); return result; },

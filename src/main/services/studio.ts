@@ -92,11 +92,12 @@ export class Studio {
     if(!this.closing&&this.executingAuthorizationId&&this.tasks.get(this.executingAuthorizationId).status!=='active')void this.stopRunner().catch(error=>console.error('Task revocation could not complete worker shutdown',error));
     this.onChanged();
   }
-  private async sessionAudit(type:string,data:unknown){
+  private async sessionAudit(type:string,data:unknown,sessionId=this.browserSessionId){
     const directory=path.join(this.root,'session-audit');await mkdir(directory,{recursive:true});
-    const file=await open(path.join(directory,this.browserSessionId+'.jsonl'),'a',0o600);
-    try{await file.writeFile(JSON.stringify({at:now(),sessionId:this.browserSessionId,type,data})+'\n');await file.sync();}finally{await file.close();}
+    const file=await open(path.join(directory,sessionId+'.jsonl'),'a',0o600);
+    try{await file.writeFile(JSON.stringify({at:now(),sessionId,type,data})+'\n');await file.sync();}finally{await file.close();}
   }
+  private pageAudit(r:SessionRuntime,event:any,sessionId=this.browserSessionId){return this.active===r?r.store!.appendEvent(event):this.sessionAudit(event.type,{...event,projectId:r.projectId,profileId:r.profileId},sessionId);}
   async authorizeTask(body:any){return this.serialized(async()=>{
     const project=this.projects.find(item=>item.id===body.projectId);ensure(project,'Unknown project',404);
     ensure(Array.isArray(body.capabilities),'Choose task capabilities');
@@ -135,7 +136,8 @@ export class Studio {
     const r=this.live(),page=r.pages.get(body.pageId??r.selectedPageId),project=this.projects.find(item=>item.id===r.projectId)!;
     ensure(page&&body.projectId===r.projectId&&body.profileId===r.profileId&&body.sessionId===this.browserSessionId,'Task browser identity is stale',409);
     if(capability!=='page-read')ensure(this.browserAuthorizationId===body.authorizationId,'This authorization does not own the agent browser lease',403);
-    return this.tasks.run(body.authorizationId,capability,{projectId:r.projectId,sessionId:this.browserSessionId!,profileId:r.profileId,...(capability==='execute'?{directory:project.scriptDirectory}:{}),pageId:page.pageId,targetId:page.targetId,url:body.type==='navigate'?body.url:body.startUrl??page.page.url()},operation,signal);
+    const url=capability==='page-create'?body.startUrl:capability==='page-act'&&body.type==='navigate'?body.url:capability==='execute'&&body.executionMode!=='current-page-test'?(body.startUrl??this.current().page.url()):page.page.url();
+    return this.tasks.run(body.authorizationId,capability,{projectId:r.projectId,sessionId:this.browserSessionId!,profileId:r.profileId,...(capability==='execute'?{directory:project.scriptDirectory}:{}),pageId:page.pageId,targetId:page.targetId,url},operation,signal);
   }
   private navigationAllowed(url:string):boolean {
     if(!this.browserAuthorizationId)return true;
@@ -351,7 +353,7 @@ export class Studio {
   private createCapture(r:ActiveRun,p:PageIdentity&{page:Page}){return new CaptureCoordinator(p.page,p,r.store,selection=>{if(this.active===r&&r.pages.has(p.pageId)){r.selection=selection;this.onChanged();}},reason=>{if(r.ending||this.active!==r||!r.pages.has(p.pageId))return;r.capture='degraded';this.onChanged();void r.store.updateManifest({capture:'degraded',captureHealthReason:reason}).catch(error=>console.error('Could not persist capture health',error));},false);}
   async createTaskPage(body:any,signal?:AbortSignal){
     signal?.throwIfAborted();
-    const r=this.required(),anchor=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;
+    const r=this.live(),anchor=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;
     ensure(anchor&&anchor.navigationGeneration===body.generation&&body.leaseEpoch===leaseEpoch,'Task page identity or lease is stale',409);
     ensure(r.controller==='agent'&&!r.locked&&!r.ending&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Agent does not own an idle browser',409);
     ensure(this.browserAuthorizationId===body.authorizationId,'This task does not own the browser lease',403);
@@ -362,16 +364,19 @@ export class Studio {
     const page=await this.addPage(r,undefined,undefined,false);
     try{
       signal?.throwIfAborted();
-      ensure(this.active===r&&r.leaseEpoch===leaseEpoch&&r.selectedPageId===previousPageId,'Task page creation lost its browser lease',409);
+      ensure(this.browser?.runtime===r&&r.controller==='agent'&&!r.locked&&r.pages.get(anchor.pageId)===anchor&&anchor.navigationGeneration===body.generation&&r.leaseEpoch===leaseEpoch&&r.selectedPageId===previousPageId,'Task page creation lost its browser lease',409);
       await this.navigate(destination.href,page,true);
       signal?.throwIfAborted();
-      ensure(this.active===r&&r.leaseEpoch===leaseEpoch&&r.selectedPageId===previousPageId&&r.pages.get(page.pageId)===page,'Task page creation lost its browser lease',409);
+      ensure(this.browser?.runtime===r&&r.controller==='agent'&&!r.locked&&r.pages.get(anchor.pageId)===anchor&&anchor.navigationGeneration===body.generation&&r.leaseEpoch===leaseEpoch&&r.selectedPageId===previousPageId&&r.pages.get(page.pageId)===page,'Task page creation lost its browser lease',409);
       this.tasks.addPage(body.authorizationId,{pageId:page.pageId,targetId:page.targetId});
-      return {runId:r.id,sessionId:this.browserSessionId,profileId:r.profileId,pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration,selectedPageId:r.selectedPageId};
+      await this.pageAudit(r,{type:'page-created',source:'api',pageId:page.pageId,data:{authorizationId:body.authorizationId,anchorPageId:anchor.pageId,generation:page.navigationGeneration}});
+      signal?.throwIfAborted();
+      ensure(this.browser?.runtime===r&&r.leaseEpoch===leaseEpoch&&r.controller==='agent'&&r.pages.get(anchor.pageId)===anchor&&anchor.navigationGeneration===body.generation&&r.pages.get(page.pageId)===page,'Task page creation lost its browser lease',409);
+      return {runId:this.active===r?r.id:undefined,sessionId:this.browserSessionId,profileId:r.profileId,pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration,selectedPageId:r.selectedPageId};
     }catch(error){
       if(r.pages.get(page.pageId)===page){await this.closePageContents(page);await Promise.all([...(r.pageClosures??[])]);}
       throw error;
-    }finally{if(this.active===r)this.window.lock(r.locked||this.active.controller!=='human');this.onChanged();}
+    }finally{if(this.browser?.runtime===r)this.window.lock(r.locked||String(r.controller)!=='human');this.onChanged();}
   }
   async navigate(url:string,p=this.current(),initial=false){ensure(/^https?:\/\//.test(url)||url==='about:blank','Only HTTP(S) and about:blank URLs supported');const r=this.live();if(!initial)ensure(!r.locked&&r.controller==='human'&&!r.ending,'Browser is controlled by automation or locked',409);const lease=r.leaseEpoch;return navigateObserved(p.view.webContents,p.page,url,()=>ensure(this.live()===r&&r.pages.get(p.pageId)===p&&p.targetId===(r.pages.get(p.pageId)?.targetId)&&r.leaseEpoch===lease&&!r.ending&&!this.closing,'Navigation target or ownership changed',409));}
   async navigateHistory(direction:'back'|'forward'|'reload'){
@@ -437,7 +442,7 @@ export class Studio {
     finally{r.ending=false;r.locked=false;this.window.lock(false);this.onChanged();}
   }
   private assertOperationOwner(r:SessionRuntime,p:ManagedPage,leaseEpoch:number,generation?:number){
-    ensure(this.active===r&&!this.closing&&!r.ending&&r.controller==='agent'&&!r.locked&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Agent no longer owns this browser',409);
+    ensure(this.browser?.runtime===r&&!this.closing&&!r.ending&&r.controller==='agent'&&!r.locked&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Agent no longer owns this browser',409);
     ensure(r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Control lease or operation page changed',409);
     if(generation!==undefined)ensure(p.navigationGeneration===generation,'Stale navigation generation',409);
   }
@@ -452,6 +457,7 @@ export class Studio {
     this.assertOperationOwner(r,p,leaseEpoch);
     if(r.operation?.targetId===p.targetId)return r.operation;
     if(r.pendingOperation){ensure(r.pendingOperation.targetId===p.targetId&&r.pendingOperation.leaseEpoch===leaseEpoch,'Another operation connection is starting',409);return r.pendingOperation.promise;}
+    const auditSessionId=this.browserSessionId;
     const pending:PendingOperation={targetId:p.targetId,leaseEpoch,abort:new AbortController(),promise:undefined!};
     r.pendingOperation=pending;
     pending.promise=(async()=>{
@@ -460,7 +466,7 @@ export class Studio {
         if(r.operation){const previous=r.operation;await previous.gate.quiesce();await previous.browser.disconnect();if(r.operation===previous)r.operation=undefined;}
         pending.abort.signal.throwIfAborted();this.assertOperationOwner(r,p,leaseEpoch);
         const transport=await SocketTransport.connect(this.endpoint,pending.abort.signal);
-        const gate=new GateTransport(transport,{onConflict:conflict=>{void r.store!.appendEvent({type:'control-conflict',source:'gate',data:conflict}).catch(error=>console.error('Could not save control conflict',error));}});
+        const gate=new GateTransport(transport,{onConflict:conflict=>{void this.pageAudit(r,{type:'control-conflict',source:'gate',data:conflict},auditSessionId).catch(error=>console.error('Could not save control conflict',error));}});
         pending.gate=gate;
         pending.abort.signal.throwIfAborted();this.assertOperationOwner(r,p,leaseEpoch);
         const connected=await connectManagedPage(gate,p.targetId);browser=connected.browser;
@@ -483,11 +489,11 @@ export class Studio {
     if(controller==='agent')await Promise.all([...r.pages.values()].filter(page=>page.capture?.inspecting).map(page=>page.capture!.inspect(false)));
     ensure(this.browser?.runtime===r&&r.leaseEpoch===transitionEpoch&&!this.closing,'Control transition was cancelled',409);
     r.controller=controller;r.locked=false;this.window.lock(controller!=='human');
-    if(this.active===r)await r.store!.appendEvent({type:'control',source:'studio',data:{controller,leaseEpoch:r.leaseEpoch}});return this.state().session;
+    await this.pageAudit(r,{type:'control',source:'studio',data:{controller,leaseEpoch:r.leaseEpoch}});return this.state().session;
   }
   async action(body:any,signal?:AbortSignal){
     const timeout=AbortSignal.timeout(15_000),combined=signal?AbortSignal.any([signal,timeout]):timeout;
-    combined.throwIfAborted();const r=this.required(),p=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;
+    combined.throwIfAborted();const r=this.live(),p=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;
     ensure(p,'Unknown managed page',409);ensure(Number.isSafeInteger(body.generation)&&body.generation>=0,'Navigation generation is required',409);
     this.assertOperationOwner(r,p,leaseEpoch,body.generation);ensure(body.leaseEpoch===leaseEpoch,'Stale lease or wrong page identity',409);
     let documentEpoch=0;
@@ -497,7 +503,7 @@ export class Studio {
     combined.addEventListener('abort',abort,{once:true});
     try{
       op=await this.operation(r,p,leaseEpoch);documentEpoch=op.documentEpoch;check();this.assertOperationOwner(r,p,leaseEpoch,body.generation);op.gate.setCommandGuard(check);
-      const commandId=randomUUID();await r.store!.appendEvent({type:'command',source:'api',pageId:p.pageId,data:{commandId,type:body.type,selector:body.selector,controller:r.controller}});check();
+      const commandId=randomUUID();await this.pageAudit(r,{type:'command',source:'api',pageId:p.pageId,data:{commandId,type:body.type,selector:body.selector,controller:r.controller}});check();
       phase='preparation';
       const input=async()=>{
         const inputCheck=()=>{check();this.window.assertInputReady(p.view);};inputCheck();op!.gate.setCommandGuard(inputCheck);phase='input';
@@ -623,7 +629,7 @@ export class Studio {
     ensure(task.phase!=='saving','Acquisition has finished; saved materials are being committed',409);
     task.abort.abort(new Error('Checkpoint acquisition cancelled'));await task.done;return {operationId:task.id,cancelled:true};
   }
-  async snapshot(body:any={}){const r=this.required(),p=body.pageId?r.pages.get(body.pageId):this.current();ensure(p,'Snapshot page no longer exists',409);const generation=p.navigationGeneration;if(body.generation!==undefined)ensure(body.generation===generation,'Stale navigation generation',409);const max=body.maxBytes??4000;ensure(Number.isSafeInteger(max)&&max>=512&&max<=16000,'Snapshot maxBytes must be between 512 and 16000');const elements=await p.page.evaluate(snapshotElements);ensure(this.active===r&&r.pages.get(p.pageId)===p&&p.navigationGeneration===generation,'Snapshot target navigated during capture; refresh its identity',409);const result={pageId:p.pageId,generation,url:p.view.webContents.getURL(),elements:[] as typeof elements,outputTruncated:false};for(const item of elements){const candidate={...result,elements:[...result.elements,item]};if(Buffer.byteLength(JSON.stringify(candidate))+32>max)break;result.elements.push(item);}result.outputTruncated=result.elements.length<elements.length;ensure(Buffer.byteLength(JSON.stringify(result))<=max,'Snapshot metadata exceeds maxBytes; increase the budget',413);return captureMetadata(result);}
+  async snapshot(body:any={}){const r=this.live(),p=body.pageId?r.pages.get(body.pageId):this.current();ensure(p,'Snapshot page no longer exists',409);const generation=p.navigationGeneration;if(body.generation!==undefined)ensure(body.generation===generation,'Stale navigation generation',409);const max=body.maxBytes??4000;ensure(Number.isSafeInteger(max)&&max>=512&&max<=16000,'Snapshot maxBytes must be between 512 and 16000');const elements=await p.page.evaluate(snapshotElements);ensure(this.browser?.runtime===r&&r.pages.get(p.pageId)===p&&p.navigationGeneration===generation,'Snapshot target navigated during capture; refresh its identity',409);const result={pageId:p.pageId,generation,url:p.view.webContents.getURL(),elements:[] as typeof elements,outputTruncated:false};for(const item of elements){const candidate={...result,elements:[...result.elements,item]};if(Buffer.byteLength(JSON.stringify(candidate))+32>max)break;result.elements.push(item);}result.outputTruncated=result.elements.length<elements.length;ensure(Buffer.byteLength(JSON.stringify(result))<=max,'Snapshot metadata exceeds maxBytes; increase the budget',413);return captureMetadata(result);}
   async pauseOperations(paused:boolean){const r=this.required();ensure(r.controller==='human','Only manual control can be paused here',409);r.locked=paused;this.window.lock(paused);return this.state().active;}
   async pauseCapture(paused:boolean){const r=this.required();for(const p of r.pages.values())await p.capture!.pause(paused);r.capture=paused?'paused':[...r.pages.values()].some(p=>p.capture!.health==='degraded')?'degraded':'recording';return this.state().active;}
   async saveProfile(){const r=this.live();await r.session.cookies.flushStore();r.session.flushStorageData();const p=this.profiles.find(p=>p.id===r.profileId)!;p.savedAt=now();p.loginStatus='unknown';await this.save();if(this.active===r)await r.store!.appendEvent({type:'profile-saved',source:'studio',data:{profileId:p.id,loginStatus:'unknown',scope:'persistent cookies/localStorage/IndexedDB; memory/sessionStorage not guaranteed'}});return p;}

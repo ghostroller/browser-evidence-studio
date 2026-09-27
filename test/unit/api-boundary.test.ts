@@ -26,7 +26,7 @@ async function mockStudio() {
     required: () => run,
     serialized<T>(fn: () => Promise<T>): Promise<T> { const result = queue.then(fn); queue = result.catch(() => {}); return result; },
     block(promise: Promise<unknown>) { queue = promise; },
-    state: () => ({ active: run, validations: [{ id: 'path-id', runId: run.id }] }),
+    state: () => ({ active: run, session:{...scope,controller:run.controller,leaseEpoch:run.leaseEpoch,pages:[...run.pages.values()].map(page=>({...page,generation:page.navigationGeneration,url:'https://fixture.test/'}))}, validations: [{ id: 'path-id', runId: run.id }] }),
     authorizedOperation: (body: any, capability: TaskCapability, operation: (signal: AbortSignal) => Promise<unknown>, signal?: AbortSignal) => {
       const page = run.pages.get(body.pageId ?? run.selectedPageId);
       ensure(page, 'Unknown page or stale navigation generation', 409);

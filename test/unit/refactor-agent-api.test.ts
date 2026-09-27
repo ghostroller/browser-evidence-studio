@@ -5,12 +5,12 @@ import type { Studio } from '@/main/services/studio';
 import { ensure } from '@/shared/errors';
 
 async function fixture(){
-  const tasks=new TaskAuthorizations(),page={pageId:'page',targetId:'target',navigationGeneration:1};
+  const tasks=new TaskAuthorizations(),page={pageId:'page',targetId:'target',navigationGeneration:1,url:'https://fixture.test/'};
   const run={id:'run',projectId:'project',profileId:'profile',leaseEpoch:1,controller:'agent',execution:'ready',selectedPageId:'page',pages:new Map([['page',page]])};
   const scope={projectId:'project',sessionId:'session',profileId:'profile',pageId:'page',targetId:'target',url:'https://fixture.test/'};
   const grant=await tasks.issue(scope,{origins:['https://fixture.test'],pages:[{pageId:'page',targetId:'target'}],capabilities:['page-read','page-act','history-read','results-read'],durationMs:60000,maxOperations:50});
   const calls={action:vi.fn(async()=>({done:true})),snapshot:vi.fn(async()=>({pageId:'page'})),summary:vi.fn(async()=>({events:4})),release:vi.fn()};
-  const fake={tasks,active:run,runs:[run],projects:[{id:'project'}],required:()=>run,serialized:async(action:()=>Promise<unknown>)=>action(),state:()=>({active:{...run,pages:[page]},session:{sessionId:'session'},validations:[]}),action:calls.action,snapshot:calls.snapshot,reader:()=>({summary:calls.summary}),releaseHuman:calls.release,
+  const fake={tasks,active:run,runs:[run],projects:[{id:'project'}],required:()=>run,serialized:async(action:()=>Promise<unknown>)=>action(),state:()=>({active:{...run,pages:[page]},session:{...run,sessionId:'session',pages:[{...page,generation:page.navigationGeneration}]},validations:[]}),action:calls.action,snapshot:calls.snapshot,reader:()=>({summary:calls.summary}),releaseHuman:calls.release,
     authorizedOperation:async(body:any,capability:any,operation:any,signal?:AbortSignal)=>{
       ensure(body.projectId===scope.projectId&&body.profileId===scope.profileId&&body.sessionId===scope.sessionId,'Task browser identity is stale',409);
       return tasks.run(body.authorizationId,capability,{...scope,url:body.type==='navigate'?body.url:scope.url},operation,signal);
@@ -20,7 +20,7 @@ async function fixture(){
 describe('new and legacy HTTP routes share task scope',()=>{
   it('exposes only the granted live session and pages after recording stops',async()=>{
     const tasks=new TaskAuthorizations();
-    const session={sessionId:'session',projectId:'project',profileId:'profile',controller:'agent',leaseEpoch:9,locked:false,selectedPageId:'private-page',pages:[{pageId:'allowed-page',targetId:'allowed-target',generation:2},{pageId:'private-page',targetId:'private-target',generation:3}]};
+    const session={sessionId:'session',projectId:'project',profileId:'profile',controller:'agent',leaseEpoch:9,locked:false,selectedPageId:'private-page',pages:[{pageId:'allowed-page',targetId:'allowed-target',generation:2,url:'https://fixture.test/'},{pageId:'private-page',targetId:'private-target',generation:3,url:'https://private.test/'}]};
     const state={active:null,session,projects:[{id:'project'},{id:'foreign-project'}],profiles:[{id:'profile',projectId:'project'},{id:'foreign-profile',projectId:'foreign-project'}],runs:[],validations:[]};
     const dispatch=makeDispatch({tasks,state:()=>state,serialized:async(fn:any)=>fn()} as unknown as Studio);
     try{
