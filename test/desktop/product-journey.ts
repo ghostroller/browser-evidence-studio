@@ -1,15 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { desktopCapturer, type WebContents } from 'electron';
+import { type WebContents } from 'electron';
 import { mkdir, writeFile, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Studio } from '@/main/services/studio';
 import { startProductSite } from '../fixtures/product-site';
+import { recordNativeWindow } from './native-window-evidence';
 import { implementExportedProductTask } from './product-implementer';
 
-/** All task, environment, material and execution writes originate in visible UI.
+/** Task/environment/material writes originate in visible UI. Execution uses
+ * the UI and its publicly authorized HTTP API; no hidden business prefill.
  * Test diagnostics only read service state. The named implementer writes code,
  * never task data, and its proposal is confirmed through the normal editor. */
 export async function runProductJourney(studio:Studio,reopen=false){
@@ -17,17 +18,9 @@ export async function runProductJourney(studio:Studio,reopen=false){
   studio.window.window.show();studio.window.window.focus();
   const site=await startProductSite(),ui=studio.window.window.webContents;
   const directory=path.join(studio.root,reopen?'journey-reopen-evidence':'journey-evidence');await mkdir(directory);
-  const frames:Array<{file:string;at:number}>=[],operations:Array<{at:number;action:string}>=[];
+  const evidence=await recordNativeWindow(studio.window.window,directory),frames=evidence.frames;
   const report:any={passed:false,journeys:{},inputOrigin:'empty BES_DATA; visible production UI',implementation:'explicit demonstration implementer; proposal confirmed in UI'};
-  let recording=true;
-  const capture=(async()=>{while(recording){
-    const sources=await desktopCapturer.getSources({types:['window'],thumbnailSize:{width:1460,height:940}});
-    const source=sources.find(item=>item.id.split(':')[1]===studio.window.window.getMediaSourceId().split(':')[1])??sources.find(item=>item.name===studio.window.window.getTitle());
-
-    if(source&&!source.thumbnail.isEmpty()){const file=`frame-${String(frames.length).padStart(5,'0')}.png`;await writeFile(path.join(directory,file),source.thumbnail.toPNG());frames.push({file,at:Date.now()});}
-    await delay(700);
-  }})();
-  const mark=(action:string)=>{operations.push({at:Date.now(),action});console.log('JOURNEY '+action);};
+  const mark=(action:string)=>{evidence.mark(action);console.log('JOURNEY '+action);};
   const read=<T>(expression:string,wc=ui):Promise<T>=>wc.executeJavaScript(expression);
   async function wait<T>(fn:()=>Promise<T>,check:(v:T)=>boolean,name:string):Promise<T>{const end=Date.now()+20000;while(Date.now()<end){const value=await fn();if(check(value))return value;await delay(150);}throw new Error('Journey timeout: '+name+'; '+await read('document.body.innerText.slice(-3500)'));}
   const visible="el.getClientRects().length&&!el.closest('[hidden]')&&!el.closest('[inert]')";
@@ -36,6 +29,14 @@ export async function runProductJourney(studio:Studio,reopen=false){
   async function click(name:string,scope='document'){mark('点击 '+name);await clickExpression(`[...${scope}.querySelectorAll('button')].find(el=>(el.textContent.trim()===${JSON.stringify(name)}||el.getAttribute('aria-label')===${JSON.stringify(name)})&&${visible})`);}
   async function fill(label:string,value:string,scope='document'){mark('填写 '+label);const expression=`[...${scope}.querySelectorAll('label')].find(el=>el.firstChild?.textContent.trim()===${JSON.stringify(label)}&&${visible})?.querySelector('input,textarea')`;await clickExpression(expression);ui.sendInputEvent({type:'keyDown',keyCode:'A',modifiers:['control']});ui.sendInputEvent({type:'keyUp',keyCode:'A',modifiers:['control']});await delay(120);await ui.insertText(value);await delay(220);if(await read<string>(`(${expression}).value`)!==value){ui.sendInputEvent({type:'keyDown',keyCode:'A',modifiers:['control']});ui.sendInputEvent({type:'keyUp',keyCode:'A',modifiers:['control']});await delay(120);await ui.insertText(value);await delay(220);}assert.equal(await read<string>(`(${expression}).value`),value,'Visible input committed: '+label);}
   async function choose(label:string,text:string){mark('选择 '+label+' / '+text);const expression=`(document.querySelector('select[aria-label=${JSON.stringify(label)}]')||[...document.querySelectorAll('label')].find(el=>el.firstChild?.textContent.trim()===${JSON.stringify(label)})?.querySelector('select'))`;await clickExpression(expression);const index=await read<number>(`[...(${expression}).options].findIndex(el=>el.textContent.includes(${JSON.stringify(text)}))`);assert(index>=0);ui.sendInputEvent({type:'keyDown',keyCode:'HOME'});for(let i=0;i<index;i++)ui.sendInputEvent({type:'keyDown',keyCode:'DOWN'});ui.sendInputEvent({type:'keyDown',keyCode:'ENTER'});await delay(250);}
+  async function popupCycle(stage:string){
+    mark(stage+'：打开弹窗、切回父页、切回弹窗并关闭');const parent=studio.current().pageId;
+    await clickExpression("document.querySelector('#details')",studio.current().view.webContents);
+    await wait(async()=>studio.state().session?.pages.length,n=>n===2,'managed popup');await delay(1000);
+    await clickExpression("[...document.querySelectorAll('.browser-tabs button')].find(el=>el.textContent.includes('合成订单后台'))");assert.equal(studio.current().pageId,parent);
+    await clickExpression("[...document.querySelectorAll('.browser-tabs button')].find(el=>el.textContent.includes('合成订单详情'))");await click('关闭当前页');
+    await wait(async()=>studio.state().session?.pages.length,n=>n===1,'popup closed');assert.equal(studio.current().pageId,parent);assert(studio.current().view.getVisible());assert.equal(studio.active,undefined);
+  }
   let knownDraftId='';
   async function pickHistory(selector:string){
     await wait(async()=>(studio.replayHost as any).active?.state?.selecting,Boolean,'historical native selection');
@@ -68,6 +69,7 @@ export async function runProductJourney(studio:Studio,reopen=false){
     await wait(()=>read<boolean>("!!document.querySelector('#logged-in')",studio.current().view.webContents),Boolean,'logged in');
     await click('检查登录状态');assert.equal(studio.profiles[0].loginStatus,'verified');await click('保留环境');await click('关闭浏览器会话');await click('打开环境');
     await wait(()=>read<boolean>("!!document.querySelector('#logged-in')",studio.current().view.webContents),Boolean,'persistent login');await click('检查登录状态');assert.equal(studio.runs.length,0);
+    await popupCycle('未录制环境');assert.equal(studio.runs.length,0);
     report.journeys.U01={passed:true,storageRef:studio.profiles[0].storageRef,recordingsBeforeDemonstration:0};
     await click('开始录制');await wait(async()=>studio.active?.capture,value=>value==='recording','recording ready');
     await click('记录当前结果');await wait(async()=>(await draft()).content.checkpoints.length,n=>n===1,'unified savepoint');
@@ -75,6 +77,7 @@ export async function runProductJourney(studio:Studio,reopen=false){
     assert.equal(await read(`document.querySelector('.material-editor textarea')?.value`),'这两条订单的实付金额需要保留元单位。');await click('保存卡片草稿');
     const first=(await draft()).content.checkpoints[0];assert(first.sourceReceiptRef);report.journeys.U02={passed:true,cardId:first.id,receiptId:first.sourceReceiptRef};
     await fill('新需求含义','两条订单的实付金额');await click('新建并关联需求');
+    await click('添加所需字段（实时页面）');await click('取消实时选择（Esc）');
     await click('添加所需字段（实时页面）');await wait(async()=>studio.current().capture?.inspecting,Boolean,'live selection');
     await clickExpression("document.querySelector('[data-field=amount]')",studio.current().view.webContents);
     await wait(async()=>(await draft()).content.checkpoints.length,n=>n===2,'durable live example');
@@ -100,11 +103,17 @@ export async function runProductJourney(studio:Studio,reopen=false){
     await click('结束并封存');assert(studio.state().session);
     const recordingRoot=path.join(studio.root,'runs',report.journeys.U03.target.position.recordingId);
     async function originalHashes(){const result:Record<string,string>={};async function walk(relative:string){for(const entry of await readdir(path.join(recordingRoot,relative),{withFileTypes:true})){const child=path.join(relative,entry.name);if(entry.isDirectory())await walk(child);else result[child]=createHash('sha256').update(await readFile(path.join(recordingRoot,child))).digest('hex');}}await walk('raw');await walk('blobs');for(const file of ['checkpoints.jsonl','artifacts.jsonl'])result[file]=createHash('sha256').update(await readFile(path.join(recordingRoot,file))).digest('hex');return result;}
-    const beforeOriginals=await originalHashes();await click('查看来源');
+    const beforeOriginals=await originalHashes();await popupCycle('已封存会话');assert.deepEqual(await originalHashes(),beforeOriginals);await click('查看来源');
     await wait(()=>read<boolean>("!!document.querySelector('.replay-timeline')"),Boolean,'historical workspace');
-    await fill('说明','历史补充：金额为订单实付，不含退款。');await click('保存卡片草稿');await click('新建卡片');await fill('标题','历史补充保存点');await fill('说明','从停止录制后的可靠历史位置补充，金额仍按页面显示。');await click('保存卡片草稿');await click('发布候选版本');
+    await fill('说明','历史补充：金额为订单实付，不含退款。');await click('保存卡片草稿');await click('新建卡片');await fill('标题','历史补充保存点');await fill('说明','从停止录制后的可靠历史位置补充，金额仍按页面显示。');await click('保存卡片草稿');
+    await click('新增注释');await click('在历史页选择元素');await pickHistory('[data-entity="order-two"] [data-field="amount"]');
+    await choose('类型','需求');await clickExpression("[...document.querySelectorAll('.material-editor label')].find(el=>el.textContent.trim()==='两条订单的实付金额')?.querySelector('input[type=checkbox]')");
+    await fill('注释','发布时统一保存的历史注释');await fill('需求说明','两条订单实付金额，保留页面元单位');await fill('明确含义','订单实际支付金额，单位元；直接发布也应保存本次说明。');
+    mark('E01：未分别保存卡片类型/关联、普通注释、需求与字段说明，直接发布');await click('发布候选版本');
     let revisions=await studio.materials.service.listRevisions(studio.projects[0].id,{limit:100,maxBytes:28672});assert.equal(revisions.items.length,1);
     const revision=await studio.materials.service.revision(studio.projects[0].id,revisions.items[0].revisionId);
+    assert.equal(revision.content.fields[0].description,'订单实际支付金额，单位元；直接发布也应保存本次说明。');assert.deepEqual(revision.content.fields[0].target,report.journeys.U03.target);assert.deepEqual(revision.content.requirements[0].fieldIds,[revision.content.fields[0].id]);assert.equal(revision.content.requirements[0].dataset,'orders');assert.equal(revision.content.checkpoints[2].kind,'requirement');assert.deepEqual(revision.content.checkpoints[2].requirementIds,[revision.content.requirements[0].id]);assert(revision.content.annotations.some(item=>item.text==='发布时统一保存的历史注释'));
+    report.regressions={E01:{visible:true,batchedDirectPublish:true,kind:true,association:true,ordinaryAnnotation:true,fieldAndRequirement:true},session:{visible:true,noRecordingPopupAndSwitch:true,sealedPopupAndSwitch:true,auditFailure:'module-only'},E02:{visible:'live cancellation and fresh selection',partialAndStaleFaults:'renderer/service injection only'},E03:{lateResponses:'renderer/service injection only'}};
     report.journeys.U05={passed:true,revisionId:revision.revisionId,contentHash:revision.contentHash};
     await click('复制');
     await wait(async()=>(await draft()).content.checkpoints.length,n=>n===4,'copied card');
@@ -131,13 +140,21 @@ export async function runProductJourney(studio:Studio,reopen=false){
     const fixed=await studio.materials.service.revision(studio.projects[0].id,boundId);
     assert.equal(studio.active,undefined);
     await click('任务授权');
-    for(const label of ['运行登记脚本','导出交接包'])await clickExpression(`[...document.querySelectorAll('.task-capabilities label')].find(el=>el.textContent.trim()===${JSON.stringify(label)})?.querySelector('input')`);
+    for(const label of ['运行登记脚本','导出交接包','读取当前页面','操作当前页面','创建页面'])await clickExpression(`[...document.querySelectorAll('.task-capabilities label')].find(el=>el.textContent.trim()===${JSON.stringify(label)})?.querySelector('input')`);
     await fill('有效分钟数','10');await fill('最多操作数','100');await click('授予这次任务');
     await choose('交接资料版本',boundId.slice(0,16));await click('准备交给 Agent');
     await wait(()=>read<string>("document.querySelector('.task-authorizations .notice')?.textContent||''"),value=>value.includes('固定交接已保存'),'fixed handoff export');
     const authorizationId=await read<string>("[...document.querySelectorAll('.task-grant')].find(el=>[...el.querySelectorAll('button')].some(button=>button.textContent==='撤销此授权')).querySelector('code').textContent");
     const connection=JSON.parse(await readFile(path.join(studio.root,'connection','agent-connection.json'),'utf8'));
     const discoveryResponse=await fetch(connection.address+'/v1/state?authorizationId='+authorizationId,{headers:{Authorization:`Bearer ${connection.token}`}});assert.equal(discoveryResponse.status,200);const discovery:any=await discoveryResponse.json();assert.equal(discovery.active,null);const session=discovery.session,page=session.pages.find((page:any)=>page.pageId===session.selectedPageId);assert(page);assert.equal(session.controller,'agent');
+    await click('返回工作台');const runsBefore=studio.runs.length,frontPageId=studio.current().pageId;
+    const headers={Authorization:`Bearer ${connection.token}`,'Content-Type':'application/json'};
+    const sessionQuery=(p:any)=>new URLSearchParams({authorizationId,pageId:p.pageId,generation:String(p.generation)});
+    const currentRead=await fetch(connection.address+'/v1/sessions/'+session.sessionId+'/snapshot?'+sessionQuery(page),{headers});assert.equal(currentRead.status,200);assert.equal((await currentRead.json() as any).pageId,page.pageId);
+    const requestPage=async(operation:string,extra:any)=>{const response=await fetch(connection.address+'/v1/sessions/'+session.sessionId+'/'+operation,{method:'POST',headers:{...headers,'Idempotency-Key':randomUUID()},body:JSON.stringify({authorizationId,projectId:session.projectId,profileId:session.profileId,sessionId:session.sessionId,leaseEpoch:session.leaseEpoch,pageId:page.pageId,generation:page.generation,...extra})});assert.equal(response.status,202);const accepted:any=await response.json();const job=await wait<any>(async()=>{const response=await fetch(connection.address+'/v1/jobs/'+accepted.jobId+'?authorizationId='+authorizationId,{headers});return response.json();},value=>['succeeded','failed','cancelled'].includes(value.status),'session API '+operation);assert.equal(job.status,'succeeded',JSON.stringify(job.error));return job.result;};
+    mark('E04：无录制，正式 session API 读取和点击当前页面');await requestPage('actions',{type:'click',selector:'#redraw'});await wait(()=>read<string>("document.querySelector('#redraw-count').textContent",studio.current().view.webContents),value=>value==='1','visible authorized click');
+    const created=await requestPage('pages',{startUrl:site.url+'/orders'});assert.equal(created.runId,undefined);const backgroundRead=await fetch(connection.address+'/v1/sessions/'+session.sessionId+'/snapshot?'+sessionQuery(created),{headers});assert.equal(backgroundRead.status,200);assert.equal((await backgroundRead.json() as any).pageId,created.pageId);assert.equal(studio.current().pageId,frontPageId);assert.equal(studio.runs.length,runsBefore);assert.equal(studio.active,undefined);report.regressions.E04={visible:true,authorizedCurrentRead:true,authorizedClick:true,createdBackgroundRead:true,foregroundUnchanged:true,newRecordings:0};
+
     mark('授权 Agent 经正式 POST /v1/validations 执行 UI 固定资料；当前无录制');
     const launchBody={authorizationId,projectId:session.projectId,profileId:session.profileId,sessionId:session.sessionId,leaseEpoch:session.leaseEpoch,pageId:page.pageId,generation:page.generation,executionMode:'current-page-test',materialRevisionId:boundId,materialContentHash:fixed.contentHash,input:{variant:'good'}};
     for(const wrongRun of [report.journeys.U03.target.position.recordingId,randomUUID()]){
@@ -149,7 +166,8 @@ export async function runProductJourney(studio:Studio,reopen=false){
     const submitted:any=await response.json();assert.equal(response.status,202,JSON.stringify(submitted));
     const job=await wait<any>(async()=>{const response=await fetch(connection.address+'/v1/jobs/'+submitted.jobId+'?authorizationId='+authorizationId,{headers:{Authorization:`Bearer ${connection.token}`}});return response.json();},value=>['succeeded','failed','cancelled'].includes(value.status),'authorized execution start');assert.equal(job.status,'succeeded',JSON.stringify(job.error));
     await wait(async()=>studio.state().validations.find(item=>item.id===job.result.id)?.status,value=>value==='completed','authorized execution completion');
-    await click('撤销此授权');await click('返回工作台');
+    await click('任务授权');await click('撤销此授权');await click('返回工作台');
+    const revokedRead=await fetch(connection.address+'/v1/sessions/'+session.sessionId+'/snapshot?'+sessionQuery(page),{headers});assert.equal(revokedRead.status,403);report.regressions.E04.revokedReadRejected=true;
     const results=[];
     for(const variant of ['good','wrong','unverified']){
       await fill('输入 JSON',JSON.stringify({variant}));const before=studio.state().validations.length;
@@ -171,9 +189,6 @@ export async function runProductJourney(studio:Studio,reopen=false){
     }
 
   }catch(error){report.error=String(error);throw error;}
-  finally{recording=false;await capture;
-    const concat=frames.map((frame,index)=>`file '${frame.file}'\nduration ${((frames[index+1]?.at??frame.at+700)-frame.at)/1000}`).join('\n');await writeFile(path.join(directory,'frames.txt'),concat+'\n');
-    const encoder=spawn('ffmpeg',['-hide_banner','-loglevel','warning','-f','concat','-safe','0','-i','frames.txt','-vf','pad=ceil(iw/2)*2:ceil(ih/2)*2','-fps_mode','vfr','-c:v','libx264','-pix_fmt','yuv420p','continuous-window.mp4'],{cwd:directory,windowsHide:true,stdio:['ignore','ignore','pipe']});let videoLog='';encoder.stderr.on('data',chunk=>videoLog+=String(chunk));const videoCode=await new Promise((resolve,reject)=>{encoder.once('error',reject);encoder.once('close',resolve);});
-    await writeFile(path.join(directory,'video-capture.log'),videoLog);report.continuousVideo={exitCode:videoCode,path:'continuous-window.mp4',kind:'continuous native-window samples at original timestamps',frames:frames.length,maxGapMs:Math.max(...frames.slice(1).map((frame,index)=>frame.at-frames[index].at))};if(videoCode!==0)report.passed=false;await site.close();await writeFile(path.join(directory,'timeline.json'),JSON.stringify({frames,operations,report},null,2));await writeFile(path.join(directory,'index.html'),`<!doctype html><meta charset="utf-8"><title>连续实际窗口旅程</title><style>body{font:16px system-ui;background:#222;color:white}img{width:95vw}input{width:90vw}</style><h1>连续实际窗口操作证据</h1><video src="continuous-window.mp4" controls style="width:95vw"></video><h2>帧索引（如可用）</h2><button onclick="playing=!playing">播放 / 暂停</button><input id="seek" type="range" min="0" max="${frames.length-1}" value="0"><p id="caption"></p><img id="frame"><script>const frames=${JSON.stringify(frames)},operations=${JSON.stringify(operations)};let i=0,playing=true;function render(){document.querySelector('#frame').src=frames[i].file;document.querySelector('#caption').textContent=new Date(frames[i].at).toISOString()+' '+(operations.findLast(o=>o.at<=frames[i].at)?.action||'');document.querySelector('#seek').value=i;}document.querySelector('#seek').oninput=e=>{i=+e.target.value;render()};setInterval(()=>{if(playing){i=(i+1)%frames.length;render()}},700);if(frames.length)render();</script>`);}
+  finally{await evidence.stop(report);await site.close();}
   assert(report.passed,'Product journey did not complete');assert(frames.length>10,'Continuous window capture has too few frames');assert.equal(report.continuousVideo.exitCode,0,'Continuous video capture failed');assert(report.continuousVideo.maxGapMs<10000,'Continuous frame gap exceeds 10 seconds');return report;
 }
