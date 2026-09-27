@@ -9,6 +9,7 @@ import { Textarea } from './ui/textarea';
 import { Label } from './ui/label';
 import { NativeSelect } from './ui/native-select';
 
+type EditorPart = 'card' | 'requirement' | 'field' | 'annotation' | 'link';
 type Collection = 'requirements' | 'fields' | 'checkpoints' | 'annotations' | 'recordingRefs';
 type Page<T> = { items: T[]; nextCursor?: string; outputTruncated: boolean };
 type Draft = { draftId: string; draftRevision: number; baseRevisionId?: string; status?: string; counts?: Record<string, number> };
@@ -56,7 +57,9 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   const liveScopeRef=useRef(liveScope);
   const retryCapture=useRef<any>(null);
   const consumedSample=useRef('');
-  const cardInputs=useRef(new Map<string,{title:string;notes:string}>());
+  const dirty=useRef(new Set<EditorPart>());
+  const cacheConflict=useRef<number|null>(null);
+  const markDirty=(part:EditorPart)=>{dirty.current.add(part);};
   const [fieldPath, setFieldPath] = useState('');
   const [fieldPolicy, setFieldPolicy] = useState<MaterialField['sourcePolicy']>('any-evidenced');
   const [fieldValueType, setFieldValueType] = useState<MaterialField['valueType'] | ''>('');
@@ -81,11 +84,15 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   const pendingRef = useRef(false);
   const scopeRef = useRef(projectId);
   scopeRef.current = projectId;
+  const editorSession=useRef({projectId,sequence:0});
+  if(editorSession.current.projectId!==projectId)editorSession.current={projectId,sequence:editorSession.current.sequence+1};
+  const editorSessionId=editorSession.current.sequence;
+  const ownsSession=()=>scopeRef.current===projectId&&editorSession.current.sequence===editorSessionId;
   const draftRef = useRef<Draft | null>(null);
   const selectedDraft = (scope: string, token: number, id: string, revision?: number) => scopeRef.current === scope &&
     selectionRequest.current === token && draftRef.current?.draftId === id && (revision === undefined || draftRef.current.draftRevision === revision);
   const resetEditor = () => {
-    pendingSelection.current = null;
+    pendingSelection.current = null;dirty.current.clear();cacheConflict.current=null;retryCapture.current=null;consumedSample.current='';setLiveIntent(null);setMapping(null);setBindingAction('keep');setTechnicalDirty(false);setConfirmClear(false);
     setCardId(''); setTitle(''); setNotes(''); setKind('observation'); setCardRequirementIds([]);setNewCardRequirement('');
     setRequirementId(''); setRequirementDescription(''); setRulesJson('[]');
     setFieldId(''); setFieldName(''); setFieldDescription(''); setFieldDataset(''); setFieldPath('');
@@ -94,41 +101,45 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   };
   const call = useCallback((method: string, body: Record<string, unknown> = {}) => window.studio.call(method, { projectId, ...body }), [projectId]);
   const refreshLists = useCallback(async () => {
+    if(!ownsSession())return;
     const token = ++listRequest.current;
     try { const [nextDrafts, nextRevisions] = await Promise.all([
       call('materialDrafts', { limit: 50, maxBytes: 24576 }), call('materialRevisions', { limit: 50, maxBytes: 24576 }),
     ]);
-      if (token === listRequest.current && scopeRef.current === projectId) { setDrafts(nextDrafts); setRevisions({...nextRevisions,items:[...nextRevisions.items].sort((a:any,b:any)=>String(b.createdAt).localeCompare(String(a.createdAt)))}); }
-    } catch (failure) { if (token === listRequest.current && scopeRef.current === projectId) setError(String(failure)); }
-  }, [call, projectId]);
+      if (token === listRequest.current && ownsSession()) { setDrafts(nextDrafts); setRevisions({...nextRevisions,items:[...nextRevisions.items].sort((a:any,b:any)=>String(b.createdAt).localeCompare(String(a.createdAt)))}); }
+    } catch (failure) { if (token === listRequest.current && ownsSession()) setError(String(failure)); }
+  }, [call, projectId, editorSessionId]);
   const loadCollection = useCallback(async (selected: Draft, collection: Collection, token: number, cursor?: string) => {
+    if(!ownsSession()||selectionRequest.current!==token)return;
     const result: Page<any> = await call('materialCollection', { kind: 'draft', draftId: selected.draftId, collection, cursor, limit: 50, maxBytes: 24576 });
-    if (scopeRef.current !== projectId || selectionRequest.current !== token || draftRef.current?.draftId !== selected.draftId || draftRef.current.draftRevision !== selected.draftRevision) return;
+    if (!ownsSession() || selectionRequest.current !== token || draftRef.current?.draftId !== selected.draftId || draftRef.current.draftRevision !== selected.draftRevision) return;
     setPages(current => ({ ...current, [collection]: cursor ? current[collection].nextCursor === cursor
       ? { ...result, items: [...current[collection].items, ...result.items] } : current[collection] : result }));
-  }, [call, projectId]);
+  }, [call, projectId, editorSessionId]);
   const openDraft = useCallback(async (id: string, preserve=false) => {
+    if(!ownsSession()||(pendingRef.current&&!preserve))return;
     const token = ++selectionRequest.current;
     ++writeRequest.current; pendingRef.current = false; setPending('');
     draftRef.current = null; setDraft(null); setPages(empty()); if(!preserve)resetEditor();
     try { const selected: Draft = await call('materialDraft', { draftId: id });
-      if (token !== selectionRequest.current || scopeRef.current !== projectId) return;
-      if(!preserve){try{const raw=localStorage.getItem(`bes.editor.${projectId}.${id}`);if(raw){const saved=JSON.parse(raw);setCardId(saved.cardId);setTitle(saved.title);setNotes(saved.notes);setKind(saved.kind);setCardRequirementIds(saved.cardRequirementIds);setNewCardRequirement(saved.newCardRequirement);setRequirementId(saved.requirementId);setRequirementDescription(saved.requirementDescription);setRulesJson(saved.rulesJson);setFieldId(saved.fieldId);setFieldName(saved.fieldName);setFieldDescription(saved.fieldDescription);setFieldDataset(saved.fieldDataset);setFieldPath(saved.fieldPath);setFieldPolicy(saved.fieldPolicy);setFieldValueType(saved.fieldValueType);setSourceProofJson(saved.sourceProofJson);setTechnicalDirty(saved.technicalDirty??false);setFieldTarget(saved.fieldTarget);setFieldAnnotationId(saved.fieldAnnotationId);setAnnotationId(saved.annotationId);setAnnotationTarget(saved.annotationTarget);setAnnotationText(saved.annotationText);setInterpretation(saved.interpretation);setBindingAction(saved.bindingAction);if(saved.draftRevision!==selected.draftRevision){setNotice('已恢复本机未提交输入；服务端草稿有更新，请核对后保存。');}retryCapture.current=saved.retryCapture??null;}}catch{setNotice('本机编辑恢复记录不可读；已保留原记录，当前显示服务端草稿。');}}
-      draftRef.current = selected; setDraft(selected);setConflict(null);
+      if (token !== selectionRequest.current || !ownsSession()) return;
+      if(!preserve){try{const raw=localStorage.getItem(`bes.editor.${projectId}.${id}`);if(raw){const saved=JSON.parse(raw);setCardId(saved.cardId);setTitle(saved.title);setNotes(saved.notes);setKind(saved.kind);setCardRequirementIds(saved.cardRequirementIds);setNewCardRequirement(saved.newCardRequirement);setRequirementId(saved.requirementId);setRequirementDescription(saved.requirementDescription);setRulesJson(saved.rulesJson);setFieldId(saved.fieldId);setFieldName(saved.fieldName);setFieldDescription(saved.fieldDescription);setFieldDataset(saved.fieldDataset);setFieldPath(saved.fieldPath);setFieldPolicy(saved.fieldPolicy);setFieldValueType(saved.fieldValueType);setSourceProofJson(saved.sourceProofJson);setTechnicalDirty(saved.technicalDirty??false);setFieldTarget(saved.fieldTarget);setFieldAnnotationId(saved.fieldAnnotationId);setAnnotationId(saved.annotationId);setAnnotationTarget(saved.annotationTarget);setAnnotationText(saved.annotationText);setInterpretation(saved.interpretation);setBindingAction(saved.bindingAction);if(saved.draftRevision!==selected.draftRevision||!Array.isArray(saved.dirty)){cacheConflict.current=saved.draftRevision??-1;setConflict(selected);setNotice('已恢复本机输入，但版本或缓存格式不同；请先读取当前修订并核对，再保存或发布。');}dirty.current=new Set(saved.dirty??[...(saved.cardId?['card']:[]),...(saved.requirementId?['requirement']:[]),...(saved.fieldName?['field']:[]),...(saved.annotationText?['annotation']:[])]);retryCapture.current=saved.retryCapture?.projectId===projectId&&saved.retryCapture?.draftId===id?saved.retryCapture:null;}}catch{setNotice('本机编辑恢复记录不可读；已保留原记录，当前显示服务端草稿。');}}
+      draftRef.current = selected; setDraft(selected);if(preserve){cacheConflict.current=null;setConflict(null);}else if(cacheConflict.current===null)setConflict(null);
       await Promise.all(COLLECTIONS.map(collection => loadCollection(selected, collection, token)));
-    } catch (failure) { if (token === selectionRequest.current && scopeRef.current === projectId) setError(String(failure)); }
-  }, [call, loadCollection]);
+    } catch (failure) { if (token === selectionRequest.current && ownsSession()) setError(String(failure)); }
+  }, [call, loadCollection, editorSessionId]);
   useEffect(() => { ++listRequest.current; ++selectionRequest.current; ++writeRequest.current; pendingRef.current = false;
     ++revisionRequest.current;setViewedRevision(null);setViewedPages(empty());
     draftRef.current = null; setDraft(null); setDrafts({ items: [], outputTruncated: false }); setRevisions({ items: [], outputTruncated: false });
     setPages(empty()); resetEditor(); setPending(''); setError('');
     if(projectId)void refreshLists();
-    if(projectId)void call("workingMaterialDraft").then(value=>openDraft(localStorage.getItem(`bes.activeDraft.${projectId}`)||value.draftId)).catch(failure=>setError(String(failure)));
+    const bootstrap=selectionRequest.current;
+    if(projectId)void call("workingMaterialDraft").then(value=>{if(ownsSession()&&selectionRequest.current===bootstrap)return openDraft(localStorage.getItem(`bes.activeDraft.${projectId}`)||value.draftId);}).catch(failure=>{if(ownsSession()&&selectionRequest.current===bootstrap)setError(String(failure));});
     return () => { ++listRequest.current; ++selectionRequest.current; ++writeRequest.current; };
   }, [projectId, refreshLists]);
   useEffect(()=>{
     if(!draft||draftRef.current?.draftId!==draft.draftId||scopeRef.current!==projectId)return;
-    try{localStorage.setItem(`bes.editor.${projectId}.${draft.draftId}`,JSON.stringify({draftRevision:draft.draftRevision,cardId,title,notes,kind,cardRequirementIds,newCardRequirement,requirementId,requirementDescription,rulesJson,fieldId,fieldName,fieldDescription,fieldDataset,fieldPath,fieldPolicy,fieldValueType,sourceProofJson,fieldTarget,fieldAnnotationId,annotationId,annotationTarget,annotationText,interpretation,bindingAction,technicalDirty,retryCapture:retryCapture.current}));localStorage.setItem(`bes.activeDraft.${projectId}`,draft.draftId);}
+    try{localStorage.setItem(`bes.editor.${projectId}.${draft.draftId}`,JSON.stringify({draftRevision:cacheConflict.current??draft.draftRevision,cardId,title,notes,kind,cardRequirementIds,newCardRequirement,requirementId,requirementDescription,rulesJson,fieldId,fieldName,fieldDescription,fieldDataset,fieldPath,fieldPolicy,fieldValueType,sourceProofJson,fieldTarget,fieldAnnotationId,annotationId,annotationTarget,annotationText,interpretation,bindingAction,technicalDirty,dirty:[...dirty.current],retryCapture:retryCapture.current}));localStorage.setItem(`bes.activeDraft.${projectId}`,draft.draftId);}
     catch{setNotice('本机未提交输入暂时无法持久化，请先保存草稿再退出。');}
   },[projectId,draft,cardId,title,notes,kind,cardRequirementIds,newCardRequirement,requirementId,requirementDescription,rulesJson,fieldId,fieldName,fieldDescription,fieldDataset,fieldPath,fieldPolicy,fieldValueType,sourceProofJson,fieldTarget,fieldAnnotationId,annotationId,annotationTarget,annotationText,interpretation,bindingAction,technicalDirty]);
   useEffect(() => {
@@ -142,8 +153,8 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
       !sameReplayPosition(request.anchor,received.anchor)||!sameReplayPosition(request.anchor,selectedTarget.target.position)||
       request.annotationId!==(annotationId||undefined)&&request.purpose==='annotation'||request.fieldId!==(fieldId||undefined)&&request.purpose==='field')return;
     pendingSelection.current=null;
-    if(request.purpose==='annotation')setAnnotationTarget(selectedTarget.target);
-    else {setFieldTarget(selectedTarget.target);setBindingAction('set');setFieldAnnotationId('');}
+    if(request.purpose==='annotation'){markDirty('annotation');setAnnotationTarget(selectedTarget.target);}
+    else {markDirty('field');setFieldTarget(selectedTarget.target);setBindingAction('set');setFieldAnnotationId('');}
   }, [selectedTarget]);
   const beginSelection=(purpose:'annotation'|'field')=>{
     const selected=draftRef.current, card=(pages.checkpoints.items as CheckpointCard[]).find(item=>item.id===cardId);
@@ -152,32 +163,30 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
       checkpointId:card.id,anchor:card.anchor,purpose,...(purpose==='annotation'&&annotationId?{annotationId}:{}),...(purpose==='field'&&fieldId?{fieldId}:{})};
     pendingSelection.current=request;setError('');onSelectTarget(request);
   };
-  const mutate = async (edits: Edit[], message: string, expected = draftRef.current): Promise<boolean> => {
-    if (!expected || pendingRef.current || draftRef.current?.draftId !== expected.draftId || draftRef.current.draftRevision !== expected.draftRevision) return false;
+  const mutate = async (edits: Edit[], message: string, expected = draftRef.current, ownLock=false, hold=false): Promise<Draft|null> => {
+    if (!ownsSession() || !expected || (pendingRef.current&&!ownLock) || draftRef.current?.draftId !== expected.draftId || draftRef.current.draftRevision !== expected.draftRevision) return null;
     pendingRef.current = true;
     const scope = projectId, selection = selectionRequest.current, write = ++writeRequest.current;
-    const activeWrite = () => scopeRef.current === scope && selectionRequest.current === selection && write === writeRequest.current && draftRef.current?.draftId === expected.draftId;
+    const activeWrite = () => ownsSession() && selectionRequest.current === selection && write === writeRequest.current && draftRef.current?.draftId === expected.draftId;
     const current = () => activeWrite() && draftRef.current?.draftRevision === expected.draftRevision;
     setPending('保存资料'); setError(''); setConflict(null);
     try {
       const result = await call('editMaterialDraft', { draftId: expected.draftId, expectedDraftRevision: expected.draftRevision, edits });
-      if (!current()) return false;
-      if (result.status === 'conflict') { setConflict(result.current); setError(`草稿已由其他操作更新：本地修订 ${expected.draftRevision}，当前修订 ${result.current.draftRevision}。请重新读取后再编辑。`); return false; }
+      if (!current()) return null;
+      if (result.status === 'conflict') { setConflict(result.current); setError(`草稿已由其他操作更新：本地修订 ${expected.draftRevision}，当前修订 ${result.current.draftRevision}。请重新读取后再编辑。`); return null; }
       draftRef.current = result.draft; setDraft(result.draft); setNotice(message); setPages(empty());
       await Promise.all(COLLECTIONS.map(collection => loadCollection(result.draft, collection, selection)));
-      return scopeRef.current === scope && selectionRequest.current === selection && write === writeRequest.current;
-    } catch (failure) { if (activeWrite()) setError(String(failure)); return false; }
-    finally { if (scopeRef.current === scope && selectionRequest.current === selection && write === writeRequest.current) { pendingRef.current = false; setPending(''); } }
+      return ownsSession() && selectionRequest.current === selection && write === writeRequest.current ? result.draft : null;
+    } catch (failure) { if (activeWrite()) setError(String(failure)); return null; }
+    finally { if (!hold && ownsSession() && selectionRequest.current === selection && write === writeRequest.current) { pendingRef.current = false; setPending(''); } }
   };
   const card = pages.checkpoints.items.find((item: CheckpointCard) => item.id === cardId) as CheckpointCard | undefined;
-  const selectCard = async (item: CheckpointCard) => {
-    if(card&&(title!==card.title||notes!==card.notes)&&!await saveCard())return;
+  const changeEditor=(change:()=>void)=>{if(pendingRef.current||!ownsSession())return;if(!dirty.current.size){change();return;}void saveEditor().then(saved=>{if(saved&&ownsSession())change();});};
+  const selectCard = (item: CheckpointCard) => changeEditor(()=>{
     pendingSelection.current=null;
-    setCardId(item.id); setTitle(item.title); setNotes(item.notes); setKind(item.kind); setCardRequirementIds(item.requirementIds);setNewCardRequirement('');
+    setCardId(item.id);setTitle(item.title);setNotes(item.notes);setKind(item.kind);setCardRequirementIds(item.requirementIds);setNewCardRequirement('');
     setAnnotationId('');setAnnotationTarget(null);setAnnotationText('');
-    if(cardId)cardInputs.current.set(cardId,{title,notes});
-    const cached=cardInputs.current.get(item.id);if(cached){setTitle(cached.title);setNotes(cached.notes);}
-  };
+  });
   const currentRequirements = pages.requirements.items as MaterialRequirement[];
   const allRecordingRefs = async (selected: Draft) => {
     let cursor: string | undefined;
@@ -192,83 +201,106 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   const selectedRequirement = currentRequirements.find(item => item.id === requirementId);
   const selectedField = (pages.fields.items as MaterialField[]).find(item => item.id === fieldId);
   useEffect(()=>{if(selectedField&&!technicalDirty){setFieldPath(selectedField.outputPath||'');setSourceProofJson(selectedField.sourceProof?JSON.stringify(selectedField.sourceProof,null,2):'');}},[selectedField?.outputPath,JSON.stringify(selectedField?.sourceProof),fieldId]);
-  const saveCard = async () => {
-    const selected = draftRef.current;
-    if (!selected) return false;
-    const scope = projectId, token = selectionRequest.current;
-    if (!position && !card) { setError('先在可靠的历史时间轴上选择位置。'); return false; }
-    const anchor = card?.anchor ?? position!;
-    const next: CheckpointCard = { ...card, id: card?.id ?? newId('checkpoint'), kind, anchor, capturedAt: card?.capturedAt ?? new Date(anchor.sourceTimeMs).toISOString(),
-      createdAt: card?.createdAt ?? new Date().toISOString(), title: title.trim(), notes, requirementIds: unique(cardRequirementIds), annotationIds: card?.annotationIds ?? [] };
-    if (!next.title) { setError('输入 checkpoint 标题。'); return false; }
-    let refs: string[];
-    try { refs = await allRecordingRefs(selected); }
-    catch (failure) { if (selectedDraft(scope, token, selected.draftId, selected.draftRevision)) setError(`录制引用读取失败：${String(failure)}`); return false; }
-    const edits: Edit[] = [...(!refs.includes(anchor.recordingId) ? [{ operation: 'recordings' as const, recordingRefs: [...refs, anchor.recordingId] }] : []),
-      { operation: 'upsert', collection: 'checkpoints', item: next }];
-    if (await mutate(edits, card ? '已更新 checkpoint 草稿。' : '已在历史位置新增 checkpoint 草稿。', selected)) {setCardId(next.id);return true;}
-    return false;
-  };
-  const saveRequirement = async () => {
-    const description = requirementDescription.trim();
-    if (!description) { setError('输入需求含义。'); return false; }
-    const id = selectedRequirement?.id ?? newId('requirement');
-    let rules: DataRule[];
-    try { rules = JSON.parse(rulesJson); if (!Array.isArray(rules)) throw new Error('规则必须是数组。'); }
-    catch (failure) { setError(`规则 JSON 无效：${String(failure)}`); return false; }
-    if (await mutate([{ operation: 'upsert', collection: 'requirements', item: { id, description, dataset: selectedRequirement?.dataset,
-      rules, fieldIds: selectedRequirement?.fieldIds ?? [] } satisfies MaterialRequirement }], '需求已保存到草稿。')) {setRequirementId(id);return true;}
-    return false;
-  };
-  const createAndLinkRequirement=async()=>{
-    if(!card){setError('先保存或打开卡片，再新建并关联需求。');return;}
-    const description=newCardRequirement.trim();if(!description){setError('输入新需求的含义。');return;}
-    const id=newId('requirement');
-    const requirement:MaterialRequirement={id,description,rules:[],fieldIds:[]};
-    const updated:CheckpointCard={...card,requirementIds:unique([...cardRequirementIds,id])};
-    if(await mutate([{operation:'upsert',collection:'requirements',item:requirement},{operation:'upsert',collection:'checkpoints',item:updated}], '新需求已关联当前卡片。')){
-      setCardRequirementIds(updated.requirementIds);setNewCardRequirement('');setRequirementId(id);setRequirementDescription(description);setRulesJson('[]');
-    }
-  };
-  const saveField = async () => {
-    if (!selectedRequirement) { setError('先选择一个需求。'); return false; }
-    if (!fieldName.trim() || !fieldDescription.trim() || !fieldDataset.trim()) { setError('字段需要数据集、名称和明确含义。'); return false; }
-    const id = selectedField?.id ?? newId('field');
-    const target = bindingAction==='clear'?null:bindingAction==='keep'?(selectedField?.target??fieldTarget):fieldTarget;
-    let sourceProof: FieldSourceProof | undefined;
-    try { sourceProof = sourceProofJson.trim() ? JSON.parse(sourceProofJson) : undefined; }
-    catch (failure) { setError(`来源规则 JSON 无效：${String(failure)}`); return false; }
-    const field: MaterialField = { ...(selectedField || {}), id, dataset: fieldDataset.trim(), name: fieldName.trim(), description: fieldDescription.trim(),
-      sourcePolicy: fieldPolicy };
-    if(technicalDirty||!selectedField){if (fieldPath.trim()) field.outputPath = fieldPath.trim(); else delete field.outputPath;
-    if (sourceProof) field.sourceProof = sourceProof; else delete field.sourceProof;}
-    if (fieldValueType) field.valueType = fieldValueType; else delete field.valueType;
-    if (target) {
-      const changed = JSON.stringify(target) !== JSON.stringify(selectedField?.target);
-      field.target = target;
-      if (changed) { field.bindingStatus = 'bound'; field.annotationId = undefined; field.checkpointId = card?.id; }
-    } else if(bindingAction==='clear') { delete field.target; delete field.bindingStatus; delete field.checkpointId; delete field.annotationId; }
-    if (fieldAnnotationId) {
-      const annotation = (pages.annotations.items as MaterialAnnotation[]).find(item => item.id === fieldAnnotationId);
-      if (!annotation || !target || JSON.stringify(annotation.target) !== JSON.stringify(target)) { setError('字段注释必须绑定相同的历史元素；继续读取注释列表或重新选择。'); return false; }
-      field.annotationId = annotation.id; field.checkpointId = annotation.checkpointId;
-    } else if(bindingAction!=='keep')delete field.annotationId;
-    if (bindingAction==='set' && target && card && !sameReplayPosition(target.position,card.anchor)) { setError('字段元素必须来自所选卡片的精确历史位置。'); return false; }
-    const requirement = { ...selectedRequirement, fieldIds: unique([...selectedRequirement.fieldIds, id]) };
-    if (await mutate([{ operation: 'upsert', collection: 'fields', item: field }, { operation: 'upsert', collection: 'requirements', item: requirement },{operation:'field-binding',fieldId:id,binding:bindingAction==='set'&&target&&card?{kind:'set',target,checkpointId:card.id,...(fieldAnnotationId?{annotationId:fieldAnnotationId}:{})}:{kind:bindingAction==='clear'?'clear':'keep'}}], '字段和需求关联已保存。')) {setFieldId(id);setBindingAction('keep');setTechnicalDirty(false);return true;}
-    return false;
-  };
-  const recordCurrent=async(selection=false)=>{
-    const current=draftRef.current;if(!current)return;
-    setPending('保存当前结果');setError('');
+  // Freeze one render's dirty patches and expected revision. Relationships are
+  // composed once, then the service validates the resulting graph in one CAS.
+  const saveEditor=async(force?:EditorPart,hold=false):Promise<Draft|null>=>{
+    const expected=draftRef.current,token=selectionRequest.current;
+    if(!ownsSession()||!expected||pendingRef.current)return null;
+    if(cacheConflict.current!==null){setError('本机恢复输入需要先读取当前修订并核对，尚未保存或发布。');return null;}
+    const parts=new Set<EditorPart>(force?[force,...(force==='field'&&dirty.current.has('requirement')?['requirement' as const]:[]),...(['link','annotation'].includes(force)&&dirty.current.has('card')?['card' as const]:[])]:dirty.current);
+    if(!parts.size)return expected;
+    pendingRef.current=true;setPending('保存编辑快照');setError('');
+    const current=()=>ownsSession()&&selectionRequest.current===token&&draftRef.current?.draftId===expected.draftId;
     try{
-      const request=retryCapture.current??{operationId:crypto.randomUUID(),draftId:current.draftId,title:selection?'字段现场示例':'当前结果',selection,selectionId:liveIntent,...(selection?liveScopeRef.current:{}),derivedFrom:selection?cardId:undefined};retryCapture.current=request;
-      const result=await call('captureAndAuthor',request);if(result.status==='partial'){setError(result.reason+' '+result.error);return;}retryCapture.current=null;
-      await openDraft(current.draftId,true);await refreshLists();
+      const edits:Edit[]=[];
+      let nextCard=card?structuredClone(card):undefined;
+      let nextRequirement=selectedRequirement?structuredClone(selectedRequirement):undefined;
+      let nextField:MaterialField|undefined,nextAnnotation:MaterialAnnotation|undefined;
+      if(parts.has('card')){
+        const anchor=card?.anchor??position;if(!anchor)throw new Error('先在可靠的历史时间轴上选择位置。');
+        if(!title.trim())throw new Error('输入 checkpoint 标题。');
+        if(cardId&&!card)throw new Error('当前卡片尚未加载，不能将它当作新卡片保存。');
+        nextCard={...card,id:card?.id??newId('checkpoint'),kind,anchor,capturedAt:card?.capturedAt??new Date(anchor.sourceTimeMs).toISOString(),createdAt:card?.createdAt??new Date().toISOString(),title:title.trim(),notes,requirementIds:unique(cardRequirementIds),annotationIds:card?.annotationIds??[]};
+      }
+      if(parts.has('requirement')){
+        if(requirementId&&!selectedRequirement)throw new Error('当前需求尚未加载。');
+        if(!requirementDescription.trim())throw new Error('输入需求含义。');
+        const rules=JSON.parse(rulesJson);if(!Array.isArray(rules))throw new Error('规则必须是数组。');
+        nextRequirement={...selectedRequirement,id:selectedRequirement?.id??newId('requirement'),description:requirementDescription.trim(),rules,fieldIds:selectedRequirement?.fieldIds??[]};
+      }
+      if(parts.has('link')){
+        if(!nextCard||!newCardRequirement.trim())throw new Error('先选择卡片并输入新需求的含义。');
+        if(nextRequirement&&parts.has('requirement'))edits.push({operation:'upsert',collection:'requirements',item:nextRequirement});
+        nextRequirement={id:newId('requirement'),description:newCardRequirement.trim(),rules:[],fieldIds:[]};nextCard.requirementIds=unique([...nextCard.requirementIds,nextRequirement.id]);
+      }
+      if(parts.has('annotation')){
+        if(!nextCard||!annotationTarget||!annotationText.trim())throw new Error('选择卡片的历史元素并填写注释。');
+        if(!sameReplayPosition(annotationTarget.position,nextCard.anchor))throw new Error('注释元素必须来自卡片的精确历史位置。');
+        const existing=(pages.annotations.items as MaterialAnnotation[]).find(item=>item.id===annotationId);
+        if(annotationId&&!existing)throw new Error('当前注释尚未加载。');
+        nextAnnotation={id:annotationId||newId('annotation'),checkpointId:nextCard.id,target:annotationTarget,text:annotationText.trim(),author:'human',interpretation,bindingStatus:'bound'};
+        nextCard.annotationIds=unique([...nextCard.annotationIds,nextAnnotation.id]);
+      }
+      if(parts.has('field')){
+        if(!nextRequirement)throw new Error('先选择一个需求。');
+        if(fieldId&&!selectedField)throw new Error('当前字段尚未加载。');
+        if(!fieldName.trim()||!fieldDescription.trim()||!fieldDataset.trim())throw new Error('字段需要数据集、名称和明确含义。');
+        nextField={...selectedField,id:selectedField?.id??newId('field'),dataset:fieldDataset.trim(),name:fieldName.trim(),description:fieldDescription.trim(),sourcePolicy:fieldPolicy};
+        if(technicalDirty||!selectedField){if(fieldPath.trim())nextField.outputPath=fieldPath.trim();else delete nextField.outputPath;if(sourceProofJson.trim())nextField.sourceProof=JSON.parse(sourceProofJson);else delete nextField.sourceProof;}
+        if(fieldValueType)nextField.valueType=fieldValueType;else delete nextField.valueType;
+        const target=bindingAction==='clear'?null:bindingAction==='keep'?(selectedField?.target??fieldTarget):fieldTarget;
+        if(target){nextField.target=target;if(bindingAction==='set'){if(!nextCard||!sameReplayPosition(target.position,nextCard.anchor))throw new Error('字段元素必须来自所选卡片的精确历史位置。');nextField.checkpointId=nextCard.id;nextField.bindingStatus='bound';delete nextField.annotationId;}}
+        if(fieldAnnotationId){const annotation=nextAnnotation?.id===fieldAnnotationId?nextAnnotation:(pages.annotations.items as MaterialAnnotation[]).find(item=>item.id===fieldAnnotationId);if(!annotation||JSON.stringify(annotation.target)!==JSON.stringify(target))throw new Error('字段注释必须绑定相同的历史元素。');nextField.annotationId=annotation.id;nextField.checkpointId=annotation.checkpointId;}
+        else if(bindingAction!=='keep')delete nextField.annotationId;
+        nextRequirement.fieldIds=unique([...nextRequirement.fieldIds,nextField.id]);
+      }
+      if(nextCard&&(parts.has('card')||parts.has('annotation')||parts.has('link'))){
+        const refs=await allRecordingRefs(expected);if(!current())return null;
+        if(!refs.includes(nextCard.anchor.recordingId))edits.push({operation:'recordings',recordingRefs:[...refs,nextCard.anchor.recordingId]});
+        edits.push({operation:'upsert',collection:'checkpoints',item:nextCard});
+      }
+      if(nextAnnotation){
+        const existing=(pages.annotations.items as MaterialAnnotation[]).find(item=>item.id===nextAnnotation.id);
+        if(existing&&JSON.stringify(existing.target)!==JSON.stringify(nextAnnotation.target)){
+          for(const field of pages.fields.items as MaterialField[])if(field.annotationId===nextAnnotation.id){
+            if(nextField?.id===field.id){if(bindingAction!=='set'){delete nextField.annotationId;nextField.bindingStatus='needs-rebind';}}
+            else edits.push({operation:'upsert',collection:'fields',item:{...field,annotationId:undefined,bindingStatus:'needs-rebind'}});
+          }
+        }
+        edits.push({operation:'upsert',collection:'annotations',item:nextAnnotation});
+      }
+      if(nextField)edits.push({operation:'upsert',collection:'fields',item:nextField});
+      if(nextRequirement&&(parts.has('requirement')||parts.has('field')||parts.has('link')))edits.unshift({operation:'upsert',collection:'requirements',item:nextRequirement});
+      if(nextField)edits.push({operation:'field-binding',fieldId:nextField.id,binding:bindingAction==='set'&&fieldTarget&&nextCard?{kind:'set',target:fieldTarget,checkpointId:nextCard.id,...(fieldAnnotationId?{annotationId:fieldAnnotationId}:{})}:{kind:bindingAction==='clear'?'clear':'keep'}});
+      if(!current())return null;
+      const receipt=await mutate(edits,'编辑快照已保存到草稿。',expected,true,hold);if(!receipt||!current())return null;
+      for(const part of parts)dirty.current.delete(part);if(nextCard)setCardId(nextCard.id);if(nextAnnotation)setAnnotationId(nextAnnotation.id);
+      if(nextRequirement){setRequirementId(nextRequirement.id);if(parts.has('link')){setRequirementDescription(nextRequirement.description);setRulesJson('[]');setNewCardRequirement('');setCardRequirementIds(nextCard!.requirementIds);}}
+      if(nextField){setFieldId(nextField.id);setBindingAction('keep');setTechnicalDirty(false);}
+      return receipt;
+    }catch(failure){if(current())setError(failure instanceof Error?failure.message:String(failure));return null;}
+    finally{if(current()&&(!hold||dirty.current.size)){pendingRef.current=false;setPending('');}}
+  };
+  const saveCard=()=>saveEditor('card');
+  const saveRequirement=()=>saveEditor('requirement');
+  const saveField=()=>saveEditor('field');
+  const createAndLinkRequirement=()=>saveEditor('link');
+  const recordCurrent=async(selection=false)=>{
+    const expected=draftRef.current;if(!ownsSession()||!expected||pendingRef.current)return;
+    const token=selectionRequest.current,write=++writeRequest.current;
+    const current=()=>ownsSession()&&selectionRequest.current===token&&writeRequest.current===write&&draftRef.current?.draftId===expected.draftId;
+    pendingRef.current=true;setPending('保存当前结果');setError('');
+    try{
+      const request=retryCapture.current??{projectId,operationId:crypto.randomUUID(),draftId:expected.draftId,title:selection?'字段现场示例':'当前结果',selection,selectionId:liveIntent,...(selection?liveScopeRef.current:{}),derivedFrom:selection?cardId:undefined};retryCapture.current=request;
+      const result=await call('captureAndAuthor',request);if(!current())return;
+      if(result.status==='partial'){setError(result.reason+' '+result.error);return;}retryCapture.current=null;
+      draftRef.current=result.draft;setDraft(result.draft);
+      await Promise.all(COLLECTIONS.map(collection=>loadCollection(result.draft,collection,token)));if(!current())return;
+      await refreshLists();if(!current())return;
       setCardId(result.card.id);setTitle(result.card.title);setNotes(result.card.notes);setCardRequirementIds(result.card.requirementIds);
-      if(selection){setFieldTarget(result.target);setBindingAction('set');setFieldAnnotationId('');if(!fieldDataset)setFieldDataset('records');}
-      setNotice(selection?'已固化点击时刻；这是新的现场示例，旧保存点未移动。':'已保存原始材料并关联同一张可编辑保存点。');
-    }catch(failure){setError(String(failure));}finally{setPending('');setLiveIntent(null);if(selection)await onCancelLive?.();}
+      if(request.selection){markDirty('field');setFieldTarget(result.target);setBindingAction('set');setFieldAnnotationId('');if(!fieldDataset)setFieldDataset('records');}
+      setNotice(request.selection?'已固化点击时刻；这是新的现场示例，旧保存点未移动。':'已保存原始材料并关联同一张可编辑保存点。');
+    }catch(failure){if(current())setError(String(failure));}finally{if(current()){pendingRef.current=false;setPending('');setLiveIntent(null);if(selection)await onCancelLive?.();}}
   };
   useEffect(()=>{
     if(!liveIntent||liveSelection?.selectionId!==liveIntent)return;
@@ -277,21 +309,11 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
     if(!liveSelection?.sample?.ref||consumedSample.current===identity)return;
     consumedSample.current=identity;void recordCurrent(true);
   },[liveSelection,liveIntent]);
-  const beginLive=async()=>{setError('');consumedSample.current=JSON.stringify(liveSelection?.sample?.ref);const id=crypto.randomUUID();liveScopeRef.current=liveScope;setLiveIntent(id);try{await onLiveSelect?.(id);}catch(failure){setLiveIntent(null);setError(String(failure));}};
-  const saveAnnotation = async () => {
-    if (!card || !annotationTarget || !annotationText.trim()) { setError('选择卡片的历史元素并填写注释。'); return; }
-    if (!sameReplayPosition(annotationTarget.position,card.anchor)) { setError('注释元素必须来自卡片的精确历史位置。'); return; }
-    const id = annotationId||newId('annotation');
-    const existing=(pages.annotations.items as MaterialAnnotation[]).find(item=>item.id===id);
-    const moved=!!existing&&JSON.stringify(existing.target)!==JSON.stringify(annotationTarget);
-    const annotation: MaterialAnnotation = { id, checkpointId: card.id, target: annotationTarget, text: annotationText.trim(), author: 'human', interpretation, bindingStatus: moved?'bound':existing?.bindingStatus??'bound' };
-    const affectedFields=moved?(pages.fields.items as MaterialField[]).filter(item=>item.annotationId===id).map(item=>({operation:'upsert' as const,collection:'fields' as const,item:{...item,annotationId:undefined,bindingStatus:'needs-rebind' as const}})):[];
-    if (await mutate([{ operation: 'upsert', collection: 'annotations', item: annotation },
-      { operation: 'upsert', collection: 'checkpoints', item: { ...card, annotationIds: unique([...card.annotationIds, id]) } },...affectedFields], '历史元素注释已保存。')) {setAnnotationId(id);setAnnotationTarget(annotation.target);}
-  };
-  const editAnnotation=(item:MaterialAnnotation)=>{
+  const beginLive=async()=>{if(!ownsSession()||pendingRef.current)return;setError('');consumedSample.current=JSON.stringify(liveSelection?.sample?.ref);const id=crypto.randomUUID();liveScopeRef.current=liveScope;setLiveIntent(id);try{await onLiveSelect?.(id);}catch(failure){if(ownsSession()){setLiveIntent(null);setError(String(failure));}}};
+  const saveAnnotation=()=>saveEditor('annotation');
+  const editAnnotation=(item:MaterialAnnotation)=>changeEditor(()=>{
     pendingSelection.current=null;setAnnotationId(item.id);setAnnotationTarget(item.target);setAnnotationText(item.text);setInterpretation(item.interpretation);
-  };
+  });
   const removeAnnotation=async(item:MaterialAnnotation)=>{
     if(!card||item.checkpointId!==card.id)return;
     const affectedFields=(pages.fields.items as MaterialField[]).filter(field=>field.annotationId===item.id).map(field=>({operation:'upsert' as const,collection:'fields' as const,item:{...field,annotationId:undefined}}));
@@ -300,35 +322,55 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
     }
   };
   const publish = async () => {
-    if(card&&(title!==card.title||notes!==card.notes)&&!await saveCard())return;
-    if((fieldName||fieldDescription||fieldTarget)&&(!selectedField||fieldDescription!==selectedField.description||fieldName!==selectedField.name||fieldDataset!==selectedField.dataset||fieldPolicy!==selectedField.sourcePolicy||fieldValueType!==(selectedField.valueType||'')||technicalDirty||bindingAction!=="keep")&&!await saveField())return;
-    if(requirementDescription&&(!selectedRequirement||requirementDescription!==selectedRequirement.description||rulesJson!==JSON.stringify(selectedRequirement.rules,null,2))&&!await saveRequirement())return;
-    const selected = draftRef.current;
-    if (!selected || pendingRef.current) return;
+    if(!ownsSession()||pendingRef.current)return;
+    const selected=await saveEditor(undefined,true);
+    if (!selected || !ownsSession() || draftRef.current?.draftId!==selected.draftId) return;
     pendingRef.current = true;
     const scope = projectId, token = selectionRequest.current, write = ++writeRequest.current;
-    const current = () => selectedDraft(scope, token, selected.draftId, selected.draftRevision) && write === writeRequest.current;
+    const current = () => ownsSession() && selectedDraft(scope, token, selected.draftId, selected.draftRevision) && write === writeRequest.current;
     setPending('发布版本'); setError('');
     try {
       const revision = await call('publishMaterialDraft', { draftId: selected.draftId, expectedDraftRevision: selected.draftRevision });
       if (!current()) return;
-      await openDraft(selected.draftId,true); await refreshLists();onPublished?.(revision.revisionId);
-      if (scopeRef.current === scope && draftRef.current?.draftId === selected.draftId) setNotice(`已发布候选资料版本 ${revision.revisionId}；发布不表示人工验收通过。`);
+      await openDraft(selected.draftId,true);if(!ownsSession()||draftRef.current?.draftId!==selected.draftId)return;const reopened=selectionRequest.current;await refreshLists();if(!ownsSession()||selectionRequest.current!==reopened||draftRef.current?.draftId!==selected.draftId)return;onPublished?.(revision.revisionId);
+      if (ownsSession() && draftRef.current?.draftId === selected.draftId) setNotice(`已发布候选资料版本 ${revision.revisionId}；发布不表示人工验收通过。`);
     } catch (failure) { if (current()) setError(String(failure)); }
     finally { if (scopeRef.current === scope && token === selectionRequest.current && write === writeRequest.current) { pendingRef.current = false; setPending(''); } }
   };
   const createDraft = async (baseRevisionId?:string) => {
-    if (pendingRef.current) return;
+    if (!ownsSession()||pendingRef.current) return;
     const scope = projectId, token = ++selectionRequest.current;
     ++writeRequest.current; pendingRef.current = true; draftRef.current = null;
     setDraft(null); setPages(empty()); resetEditor(); setPending('新建草稿'); setError('');
     try { const created: Draft = await call('createMaterialDraft',baseRevisionId?{baseRevisionId}:{});
       if (scopeRef.current !== scope || selectionRequest.current !== token) return;
-      await openDraft(created.draftId); await refreshLists();
+      if(!ownsSession())return;pendingRef.current=false;await openDraft(created.draftId); await refreshLists();
     } catch (failure) { if (scopeRef.current === scope && selectionRequest.current === token) setError(String(failure)); }
     finally { if (scopeRef.current === scope && selectionRequest.current === token) { pendingRef.current = false; setPending(''); } }
   };
+  const prepareMapping=async()=>{
+    if(!ownsSession()||pendingRef.current)return;
+    const saved=await saveEditor();if(!saved||!ownsSession())return;
+    const token=selectionRequest.current,write=++writeRequest.current;
+    const current=()=>ownsSession()&&selectionRequest.current===token&&writeRequest.current===write&&draftRef.current?.draftId===saved.draftId;
+    pendingRef.current=true;setPending('读取实现映射');setError('');
+    try{const result=await call('previewImplementation',{draftId:saved.draftId});if(current())setMapping({...result,owner:{projectId,draftId:saved.draftId,editorSessionId,token}});}
+    catch(failure){if(current())setError(String(failure));}
+    finally{if(current()){pendingRef.current=false;setPending('');}}
+  };
+  const confirmMapping=async()=>{
+    if(!ownsSession()||pendingRef.current||!mapping||mapping.owner?.projectId!==projectId||mapping.owner?.draftId!==draftRef.current?.draftId||mapping.owner?.editorSessionId!==editorSessionId||mapping.owner?.token!==selectionRequest.current)return;
+    const expected=draftRef.current!,token=selectionRequest.current,write=++writeRequest.current;
+    const current=()=>ownsSession()&&selectionRequest.current===token&&writeRequest.current===write&&draftRef.current?.draftId===expected.draftId;
+    pendingRef.current=true;setPending('确认实现映射');setError('');
+    try{const result=await call('confirmImplementation',{draftId:expected.draftId,expectedDraftRevision:mapping.draftRevision,proposalHash:mapping.proposalHash});if(!current())return;
+      if(result.status!=='saved')throw new Error('映射确认冲突，输入已保留');draftRef.current=result.draft;setDraft(result.draft);
+      await Promise.all(COLLECTIONS.map(collection=>loadCollection(result.draft,collection,token)));if(!current())return;
+      setMapping(null);setNotice('技术映射已确认；任务含义不变。固定新版本后执行。');
+    }catch(failure){if(current())setError(String(failure));}finally{if(current()){pendingRef.current=false;setPending('');}}
+  };
   const viewRevision=async(item:Revision)=>{
+    if(!ownsSession())return;
     const token=++revisionRequest.current,scope=projectId;
     setViewedRevision(null);setViewedPages(empty());setError('');
     try{
@@ -370,28 +412,28 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
 
     {error && <p className="error-inline" role="alert">{error}</p>}{notice && <p className="notice" role="status">{notice}</p>}
     {conflict && <Button onClick={() => void openDraft(conflict.draftId,true).catch(failure => setError(String(failure)))}>读取修订 {conflict.draftRevision} 并处理冲突</Button>}
-    <div className="material-layout"><aside className="material-list"><div className="section-label">草稿 <Button disabled={!!pending} onClick={() => void createDraft()}>新建</Button></div>
-      {drafts.items.map(item => <Button data-draft-id={item.draftId} aria-label={`工作草稿 ${item.draftId}`} key={item.draftId} disabled={item.status === 'unavailable'} className={draft?.draftId === item.draftId ? 'selected' : ''} onClick={() => void openDraft(item.draftId).catch(failure => setError(String(failure)))}>工作草稿 · r{item.draftRevision ?? '—'}</Button>)}
+    <div className="material-layout" inert={!!pending}><aside className="material-list"><div className="section-label">草稿 <Button disabled={!!pending} onClick={() => void createDraft()}>新建</Button></div>
+      {drafts.items.map(item => <Button data-draft-id={item.draftId} aria-label={`工作草稿 ${item.draftId}`} key={item.draftId} disabled={!!pending || item.status === 'unavailable'} className={draft?.draftId === item.draftId ? 'selected' : ''} onClick={() => void openDraft(item.draftId).catch(failure => setError(String(failure)))}>工作草稿 · r{item.draftRevision ?? '—'}</Button>)}
       {drafts.nextCursor && <Button onClick={() => void moreList('drafts', drafts.nextCursor!)}>更多草稿</Button>}
        <div className="section-label">固定版本</div>{revisions.items.map((item,index) => <div key={item.revisionId} className="material-revision"><strong>V{revisions.items.length-index}</strong><span>{item.createdAt?new Date(item.createdAt).toLocaleString():'固定版本'}</span><code>{item.revisionId.slice(0, 15)}</code><small>hash {item.contentHash?.slice(0, 12) || item.status}</small><Button disabled={item.status==='unavailable'} onClick={()=>void viewRevision(item)}>查看固定版本</Button></div>)}
       {revisions.nextCursor && <Button onClick={() => void moreList('revisions', revisions.nextCursor!)}>更多版本</Button>}
      </aside><div className="material-editor">{viewedRevision&&<section><h3>固定版本 · {viewedRevision.createdAt?new Date(viewedRevision.createdAt).toLocaleString():viewedRevision.revisionId}</h3><p className="hint">版本 {viewedRevision.revisionId} · hash {viewedRevision.contentHash}。内容只读；派生会新建草稿。</p><Button disabled={!!pending} onClick={()=>void createDraft(viewedRevision.revisionId)}>从此版本派生草稿</Button>{COLLECTIONS.map(collection=><div key={collection}><h4>{collection}</h4>{viewedPages[collection].items.map((item:any,index:number)=><p key={item.id??index}>{collection==='recordingRefs'?item:item.description??item.title??item.name??item.text??item.id}</p>)}{viewedPages[collection].nextCursor&&<Button onClick={()=>void moreRevisionCollection(collection,viewedPages[collection].nextCursor!)}>更多 {collection}</Button>}</div>)}</section>}{!draft ? <div className="empty">新建或打开资料草稿，编辑历史 checkpoint、需求和字段。</div> : <>
       <div className="material-toolbar"><strong>当前工作草稿</strong><span>修订 {draft.draftRevision}</span><Button disabled={!!pending} onClick={() => void publish()}>{pending || '发布候选版本'}</Button></div>
-      <section><h3>任务目标</h3><p>{(draft as any).taskBrief?.objective||'旧资料未固定目标'}</p><Button disabled={!!pending} onClick={()=>void call('previewImplementation',{draftId:draft.draftId}).then(setMapping).catch(failure=>setError(String(failure)))}>读取实现器映射</Button>{mapping&&<div role="status"><h4>实现映射待确认</h4>{mapping.fields.map((field:any)=><p key={field.name}><strong>{field.dataset} / {field.name}</strong>：{field.description}<br/>输出 {field.outputPath}；来源要求 {field.sourcePolicy}<br/>{field.verification}</p>)}<Button onClick={()=>void call('confirmImplementation',{draftId:draft.draftId,expectedDraftRevision:mapping.draftRevision,proposalHash:mapping.proposalHash}).then(async result=>{if(result.status!=='saved')throw new Error('映射确认冲突，输入已保留');await openDraft(draft.draftId,true);setMapping(null);setNotice('技术映射已确认；任务含义不变。固定新版本后执行。');}).catch(failure=>setError(String(failure)))}>确认映射并保存草稿</Button></div>}</section><section><h3>保存点</h3><p className="hint">在时间轴可靠位置新增；移动后旧绑定保留为待复核。</p><div className="material-card-list">{(pages.checkpoints.items as CheckpointCard[]).map(item => <Button key={item.id} className={cardId === item.id ? 'selected' : ''} onClick={() => selectCard(item)}>{item.title}<small>{item.anchor.recordingId.slice(0, 12)} · #{item.anchor.eventSeq}</small></Button>)}</div>
+      <section><h3>任务目标</h3><p>{(draft as any).taskBrief?.objective||'旧资料未固定目标'}</p><Button disabled={!!pending} onClick={()=>void prepareMapping()}>读取实现器映射</Button>{mapping&&<div role="status"><h4>实现映射待确认</h4>{mapping.fields.map((field:any)=><p key={field.name}><strong>{field.dataset} / {field.name}</strong>：{field.description}<br/>输出 {field.outputPath}；来源要求 {field.sourcePolicy}<br/>{field.verification}</p>)}<Button onClick={()=>void confirmMapping()}>确认映射并保存草稿</Button></div>}</section><section><h3>保存点</h3><p className="hint">在时间轴可靠位置新增；移动后旧绑定保留为待复核。</p><div className="material-card-list">{(pages.checkpoints.items as CheckpointCard[]).map(item => <Button key={item.id} className={cardId === item.id ? 'selected' : ''} onClick={() => selectCard(item)}>{item.title}<small>{item.anchor.recordingId.slice(0, 12)} · #{item.anchor.eventSeq}</small></Button>)}</div>
       {pages.checkpoints.nextCursor && <Button onClick={() => void moreCollection(draft, 'checkpoints', pages.checkpoints.nextCursor!)}>下一页 checkpoint</Button>}
-       <div className="material-actions"><Button onClick={() => {pendingSelection.current=null;setCardId(''); setTitle(''); setNotes(''); setCardRequirementIds([]);setNewCardRequirement('');setAnnotationId('');setAnnotationTarget(null);setAnnotationText(''); }}>新建卡片</Button>{card && <><Button onClick={()=>onOpenReplay(card.anchor)}>查看来源</Button><Button disabled={!!pending} onClick={() => void mutate([{ operation: 'copy-checkpoint', checkpointId: card.id }], '卡片与注释已复制为独立 ID。')}>复制</Button><Button disabled={!position || !!pending} onClick={() => position && void mutate([{ operation: 'move-checkpoint', checkpointId: card.id, position }], '已移动历史位置；旧元素绑定需复核。')}>移至当前时间</Button><Button disabled={!!pending} onClick={() => void mutate([{ operation: 'remove-checkpoint', checkpointId: card.id }], '已移除卡片；共享需求仍保留。')}>删除卡片</Button></>}</div>
-       <div className="form-stack"><Label>标题<Input value={title} onChange={event => setTitle(event.target.value)} /></Label><Label>类型<NativeSelect value={kind} onChange={event => setKind(event.target.value as typeof kind)}><option value="observation">观察</option><option value="requirement">需求示例</option></NativeSelect></Label><Label>说明<Textarea value={notes} onChange={event => setNotes(event.target.value)} /></Label><fieldset><legend>关联需求</legend>{currentRequirements.map(item=><Label key={item.id}><input type="checkbox" checked={cardRequirementIds.includes(item.id)} onChange={event=>setCardRequirementIds(current=>event.target.checked?unique([...current,item.id]):current.filter(id=>id!==item.id))}/>{item.description}</Label>)}</fieldset><Label>新需求含义<Textarea value={newCardRequirement} onChange={event=>setNewCardRequirement(event.target.value)}/></Label><Button disabled={!card||!!pending} onClick={()=>void createAndLinkRequirement()}>新建并关联需求</Button><Button disabled={!!pending || (!card && !position)} onClick={() => void saveCard()}>保存卡片草稿</Button></div>
-       {card && <><h4>元素注释</h4><p className="hint">检查入口指向这张卡片的历史时间；取消选择不会写入资料。</p><div className="material-actions"><Button onClick={()=>{pendingSelection.current=null;setAnnotationId('');setAnnotationTarget(null);setAnnotationText('');setInterpretation('observed');}}>新增注释</Button><Button onClick={() => beginSelection('annotation')}>{annotationId?'重新绑定历史元素':'在历史页选择元素'}</Button></div><Label>注释<Textarea value={annotationText} onChange={event => setAnnotationText(event.target.value)} /></Label><Label>解释层级<NativeSelect value={interpretation} onChange={event => setInterpretation(event.target.value as typeof interpretation)}><option value="observed">观察</option><option value="inferred">推断</option><option value="unverified">未验证</option></NativeSelect></Label><Button disabled={!annotationTarget || !annotationText.trim() || !!pending} onClick={() => void saveAnnotation()}>{annotationId?'保存注释修改':'保存注释'}</Button>
+       <div className="material-actions"><Button onClick={() => changeEditor(()=>{pendingSelection.current=null;setCardId(''); setTitle(''); setNotes(''); setCardRequirementIds([]);setNewCardRequirement('');setAnnotationId('');setAnnotationTarget(null);setAnnotationText(''); })}>新建卡片</Button>{card && <><Button onClick={()=>onOpenReplay(card.anchor)}>查看来源</Button><Button disabled={!!pending} onClick={() => void mutate([{ operation: 'copy-checkpoint', checkpointId: card.id }], '卡片与注释已复制为独立 ID。')}>复制</Button><Button disabled={!position || !!pending} onClick={() => position && void mutate([{ operation: 'move-checkpoint', checkpointId: card.id, position }], '已移动历史位置；旧元素绑定需复核。')}>移至当前时间</Button><Button disabled={!!pending} onClick={() => void mutate([{ operation: 'remove-checkpoint', checkpointId: card.id }], '已移除卡片；共享需求仍保留。')}>删除卡片</Button></>}</div>
+       <div className="form-stack"><Label>标题<Input value={title} onChange={event => {markDirty('card');setTitle(event.target.value);}} /></Label><Label>类型<NativeSelect value={kind} onChange={event => {markDirty('card');setKind(event.target.value as typeof kind);}}><option value="observation">观察</option><option value="requirement">需求示例</option></NativeSelect></Label><Label>说明<Textarea value={notes} onChange={event => {markDirty('card');setNotes(event.target.value);}} /></Label><fieldset><legend>关联需求</legend>{currentRequirements.map(item=><Label key={item.id}><input type="checkbox" checked={cardRequirementIds.includes(item.id)} onChange={event=>{markDirty('card');setCardRequirementIds(current=>event.target.checked?unique([...current,item.id]):current.filter(id=>id!==item.id));}}/>{item.description}</Label>)}</fieldset><Label>新需求含义<Textarea value={newCardRequirement} onChange={event=>{markDirty('link');setNewCardRequirement(event.target.value);}}/></Label><Button disabled={!card||!!pending} onClick={()=>void createAndLinkRequirement()}>新建并关联需求</Button><Button disabled={!!pending || (!card && !position)} onClick={() => void saveCard()}>保存卡片草稿</Button></div>
+       {card && <><h4>元素注释</h4><p className="hint">检查入口指向这张卡片的历史时间；取消选择不会写入资料。</p><div className="material-actions"><Button onClick={()=>changeEditor(()=>{pendingSelection.current=null;setAnnotationId('');setAnnotationTarget(null);setAnnotationText('');setInterpretation('observed');})}>新增注释</Button><Button onClick={() => beginSelection('annotation')}>{annotationId?'重新绑定历史元素':'在历史页选择元素'}</Button></div><Label>注释<Textarea value={annotationText} onChange={event => {markDirty('annotation');setAnnotationText(event.target.value);}} /></Label><Label>解释层级<NativeSelect value={interpretation} onChange={event => {markDirty('annotation');setInterpretation(event.target.value as typeof interpretation);}}><option value="observed">观察</option><option value="inferred">推断</option><option value="unverified">未验证</option></NativeSelect></Label><Button disabled={!annotationTarget || !annotationText.trim() || !!pending} onClick={() => void saveAnnotation()}>{annotationId?'保存注释修改':'保存注释'}</Button>
          {annotationTarget && <SourceTargetPreview projectId={projectId} target={annotationTarget} />}
          {(pages.annotations.items as MaterialAnnotation[]).filter(item => item.checkpointId === card.id).map(item => <div key={item.id} className="material-annotation"><p>{item.text} · {item.interpretation} · {item.bindingStatus}</p><Button onClick={()=>editAnnotation(item)}>编辑注释</Button><Button disabled={!!pending} onClick={()=>void removeAnnotation(item)}>删除注释</Button></div>)}</>}
       </section><section><h3>共享需求与字段</h3><p className="hint">多次示范可引用同一需求；删除示例卡片不会删除要求。字段可只写说明，也可绑定元素，注释可选。</p>
-       <Label>需求<NativeSelect value={requirementId} onChange={event => {pendingSelection.current=null; const id = event.target.value; const selected = currentRequirements.find(item => item.id === id); setRequirementId(id); setRequirementDescription(selected?.description || ''); setRulesJson(JSON.stringify(selected?.rules || [], null, 2)); setFieldId(''); setFieldName(''); setFieldDescription(''); setFieldDataset(''); setFieldPath(''); setFieldTarget(null); setFieldAnnotationId(''); setSourceProofJson(''); }}><option value="">新需求</option>{currentRequirements.map(item => <option key={item.id} value={item.id}>{item.description.slice(0, 70)}</option>)}</NativeSelect></Label><Label>需求说明<Textarea value={requirementDescription} onChange={event => setRequirementDescription(event.target.value)} /></Label><details><summary>数据范围与核验规则</summary><Label>规则 JSON<Textarea className="code-input" rows={4} value={rulesJson} onChange={event => setRulesJson(event.target.value)} /></Label></details><Button disabled={!!pending} onClick={() => void saveRequirement()}>保存需求</Button>{pages.requirements.nextCursor && <Button onClick={() => void moreCollection(draft, 'requirements', pages.requirements.nextCursor!)}>更多需求</Button>}
-       <Label>字段<NativeSelect value={fieldId} onChange={event => {pendingSelection.current=null; const selected = (pages.fields.items as MaterialField[]).find(item => item.id === event.target.value); setBindingAction('keep');setTechnicalDirty(false);setFieldId(selected?.id || ''); setFieldName(selected?.name || ''); setFieldDescription(selected?.description || ''); setFieldDataset(selected?.dataset || 'records'); setFieldPath(selected?.outputPath || ''); setFieldPolicy(selected?.sourcePolicy || 'any-evidenced'); setFieldValueType(selected?.valueType || ''); setSourceProofJson(selected?.sourceProof ? JSON.stringify(selected.sourceProof, null, 2) : ''); setFieldTarget(selected?.target || null); setFieldAnnotationId(selected?.annotationId || ''); }}><option value="">新字段</option>{(pages.fields.items as MaterialField[]).map(item => <option key={item.id} value={item.id}>{item.dataset}.{item.name}</option>)}</NativeSelect></Label>
-      <div className="material-grid"><Label>数据集<Input value={fieldDataset} onChange={event => setFieldDataset(event.target.value)} /></Label><Label>字段名<Input value={fieldName} onChange={event => setFieldName(event.target.value)} /></Label></div><Label>明确含义<Textarea value={fieldDescription} onChange={event => setFieldDescription(event.target.value)} /></Label><div className="material-grid"><Label>值类型<NativeSelect value={fieldValueType} onChange={event => setFieldValueType(event.target.value as MaterialField['valueType'] | '')}><option value="">未指定</option>{['string','number','boolean','object','array','null'].map(value => <option key={value} value={value}>{value}</option>)}</NativeSelect></Label><Label>来源要求<NativeSelect value={fieldPolicy} onChange={event => setFieldPolicy(event.target.value as MaterialField['sourcePolicy'])}><option value="any-evidenced">任一有证据来源</option><option value="page-displayed">必须按页面显示值</option></NativeSelect></Label></div><details><summary>高级实现信息与来源约束</summary><Label>输出 JSON Pointer（可选）<Input value={fieldPath} onChange={event => {setTechnicalDirty(true);setFieldPath(event.target.value);}} placeholder="/records/0/amount" /></Label><p className="hint">json-record 与 dom-text 都只固定数据验证规则；示范值不会成为输出常量。</p><Label>来源规则 JSON<Textarea className="code-input" rows={5} value={sourceProofJson} onChange={event => {setTechnicalDirty(true);setSourceProofJson(event.target.value);}} /></Label></details>
+       <Label>需求<NativeSelect value={requirementId} onChange={event => {const id=event.target.value;changeEditor(()=>{pendingSelection.current=null; const selected = currentRequirements.find(item => item.id === id); setRequirementId(id); setRequirementDescription(selected?.description || ''); setRulesJson(JSON.stringify(selected?.rules || [], null, 2)); setFieldId(''); setFieldName(''); setFieldDescription(''); setFieldDataset(''); setFieldPath(''); setFieldTarget(null); setFieldAnnotationId(''); setSourceProofJson('');}); }}><option value="">新需求</option>{currentRequirements.map(item => <option key={item.id} value={item.id}>{item.description.slice(0, 70)}</option>)}</NativeSelect></Label><Label>需求说明<Textarea value={requirementDescription} onChange={event => {markDirty('requirement');setRequirementDescription(event.target.value);}} /></Label><details><summary>数据范围与核验规则</summary><Label>规则 JSON<Textarea className="code-input" rows={4} value={rulesJson} onChange={event => {markDirty('requirement');setRulesJson(event.target.value);}} /></Label></details><Button disabled={!!pending} onClick={() => void saveRequirement()}>保存需求</Button>{pages.requirements.nextCursor && <Button onClick={() => void moreCollection(draft, 'requirements', pages.requirements.nextCursor!)}>更多需求</Button>}
+       <Label>字段<NativeSelect value={fieldId} onChange={event => {const id=event.target.value;changeEditor(()=>{pendingSelection.current=null; const selected = (pages.fields.items as MaterialField[]).find(item => item.id === id); setBindingAction('keep');setTechnicalDirty(false);setFieldId(selected?.id || ''); setFieldName(selected?.name || ''); setFieldDescription(selected?.description || ''); setFieldDataset(selected?.dataset || 'records'); setFieldPath(selected?.outputPath || ''); setFieldPolicy(selected?.sourcePolicy || 'any-evidenced'); setFieldValueType(selected?.valueType || ''); setSourceProofJson(selected?.sourceProof ? JSON.stringify(selected.sourceProof, null, 2) : ''); setFieldTarget(selected?.target || null); setFieldAnnotationId(selected?.annotationId || '');}); }}><option value="">新字段</option>{(pages.fields.items as MaterialField[]).map(item => <option key={item.id} value={item.id}>{item.dataset}.{item.name}</option>)}</NativeSelect></Label>
+      <div className="material-grid"><Label>数据集<Input value={fieldDataset} onChange={event => {markDirty('field');setFieldDataset(event.target.value);}} /></Label><Label>字段名<Input value={fieldName} onChange={event => {markDirty('field');setFieldName(event.target.value);}} /></Label></div><Label>明确含义<Textarea value={fieldDescription} onChange={event => {markDirty('field');setFieldDescription(event.target.value);}} /></Label><div className="material-grid"><Label>值类型<NativeSelect value={fieldValueType} onChange={event => {markDirty('field');setFieldValueType(event.target.value as MaterialField['valueType'] | '');}}><option value="">未指定</option>{['string','number','boolean','object','array','null'].map(value => <option key={value} value={value}>{value}</option>)}</NativeSelect></Label><Label>来源要求<NativeSelect value={fieldPolicy} onChange={event => {markDirty('field');setFieldPolicy(event.target.value as MaterialField['sourcePolicy']);}}><option value="any-evidenced">任一有证据来源</option><option value="page-displayed">必须按页面显示值</option></NativeSelect></Label></div><details><summary>高级实现信息与来源约束</summary><Label>输出 JSON Pointer（可选）<Input value={fieldPath} onChange={event => {markDirty('field');setTechnicalDirty(true);setFieldPath(event.target.value);}} placeholder="/records/0/amount" /></Label><p className="hint">json-record 与 dom-text 都只固定数据验证规则；示范值不会成为输出常量。</p><Label>来源规则 JSON<Textarea className="code-input" rows={5} value={sourceProofJson} onChange={event => {markDirty('field');setTechnicalDirty(true);setSourceProofJson(event.target.value);}} /></Label></details>
        <div className="material-actions"><Button disabled={!live||!!pending} onClick={()=>void beginLive()}>添加所需字段（实时页面）</Button><Button disabled={!card} onClick={() => beginSelection('field')}>从历史页绑定元素</Button>{fieldTarget && <><span className="muted">{fieldTarget.kind === 'dom-node' ? `节点 ${fieldTarget.nodeId}` : '截图区域（非 DOM）'}</span><Button onClick={()=>setConfirmClear(true)}>解除绑定</Button></>}</div>
-      {confirmClear&&<p role="alert">解除该字段的绑定，保留说明？<Button onClick={()=>{setBindingAction('clear');setFieldTarget(null);setFieldAnnotationId('');setConfirmClear(false);}}>确认解除绑定</Button><Button onClick={()=>setConfirmClear(false)}>保留绑定</Button></p>}
+      {confirmClear&&<p role="alert">解除该字段的绑定，保留说明？<Button onClick={()=>{markDirty('field');setBindingAction('clear');setFieldTarget(null);setFieldAnnotationId('');setConfirmClear(false);}}>确认解除绑定</Button><Button onClick={()=>setConfirmClear(false)}>保留绑定</Button></p>}
       {fieldTarget && <SourceTargetPreview projectId={projectId} target={fieldTarget}/>}
-      {fieldTarget && <Label>关联元素注释（可选）<NativeSelect value={fieldAnnotationId} onChange={event => setFieldAnnotationId(event.target.value)}><option value="">无注释</option>{(pages.annotations.items as MaterialAnnotation[]).filter(item => JSON.stringify(item.target) === JSON.stringify(fieldTarget)).map(item => <option key={item.id} value={item.id}>{item.text.slice(0, 70)}</option>)}</NativeSelect></Label>}
+      {fieldTarget && <Label>关联元素注释（可选）<NativeSelect value={fieldAnnotationId} onChange={event => {markDirty('field');setFieldAnnotationId(event.target.value);}}><option value="">无注释</option>{(pages.annotations.items as MaterialAnnotation[]).filter(item => JSON.stringify(item.target) === JSON.stringify(fieldTarget)).map(item => <option key={item.id} value={item.id}>{item.text.slice(0, 70)}</option>)}</NativeSelect></Label>}
       <Button disabled={!selectedRequirement || !!pending} onClick={() => void saveField()}>保存字段</Button>{pages.fields.nextCursor && <Button onClick={() => void moreCollection(draft, 'fields', pages.fields.nextCursor!)}>更多字段</Button>}
       </section></>}</div></div>
   </div>;
