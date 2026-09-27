@@ -37,6 +37,7 @@ export class CaptureCoordinator {
   private pausedStopRecorded = false;
   private documentGone = false;
   private inspectionEnabled = false;
+  private inspectionSelectionId?:string;
   private drops = 0;
   private pendingBytes = 0;
   private degraded = false;
@@ -63,6 +64,7 @@ export class CaptureCoordinator {
   constructor(readonly page: Page, readonly identity: PageIdentity, readonly store: EvidenceStore, private onSelection: (data:unknown)=>void = ()=>{}, private onDegraded:(reason:string)=>void=()=>{}, private trackNavigationGeneration=true) {this.requests=new RequestLedger(randomUUID(),identity.targetId);this.recording=new RecordingIndexWriter(store);this.resources=new ResourceCapture(store);}
   get health(){return this.degraded?'degraded':this.stopped?'stopped':this.paused?'paused':'recording';}
   get inspecting(){return this.inspectionEnabled;}
+  get selectionId(){return this.inspectionSelectionId;}
   documentDestroyed(){this.documentGone=true;this.inspectionEnabled=false;}
   private fail(reason:string){if(this.degraded)return;this.degraded=true;this.onDegraded(reason);}
   get recordingPosition(){return this.lastPosition && {...this.lastPosition};}
@@ -139,7 +141,7 @@ export class CaptureCoordinator {
           const record:RecordingEnvelope={...data,observedAt,receivedAt:new Date().toISOString(),gaps:[...losses,...(data.errors??[]).map((reason:string)=>({id:randomUUID(),from:data.position,category:'metadata',reason}))]};
           await this.recording.append(record);if(this.documentMatches(document)){this.sourceFrameScopes.append(record);this.lastPosition=record.position;if(data.event?.type===2)this.pendingMainBaseline=false;}
           if(data.event?.type===2){this.fullSnapshots.set(event.executionContextId,(this.fullSnapshots.get(event.executionContextId)||0)+1);await this.event('rrweb-full-snapshot',{frameId,isTop:data.isTop===true,contextId:event.executionContextId,timestamp:data.event.timestamp,position:record.position});if(this.archivedDocument!==record.position.documentId){this.archivedDocument=record.position.documentId;this.bodyTask(()=>this.captureLoadedResources(record.position,document),256,'resource');}}}
-        else { await this.event(data.kind,{...data,frameId,actor:'unknown',source:'isolated-world-observer'}); if(data.kind==='element-selected') {await this.recording.flush();this.onSelection(captureMetadata({...data,frameId,pageId:this.identity.pageId,generation:this.identity.navigationGeneration}));} }
+        else { await this.event(data.kind,{...data,frameId,actor:'unknown',source:'isolated-world-observer'}); if(data.kind==='selection-cancelled'&&(data.selectionId??undefined)===this.inspectionSelectionId){this.inspectionEnabled=false;this.inspectionSelectionId=undefined;this.onSelection({cancelled:true,selectionId:data.selectionId});} if(data.kind==='element-selected'&&this.inspectionEnabled&&(data.selectionId??undefined)===this.inspectionSelectionId) {await this.recording.flush();if(!this.inspectionEnabled||(data.selectionId??undefined)!==this.inspectionSelectionId)return;this.onSelection(captureMetadata({...data,frameId,pageId:this.identity.pageId,generation:this.identity.navigationGeneration}));} }
       },payloadBytes*3,channel);
       if(!accepted&&data.position){const previous=this.losses.get(channel);this.losses.set(channel,{from:previous?.from??data.position,to:data.position,count:(previous?.count??0)+1});}
     });
@@ -271,12 +273,12 @@ export class CaptureCoordinator {
     }catch(error){await this.event('gap',{category:'resource',reason:'frame-source-scope-unavailable',from:position,cdpFrameId,cause:captureError(error)});return undefined;}
     finally{if(objectId)await this.cdp.send('Runtime.releaseObject',{objectId}).catch(()=>{});}
   }
-  async inspect(enabled:boolean) {
+  async inspect(enabled:boolean,selectionId?:string) {
     const generation=this.identity.navigationGeneration;
     const contexts=await this.readyObservers();if(enabled&&!contexts.ready.length)throw new Error('The current main document recorder is not ready for inspection');
-    for(const {contextId}of contexts.ready){const result=await(this.cdp as any).send('Runtime.evaluate',{expression:`window.__besInspect = ${enabled}`,contextId});if(result.exceptionDetails)throw new Error('Could not change main document inspection: '+result.exceptionDetails.text);}
+    for(const {contextId}of contexts.ready){const result=await(this.cdp as any).send('Runtime.evaluate',{expression:`window.__besSelectionId = ${JSON.stringify(selectionId??null)}; window.__besInspect = ${enabled}`,contextId});if(result.exceptionDetails)throw new Error('Could not change main document inspection: '+result.exceptionDetails.text);}
     if(generation!==this.identity.navigationGeneration)throw new Error('Inspection target navigated while changing mode');
-    this.inspectionEnabled=enabled;
+    this.inspectionEnabled=enabled;this.inspectionSelectionId=enabled?selectionId:undefined;
   }
   /** Existing authorized capture facade only: sample an explicitly identified
    * live source node, then return its NEW durable historical observation. */
@@ -320,6 +322,7 @@ export class CaptureCoordinator {
     const complete=outcomes.length>0&&outcomes.every(outcome=>outcome.requested&&outcome.observed);
     await this.event(complete?'rrweb-resumed':'gap',{reason:complete?reason:'fresh-rrweb-snapshot-not-observed',requestedBecause:reason,startedAt,endedAt:new Date().toISOString(),outcomes});if(!complete)this.fail('Fresh rrweb snapshot was not observed after resume');
   }
+  async snapshotPosition(){if(this.stopped||this.paused)throw new Error("Recording is not active");await this.freshSnapshots("authoring-savepoint");await this.flush();if(!this.lastPosition)throw new Error("Source position unavailable");return {...this.lastPosition};}
   async flush(){while(this.pending.size)await Promise.allSettled([...this.pending]);await this.bodyReads.flush();await this.recording.flush();await this.resources.flush();if(this.drops){const dropped=this.drops;this.drops=0;await this.event('gap',{reason:'capture-backpressure',dropped,channels:Object.fromEntries(this.droppedChannels),from:this.lastPosition,queueMetrics:this.queueMetrics});this.droppedChannels.clear();}await this.store.flush();}
   stop(){
     // Page destruction and a user seal can race. Share one teardown attempt;
@@ -360,12 +363,12 @@ function observe(binding:string,urlPrivacy:(value:string,base?:string)=>boolean)
   const describe=(el:Element)=>{const privateText=privateElement(el);return{tag:el.tagName.toLowerCase(),role:el.getAttribute('role'),name:privateText?'[redacted]':el.getAttribute('aria-label'),text:privateText?'[redacted]':(el.textContent||'').trim().slice(0,400),selectors:privateText?[]:[el.id?'#'+CSS.escape(el.id):null,el.getAttribute('data-testid')?'[data-testid='+JSON.stringify(el.getAttribute('data-testid'))+']':null].filter(Boolean),rect:el.getBoundingClientRect().toJSON(),url:urlPrivacy(location.href)?'[redacted credential URL]':location.href};};
   const listeners=new AbortController(),options={capture:true,signal:listeners.signal};
   const sampleError=(error:unknown)=>{const message=error instanceof Error?error.message:String(error);return{name:error instanceof Error?error.name:'Error',message:urlPrivacy(message)||/password|passwd|passphrase|token|secret|authorization|cookie|credential|api[_-]?key/i.test(message)?'[redacted credential-bearing error message]':message.slice(0,4096)};};
-  let highlighted:HTMLElement|undefined;
-  const suppressInspectionInput=(e:Event)=>{if(!w.__besInspect)return;e.preventDefault();e.stopImmediatePropagation();};
+  // CDP highlight is application-owned; never modify source element styles.
+  let selecting=false;
+  const suppressInspectionInput=(e:Event)=>{if(!w.__besInspect)return;e.preventDefault();e.stopImmediatePropagation();if(e instanceof KeyboardEvent&&e.key==='Escape'){w.__besInspect=false;emit({kind:'selection-cancelled',selectionId:w.__besSelectionId});}};
   for(const type of ['pointerdown','pointerup','mousedown','mouseup','dblclick','auxclick','contextmenu','touchstart','touchend','keydown','keyup','keypress'])
     window.addEventListener(type,suppressInspectionInput,{...options,passive:false});
-  document.addEventListener('pointermove',e=>{if(!w.__besInspect)return; if(highlighted)highlighted.style.removeProperty('outline');highlighted=e.target as HTMLElement; highlighted.style.outline='2px solid #19bda0';},options);
-  window.addEventListener('click',e=>{const el=(e.composedPath().find(node=>node instanceof Element)??e.target) as Element;if(w.__besInspect){e.preventDefault();e.stopImmediatePropagation();if(highlighted)highlighted.style.removeProperty('outline');void w.__besSampleSelectedNode(el).then((sample:PresentationSample)=>emit({kind:'element-selected',element:describe(el),sample}),(error:unknown)=>emit({kind:'element-selected',element:describe(el),sampleError:sampleError(error)}));}else emit({kind:'action',action:'click',element:describe(el),isTrusted:e.isTrusted});},options);
+  window.addEventListener('click',e=>{const el=(e.composedPath().find(node=>node instanceof Element)??e.target) as Element;if(w.__besInspect){e.preventDefault();e.stopImmediatePropagation();if(selecting)return;selecting=true;const selectionId=w.__besSelectionId;void w.__besSampleSelectedNode(el).then((sample:PresentationSample)=>emit({kind:'element-selected',selectionId,element:describe(el),sample}),(error:unknown)=>emit({kind:'element-selected',selectionId,element:describe(el),sampleError:sampleError(error)})).finally(()=>{selecting=false;});}else emit({kind:'action',action:'click',element:describe(el),isTrusted:e.isTrusted});},options);
   document.addEventListener('input',e=>{const el=e.target as HTMLInputElement;emit({kind:'action',action:'input',element:describe(el),inputSummary:{masked:true,length:el.value?.length},isTrusted:e.isTrusted});},options);
-  w.__besStop=()=>{w.__besInspect=false;w.__besRecorderReady=false;listeners.abort();if(highlighted)highlighted.style.removeProperty('outline');w.__besStopSource?.();w.__besInstalled=false;};
+  w.__besStop=()=>{w.__besInspect=false;w.__besRecorderReady=false;listeners.abort();w.__besStopSource?.();w.__besInstalled=false;};
 }

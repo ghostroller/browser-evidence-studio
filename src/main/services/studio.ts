@@ -507,7 +507,39 @@ export class Studio {
       throw error;
     }finally{op?.gate.setCommandGuard();combined.removeEventListener('abort',abort);await stopping;}
   }
-  async checkpoint(body:any,options:{fromRunner?:boolean;pageId?:string;signal?:AbortSignal}={}){
+  async captureAndAuthor(body:any){
+    const run=this.active;ensure(!run||run.controller==='human','Authoring requires human ownership',409);
+    ensure(typeof body.operationId==='string'&&/^[a-zA-Z0-9-]{1,128}$/.test(body.operationId),'Operation identity required');
+    const directory=path.join(this.root,'authoring');await mkdir(directory,{recursive:true});
+    const file=path.join(directory,body.operationId+'.json');let operation:any;
+    try{operation=JSON.parse(await readFile(file,'utf8'));ensure(operation.projectId===body.projectId,'Operation belongs to another project',403);}catch(error:any){if(error.code!=='ENOENT')throw error;}
+    if(!operation){
+      ensure(run,'Start recording before creating a new live savepoint',409);const page=this.current();
+      const selected=(run.selection as any)?.sample?.ref;
+      if(body.selection)ensure(page.capture?.inspecting&&page.capture.selectionId===body.selectionId&&selected&&(run.selection as any).selectionId===body.selectionId&&typeof body.selectionId==='string'&&(run.selection as any).generation===page.navigationGeneration&&body.generation===page.navigationGeneration&&body.pageId===page.pageId&&body.leaseEpoch===run.leaseEpoch&&selected.position.recordingId===run.id&&selected.position.pageId===page.pageId,'Live selection has no current durable source',409);
+      const position=body.selection?selected.position:await page.capture!.snapshotPosition();
+      operation={projectId:run.projectId,recordingId:run.id,operationId:body.operationId,position,title:body.title||'当前结果',notes:body.notes||'',draftId:body.draftId,derivedFrom:body.derivedFrom,...(body.selection?{target:selected}:{})};
+      // A durable intent precedes raw capture. Retry can discover its receipt even
+      // when the association journal write failed after appendCheckpoint.
+      await atomicJson(file,operation);
+    }
+    if(!operation.receiptId){
+      let cursor:string|undefined;
+      do{const checkpoints=await this.reader(operation.recordingId).checkpoints({limit:100,maxBytes:32768,cursor});
+        const found=checkpoints.items.find((item:any)=>item.metadata?.authoring?.operationId===operation.operationId) as any;
+        if(found){operation.receiptId=found.id;break;}cursor=checkpoints.nextCursor;
+      }while(cursor);
+      if(!operation.receiptId){
+        ensure(run&&operation.recordingId===run.id,'The source recording is no longer active; original intent is retained',409);
+        const receipt=await this.checkpoint({title:operation.title,description:operation.notes},{authoring:operation});
+        operation.receiptId=receipt.id;await run.store.flush();
+      }
+    }
+    try{await atomicJson(file,operation);const authored=await this.materials.authorReceipt(operation.projectId,operation);
+      return {status:'saved',...authored,receiptId:operation.receiptId,target:operation.target,operationId:operation.operationId};
+    }catch(error){return {status:'partial',receiptId:operation.receiptId,operationId:operation.operationId,error:String(error),reason:'原始收据已保存，资料关联未完成。使用同一操作重试，不会再次采集。'};}
+  }
+  async checkpoint(body:any,options:{fromRunner?:boolean;pageId?:string;signal?:AbortSignal;authoring?:unknown}={}){
     options.signal?.throwIfAborted();
     const r=this.required();ensure(options.fromRunner||!['running','waiting-human','finalizing','stopping'].includes(r.execution),'A running workflow owns checkpoint capture; stop it before taking a manual checkpoint',409);
     const requestedPageId=options.pageId??body.pageId,p=requestedPageId?r.pages.get(requestedPageId):this.current();ensure(p,'Checkpoint page no longer exists',409);
@@ -543,7 +575,7 @@ export class Studio {
       const artifacts=[];
       for(const material of captured.materials)artifacts.push(await r.store.putArtifact({...material,limitBytes:material.kind==='dom'?16*1024*1024:undefined,source:{pageId:p.pageId,checkpointOperationId:task.id}}));
       const complete=artifacts.filter(a=>a.captureStatus==='complete'||a.captureStatus==='empty').length;
-      return await r.store.appendCheckpoint({key:String(body.key||'checkpoint-'+Date.now()).slice(0,200),title:String(body.title||''),description:String(body.description||''),requirementIds:Array.isArray(body.requirementIds)?body.requirementIds:[],captureStartedAt:task.startedAt,captureEndedAt:captured.captureEndedAt,pageId:p.pageId,navigationGeneration:generation,captureConsistency:consistency,artifactRefs:artifacts.map(a=>a.id),metadata:{artifacts,selection,operationId:task.id,captureOutcome:captured.outcome,captureStatus:complete===artifacts.length?'complete':complete?'partial':'failed',note:'A capture interval, not an atomic or frozen page snapshot'}});
+      return await r.store.appendCheckpoint({key:String(body.key||'checkpoint-'+Date.now()).slice(0,200),title:String(body.title||''),description:String(body.description||''),requirementIds:Array.isArray(body.requirementIds)?body.requirementIds:[],captureStartedAt:task.startedAt,captureEndedAt:captured.captureEndedAt,pageId:p.pageId,navigationGeneration:generation,captureConsistency:consistency,artifactRefs:artifacts.map(a=>a.id),metadata:{artifacts,selection,...(options.authoring?{authoring:options.authoring}:{}),operationId:task.id,captureOutcome:captured.outcome,captureStatus:complete===artifacts.length?'complete':complete?'partial':'failed',note:'A capture interval, not an atomic or frozen page snapshot'}});
     }finally{
       releaseInput();options.signal?.removeEventListener('abort',abort);if(r.checkpointTask===task)r.checkpointTask=undefined;finish();this.onChanged();
     }

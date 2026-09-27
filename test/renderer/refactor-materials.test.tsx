@@ -14,8 +14,32 @@ const content = (): MaterialContent => ({ recordingRefs: ['recording-one'], anno
   fields: [{ id: 'amount', dataset: 'orders', name: 'Paid amount', description: 'Charged amount', outputPath: '/amount', sourcePolicy: 'any-evidenced' }],
   checkpoints: [{ id: 'card', kind: 'requirement', anchor: position, capturedAt: new Date(1000).toISOString(), createdAt: new Date(2000).toISOString(), title: 'Order example', notes: '', requirementIds: ['orders'], annotationIds: [] }],
 });
-afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
+afterEach(() => { cleanup(); localStorage.clear(); delete (window as Partial<Window>).studio; });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(complete => { resolve = complete; }); return { promise, resolve }; }
+
+test('restores unsubmitted editor text after remount and blocks publication when that text cannot save', async () => {
+  const stored=content();
+  const call=vi.fn(async(method:string,body:any)=>{
+    if(method==='workingMaterialDraft'||method==='materialDraft')return {draftId:'draft-dirty',draftRevision:0};
+    if(method==='materialDrafts')return {items:[{draftId:'draft-dirty',draftRevision:0,status:'available'}]};
+    if(method==='materialRevisions')return {items:[]};
+    if(method==='materialCollection')return {items:stored[body.collection as keyof MaterialContent]};
+    throw new Error(method);
+  });
+  window.studio={call,bounds:vi.fn()};
+  const props={projectId:'dirty-project',recordingId:'recording-one',position,onOpenReplay:vi.fn(),onSelectTarget:vi.fn()};
+  const first=render(<MaterialWorkbench {...props}/>);
+  fireEvent.click(await screen.findByRole('button',{name:/Order example/}));
+  fireEvent.change(screen.getByLabelText('说明'),{target:{value:'Unsubmitted user meaning'}});
+  first.unmount();
+  render(<MaterialWorkbench {...props}/>);
+  await waitFor(()=>expect((screen.getByLabelText('说明') as HTMLTextAreaElement).value).toBe('Unsubmitted user meaning'));
+  fireEvent.change(screen.getByLabelText('标题'),{target:{value:''}});
+  fireEvent.click(screen.getByRole('button',{name:'发布候选版本'}));
+  await screen.findByText('输入 checkpoint 标题。');
+  expect(call.mock.calls.some(([method])=>method==='publishMaterialDraft')).toBe(false);
+  expect((screen.getByLabelText('说明') as HTMLTextAreaElement).value).toBe('Unsubmitted user meaning');
+});
 
 test('shows an optimistic edit conflict and never silently overwrites the newer draft', async () => {
   const call = vi.fn(async (method: string, body: any) => {
