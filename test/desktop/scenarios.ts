@@ -47,7 +47,7 @@ export async function runDesktopTests(studio:Studio){
     if(!process.env.BES_SKIP_UI)await runUiScenarios(studio);
     await p.page.evaluate(async()=>{await fetch('/api/large?bytes=1048576');await fetch('/empty');await fetch('/binary');});
     p.view.webContents.openDevTools({mode:'detach',activate:false});await delay(150);p.view.webContents.closeDevTools();
-    await p.capture.flush();const reader=new EvidenceReader(r.store.runDir);const summary=await reader.summary();assert.ok(summary);
+    await p.capture!.flush();const reader=new EvidenceReader(r.store.runDir);const summary=await reader.summary();assert.ok(summary);
     await studio.saveProfile();await studio.seal();await studio.closeSession();
     const readback=await reader.checkpoints({limit:20});assert.ok(readback.items.some((x:any)=>x.id===cp.id));
     console.log('M0/M1 PASS: exact target, navigation, concurrent gate, independent capture, checkpoint, seal/reopen');

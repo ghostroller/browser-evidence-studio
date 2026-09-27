@@ -54,8 +54,8 @@ export async function runRefactorSystemScenario(studio: Studio): Promise<Record<
     const profile = await studio.createProfile({ projectId: project.id, name: 'G synthetic isolated profile' });
     await studio.startRun({ projectId: project.id, profileId: profile.id, url: sourceUrl });
     const live = studio.current(), recordingId = studio.required().id, targetId = live.targetId;
-    await live.page.waitForSelector('[data-field=amount]'); await live.capture.flush();
-    const position = live.capture.recordingPosition; assert.ok(position);
+    await live.page.waitForSelector('[data-field=amount]'); await live.capture!.flush();
+    const position = live.capture!.recordingPosition; assert.ok(position);
     const window = await new ArchiveReplayService(studio.reader(recordingId).runDir).window(position), model = new SourceModel(window.records);
     const example = [...model.nodes.values()].find(node => node.metadata?.attributes['data-field']?.status === 'present' && node.metadata.attributes['data-field'].value === 'amount'); assert.ok(example?.metadata);
     const target: HistoricalElementRef = { kind: 'dom-node', position, nodeId: example.id, frameId: example.metadata.frameId, mirrorScopeId: example.metadata.mirrorScopeId };
@@ -67,8 +67,8 @@ export async function runRefactorSystemScenario(studio: Studio): Promise<Record<
         await new Promise(resolve => setTimeout(resolve, 1));
       }
     });
-    await live.capture.flush();
-    const movedPosition=live.capture.recordingPosition!;
+    await live.capture!.flush();
+    const movedPosition=live.capture!.recordingPosition!;
     const movedWindow=await new ArchiveReplayService(studio.reader(recordingId).runDir).window(movedPosition),movedModel=new SourceModel(movedWindow.records);
     assert.ok(movedWindow.records.length>=200,`Synthetic stream contains only ${movedWindow.records.length} source events`);
     const moved=[...movedModel.nodes.values()].find(node=>node.metadata?.attributes.id?.status==='present'&&node.metadata.attributes.id.value==='moved');
@@ -199,7 +199,7 @@ async function runProductionJsonSourceChain(studio:Studio,projectId:string,origi
       const result=await (await startWorkflow({directory,input:{variant},targetId:page.targetId,transport,dependencyLockPath:path.join(directory,'package-lock.json'),
         snapshotDirectory:managed.snapshotDirectory,execution:{binding:managed.binding,datasets:managed.datasets,saveStep:managed.saveStep},beforeWorker:managed.prepared,
         hooks:{checkpoint:async()=>({id:'unused'}),emitData:async()=>{},assertion:async()=>{},progress:async()=>{},requestHuman:async()=>{},attachArtifact:async()=>{
-          await page.capture.flush();
+          await page.capture!.flush();
           const reader=studio.reader(run.id);let cursor:string|undefined;const candidates:any[]=[];
           do{const batch=await reader.artifacts({limit:100,maxBytes:32768,cursor});candidates.push(...batch.items.filter((item:any)=>item.kind==='response-body'&&item.captureStatus==='complete'&&item.source?.url===sourceUrl&&item.source?.recordingId===run.id&&!seen.has(item.id)));cursor=batch.nextCursor;}while(cursor);
           assert.equal(candidates.length,1,'The test host must resolve one real captured JSON body, not create source metadata');

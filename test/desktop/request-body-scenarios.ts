@@ -78,7 +78,7 @@ export async function runRequestBodyScenarios(studio: Studio, url: string): Prom
     const deadline = Date.now() + 15_000;
     let found: any;
     while (Date.now() < deadline) {
-      await page.capture.flush();
+      await page.capture!.flush();
       const listed = await pages(cursor => reader.artifacts({ cursor, limit: 3, maxBytes: 32768, fields: ['kind', 'source', 'captureStatus'] }));
       const matching = listed.filter(artifact => artifact.kind === 'request-body' && artifact.source?.url === requestUrl);
       assert.ok(matching.length <= 1, `One request must not produce duplicate ${variant} body artifacts`);
@@ -88,7 +88,7 @@ export async function runRequestBodyScenarios(studio: Studio, url: string): Prom
     assert.ok(found, `No persisted request-body artifact for ${variant}`);
     bodies.set(variant, await reader.artifactMetadata(found.id));
   }
-  await page.capture.flush();
+  await page.capture!.flush();
   await studio.seal(); if(studio.state().session)await studio.closeSession();
 
   const complete = bodies.get('complete')!, large = bodies.get('large')!, truncated = bodies.get('truncated')!;

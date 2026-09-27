@@ -28,9 +28,9 @@ interface MemorySample {
 export async function settleInitialCaptureBaseline(page: ReturnType<Studio['current']>, runId: string): Promise<void> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
-    const position = page.capture.recordingPosition;
+    const position = page.capture!.recordingPosition;
     if (position?.recordingId === runId && position.pageId === page.pageId) {
-      await page.capture.flush();
+      await page.capture!.flush();
       return;
     }
     await delay(10);
@@ -174,7 +174,7 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
     if(options.newArchitecture){
       await settleInitialCaptureBaseline(page, run.id);
       await page.page.evaluate(async()=>{await new Promise<void>((resolve,reject)=>{const link=document.createElement('link');link.rel='stylesheet';link.href='/soak-resource.css';link.onload=()=>resolve();link.onerror=()=>reject(new Error('Synthetic long-run CSS failed'));document.head.appendChild(link);});});
-      await page.capture.flush();
+      await page.capture!.flush();
     }
     const sessionId = studio.state().session!.sessionId;
     const grant = await studio.authorizeTask({ projectId: project.id, profileId: profile.id, sessionId, leaseEpoch: run.leaseEpoch,
@@ -257,9 +257,9 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
       (report.fieldReads ||= []).push({ phase, artifactId: firstArtifactId, maxBytes: 1024, responseBytes: reply.bytes, elapsedMs: round(reply.elapsedMs), value: reply.data.value });
     };
     if(options.newArchitecture){
-      await page.capture.flush();
+      await page.capture!.flush();
       report.newArchitectureArchiveGrowth={baseline:await archiveGrowth(run.store.runDir),final:null,delta:null,basis:'durable files before cadence and after seal'};
-      report.newArchitectureSamples.push({elapsedMs:0,queue:page.capture.queueMetrics});
+      report.newArchitectureSamples.push({elapsedMs:0,queue:page.capture!.queueMetrics});
     }
     started = Date.now(); startedMonotonic = performance.now(); report.startedAt = new Date(started).toISOString(); await save('running');
     const durationMs = minutes * 60000; let slot = 0, nextCheckpoint = 0, nextSummary = 0;
@@ -283,8 +283,8 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
       if (loadElapsed() >= nextCheckpoint) {
         await measure('largeFetch', () => fetchPayload('large-' + sequence, MiB), cycleStages);
         await measure('checkpoint', () => checkpoint('soak-' + sequence), cycleStages);
-        await measure('captureFlush', () => page.capture.flush(), cycleStages);
-        if(options.newArchitecture)report.newArchitectureSamples.push({elapsedMs:round(loadElapsed()),queue:page.capture.queueMetrics});
+        await measure('captureFlush', () => page.capture!.flush(), cycleStages);
+        if(options.newArchitecture)report.newArchitectureSamples.push({elapsedMs:round(loadElapsed()),queue:page.capture!.queueMetrics});
         if (!firstArtifactId) await measure('fieldRead', () => fieldRead('early'), cycleStages);
         console.log(`SOAK ${(loadElapsed() / 60000).toFixed(1)}/${minutes} min; actions=${actions.length}, checkpoint=${checkpointIds.length}`);
         nextCheckpoint += 60000;
@@ -308,9 +308,9 @@ export async function runSoak(studio: Studio, url: string, minutes: number, opti
     const measuredElapsed = await waitForMeasuredDuration(durationMs, loadElapsed, delay);
     report.load.loadEndedAt = new Date().toISOString(); report.load.loadElapsedMs = round(measuredElapsed);
     report.elapsedMs = report.load.loadElapsedMs; report.load.completedCycles = actions.length;
-    assert.ok(measuredElapsed >= durationMs); assert.ok(report.elapsedMs >= durationMs); await page.capture.flush(); await summary(); await memory(); await fieldRead('late');
+    assert.ok(measuredElapsed >= durationMs); assert.ok(report.elapsedMs >= durationMs); await page.capture!.flush(); await summary(); await memory(); await fieldRead('late');
     report.pageAcknowledgedActions = await page.page.$eval('#action-count', element => Number(element.textContent)); assert.equal(report.pageAcknowledgedActions, actions.length);
-    if(options.newArchitecture){report.newArchitectureQueueMetrics=page.capture.queueMetrics;report.newArchitectureSamples.push({elapsedMs:report.elapsedMs,queue:page.capture.queueMetrics});}
+    if(options.newArchitecture){report.newArchitectureQueueMetrics=page.capture!.queueMetrics;report.newArchitectureSamples.push({elapsedMs:report.elapsedMs,queue:page.capture!.queueMetrics});}
     await save('verifying'); const verificationAt = performance.now();
     await studio.seal(); if(studio.state().session)await studio.closeSession(); const reader = studio.reader(run.id);
     if(options.newArchitecture){

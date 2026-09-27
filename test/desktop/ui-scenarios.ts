@@ -246,7 +246,7 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
     await click('打开历史回放');
     await waitFor(() => evaluate<boolean>(`!!document.querySelector('.replay-workspace')`), Boolean, 'production replay workspace');
     await waitFor(() => studio.current().view.getVisible(), value => !value, 'replay hides live business view');
-    const currentPosition = studio.current().capture.recordingPosition;
+    const currentPosition = studio.current().capture!.recordingPosition;
     assert.ok(currentPosition, 'The active synthetic document has a recorded source position');
     const streamIndex = await waitFor(() => evaluate<number>(`Array.from(document.querySelector('select[aria-label="历史页面流"]')?.options || []).findIndex(option => option.textContent.includes(${JSON.stringify(currentPosition.documentId.slice(0, 12))}))`), index => index >= 0, 'active synthetic document stream listed');
     await evaluate<void>(`(() => { const select=document.querySelector('select[aria-label="历史页面流"]'); select.value=${JSON.stringify(String(streamIndex))}; select.dispatchEvent(new Event('change',{bubbles:true})); })()`);

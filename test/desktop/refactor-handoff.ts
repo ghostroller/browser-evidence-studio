@@ -46,8 +46,8 @@ export async function runRefactorHandoffScenario(studio: Studio, siteUrl: string
     const profile = await studio.createProfile({ projectId: project.id, name: 'Handoff synthetic profile' });
     await studio.startRun({ projectId: project.id, profileId: profile.id, url: siteUrl + '/lab' });
     const run = studio.required(), page = studio.current();
-    await page.page.waitForSelector('#lab-result'); await page.capture.flush();
-    const position = page.capture.recordingPosition; assert.ok(position);
+    await page.page.waitForSelector('#lab-result'); await page.capture!.flush();
+    const position = page.capture!.recordingPosition; assert.ok(position);
     const source = new SourceModel((await new ArchiveReplayService(studio.reader(run.id).runDir).window(position)).records);
     const node = [...source.nodes.values()].find(item => item.metadata?.attributes.id?.status === 'present' && item.metadata.attributes.id.value === 'lab-result');
     assert.ok(node?.metadata, 'The target exists in the recorded source model');
@@ -255,8 +255,8 @@ async function runLiveHandoffScenario(studio: Studio, siteUrl: string): Promise<
     const run = studio.required(), page = studio.current();
     await page.page.waitForSelector('#ssr-data');
     await page.page.waitForFunction(() => document.querySelector('#api-state')?.textContent === '已就绪');
-    await page.capture.flush();
-    const position = page.capture.recordingPosition;
+    await page.capture!.flush();
+    const position = page.capture!.recordingPosition;
     assert.ok(position, 'The list page has a recorded position');
     const firstPageSource = await until(async () => {
       const artifacts = await studio.reader(run.id).artifacts({ limit: 100, maxBytes: 32768 });

@@ -41,11 +41,11 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
   scopeRef.current = projectId;
   const pages: Array<{ pageId: string; targetId: string; url: string; title?: string }> = session?.pages || [];
   const browser = capabilities.some(value => browserCapabilities.includes(value));
-  const lease = active?.leaseEpoch;
+  const lease = session?.leaseEpoch;
   const sessionId = session?.sessionId;
-  const profileId = active?.profileId;
-  const scopeReady = !!active && active.projectId === projectId && !!sessionId && !!profileId &&
-    active.controller === 'human' && !active.locked && Number.isSafeInteger(lease);
+  const profileId = session?.profileId;
+  const scopeReady = !!session && session.projectId === projectId && !!sessionId && !!profileId &&
+    session.controller === 'human' && !session.locked && Number.isSafeInteger(lease);
   const origins = originsText.split(/[\s,，]+/).map(value => value.trim()).filter(Boolean);
   const validOrigins = origins.length > 0 && origins.length <= 32 && origins.every(value => origin(value) === value);
   const validPages = pageIds.length > 0 && pageIds.length <= 32 && pageIds.every(id => pages.some(page => page.pageId === id));
@@ -139,8 +139,8 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
       onChange={event => setCapabilities(current => event.target.checked ? [...current, value] : current.filter(item => item !== value))} />{label}</label>)}</div>
     <div className="material-grid"><label>有效分钟数<Input aria-label="有效分钟数" type="number" min="0.02" max="480" step="0.01" value={minutes} onChange={event => setMinutes(event.target.value)} /></label>
       <label>最多操作数<Input aria-label="最多操作数" type="number" min="1" max="10000" value={operations} onChange={event => setOperations(event.target.value)} /></label></div>
-    {browser && <><p className="hint">浏览器授权要求当前录制、人工控制和当前租约。操作/建页/执行授权发出后，主进程会把浏览器控制权交给 Agent。</p>
-      {!scopeReady && <p role="status" className="error-inline">请先开始录制并保持人工控制；当前会话、环境或租约不可用。</p>}
+    {browser && <><p className="hint">浏览器授权要求已打开的环境、人工控制和当前租约。操作/建页/执行授权发出后，主进程会把浏览器控制权交给 Agent。</p>
+      {!scopeReady && <p role="status" className="error-inline">请先打开环境并保持人工控制；当前会话、环境或租约不可用。</p>}
       <div className="section-label">受管理页面</div><div className="task-capabilities">{pages.map(page => <label key={page.pageId}><input type="checkbox" checked={pageIds.includes(page.pageId)}
         onChange={event => setPageIds(current => event.target.checked ? [...current, page.pageId] : current.filter(id => id !== page.pageId))} />{page.title || page.url} · {page.pageId.slice(0, 12)}</label>)}</div>
       <label>允许的精确来源（每行一个）<Textarea aria-label="允许的精确来源" value={originsText} onChange={event => setOriginsText(event.target.value)} placeholder="https://example.com" /></label>

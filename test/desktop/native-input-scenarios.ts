@@ -27,7 +27,7 @@ export async function runNativeInputScenarios(studio:Studio){
     finally{host.restore();await delay(100);}
     assert.equal(await count(),0);record('minimized window rejects input');
     await action();assert.equal(await count(),1);record('foreground actual click');
-    await front.capture.flush();const position=front.capture.recordingPosition;assert(position);
+    await front.capture!.flush();const position=front.capture!.recordingPosition;assert(position);
     for(let i=0;i<3;i++){
       const opened=await studio.replayHost.open({projectId:project.id,position});assert.equal(opened.status,'ready',opened.error);
       if(i===0){
@@ -73,7 +73,7 @@ export async function runNativeInputScenarios(studio:Studio){
     });
     await wait(()=>ui.executeJavaScript(`Array.from(document.querySelectorAll('.browser-toolbar button')).some(button=>button.textContent.trim()==='选取元素（实时页）'&&!button.disabled)`),'live picker button available');
     await ui.executeJavaScript(`Array.from(document.querySelectorAll('.browser-toolbar button')).find(button=>button.textContent.trim()==='选取元素（实时页）').click()`);
-    await wait(()=>front.capture.inspecting,'live picker enabled');
+    await wait(()=>front.capture!.inspecting,'live picker enabled');
     const beforePick=await count();
     await clickSyntheticHuman(studio,'#increment');
     await wait(()=>!!(r.selection as any)?.element&&(r.selection as any).element.tag==='button','native live target selected');
@@ -81,7 +81,7 @@ export async function runNativeInputScenarios(studio:Studio){
     assert.equal(await front.page.evaluate(()=>(window as any).__besPointerDownCount),0,'Inspection must not execute the site pointerdown handler');
     await wait(()=>ui.executeJavaScript(`document.querySelector('.live-element-selection')?.textContent?.includes('已选实时元素')||false`),'live selection summary visible');
     await ui.executeJavaScript(`Array.from(document.querySelectorAll('.browser-toolbar button')).find(button=>button.textContent.trim()==='结束选取（实时页）').click()`);
-    await wait(()=>!front.capture.inspecting,'live picker disabled');
+    await wait(()=>!front.capture!.inspecting,'live picker disabled');
     await clickSyntheticHuman(studio,'#increment');
     assert.equal(await count(),beforePick+1,'Normal native page click resumes after inspection');
     record('React live picker intercepts native click and pointerdown, then restores normal page input');

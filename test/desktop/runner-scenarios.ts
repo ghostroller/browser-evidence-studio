@@ -194,7 +194,7 @@ export async function runRunnerScenarios(studio: Studio, siteUrl: string) {
   assert.equal(retainedPage.view.webContents.isDestroyed(), false, 'Cancellation preserves the observed page for diagnosis');
   await delay(200);
   assert.equal(studio.required().execution, 'cancelled');
-  await retainedPage.capture.flush();
+  await retainedPage.capture!.flush();
   await studio.seal(); if(studio.state().session)await studio.closeSession();
   console.log('M5 cancel PASS: worker exited, result persisted, human ownership restored, captured page retained');
 

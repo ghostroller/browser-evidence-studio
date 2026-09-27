@@ -5,7 +5,7 @@ import { ensure } from '@/shared/errors';
  * A new recording gets a new runtime object; old async work cannot acquire the
  * next recording's store by retaining a reference to the previous runtime.
  */
-export class BrowserSessionLifecycle<Runtime extends {id:string;projectId:string;profileId:string}> {
+export class BrowserSessionLifecycle<Runtime extends {id?:string;projectId:string;profileId:string}> {
   readonly id = randomUUID();
   recordingId: string | undefined;
   constructor(public runtime: Runtime) { this.recordingId = runtime.id; }

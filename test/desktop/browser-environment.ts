@@ -93,8 +93,8 @@ export async function runBrowserEnvironmentScenarios(studio: Studio, siteUrl: st
     report.security.popup = securityPreferences(popup);
     report.contexts.popup = await environment(popup.page);
     verifyEnvironment(report.contexts.popup, 'popup', expectedUa);
-    await Promise.all([...run.pages.values()].map(page => page.capture.flush()));
-    assert.ok([...run.pages.values()].every(page => page.capture.health === 'recording'), 'Ordinary CDP evidence capture must remain active');
+    await Promise.all([...run.pages.values()].map(page => page.capture!.flush()));
+    assert.ok([...run.pages.values()].every(page => page.capture!.health === 'recording'), 'Ordinary CDP evidence capture must remain active');
     await studio.seal(); if(studio.state().session)await studio.closeSession();
     report.passed = true;
     console.log('Browser environment PASS: native UA/getters and fetch Client Hints, initial navigation/reload/iframe/popup; Electron navigation Client Hints limitation recorded');

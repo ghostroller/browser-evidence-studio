@@ -53,7 +53,8 @@ export function makeDispatch(studio:Studio){
     const execute=async()=>{
     if(['checkpoint','startValidation'].includes(method))context.signal?.throwIfAborted();
     const runMethods=new Set(['action','createPage','checkpoint','control','pauseOperations','pauseCapture','seal','inspect','selectPage','requestHuman','cancelHandoff','startValidation','stopRunner','saveProfile']);
-    if(source==='api'&&runMethods.has(method)){
+    if(source==='api'&&method==='startValidation'&&!studio.active){ensure(body.runId===undefined,'A stopped recording cannot be an execution target; use POST /v1/validations',409);const session=studio.state().session;ensure(session&&body.sessionId===session.sessionId&&body.profileId===session.profileId&&body.leaseEpoch===session.leaseEpoch&&session.controller==='agent','Session lease is stale or not agent-owned',409);}
+    if(source==='api'&&runMethods.has(method)&&!(method==='startValidation'&&!studio.active)){
       const r=studio.required();ensure(body.leaseEpoch===r.leaseEpoch,'Stale control lease',409);if(body.runId)ensure(body.runId===r.id,'Run is not active',409);if(body.profileId)ensure(body.profileId===r.profileId,'Profile is not active',409);
       if(!['cancelHandoff','stopRunner'].includes(method))ensure(r.controller==='agent','Human owns this browser; use the client to grant agent control',409);
     }
@@ -69,6 +70,8 @@ export function makeDispatch(studio:Studio){
       case 'inspectRunRecovery':ensure(source==='ui','Archive recovery inspection is available in the trusted client only',403);return inspectRunRecovery(studio,body);
       case 'recoverRun':ensure(source==='ui','Archive recovery is available in the trusted client only',403);return recoverRun(studio,body);
       case 'recoverRunIndexes':ensure(source==='ui','Archive index recovery is available in the trusted client only',403);return recoverRunIndexes(studio,body);
+      case 'openEnvironment':ensure(source==='ui','Environment preparation requires trusted UI',403);return studio.openEnvironment(body);
+      case 'checkEnvironment':ensure(source==='ui','Environment checks require trusted UI',403);return studio.checkEnvironment();
       case 'profiles':return {items:studio.profiles.filter(p=>p.projectId===body.projectId)};
       case 'runs':{const runs=source==='api'?studio.runs.filter(run=>run.projectId===body.projectId):studio.runs;return {items:runs.slice(0,100).map(({id,projectId,profileId,status,createdAt})=>({id,projectId,profileId,status,createdAt})),outputTruncated:runs.length>100};}case 'run':{const run=studio.runs.find(r=>r.id===body.runId);ensure(run,'Unknown run',404);return {...run,active:source==='api'?null:studio.active?.id===body.runId?studio.state().active:null};}
       case 'createProject':return studio.createProject(body);case 'updateProject':return studio.updateProject(body);case 'createProfile':return studio.createProfile(body);case 'startRun':ensure(source==='ui','Browser session creation requires the trusted client',403);return studio.startRun(body);
@@ -84,7 +87,7 @@ export function makeDispatch(studio:Studio){
       case 'closeSession':ensure(source==='ui','Closing the browser session requires the trusted UI',403);return studio.closeSession();
       case 'checkpoint':return studio.checkpoint(body,{signal:context.signal});
       case 'cancelCheckpoint':ensure(source==='ui','Checkpoint API cancellation uses its job identity',403);return studio.cancelCheckpoint(body);
-      case 'inspect':{const run=studio.required();ensure(run.controller==='human'&&!['running'].includes(run.execution),'Inspection requires human control',409);await studio.current().capture.inspect(!!body.enabled);if(body.enabled)run.selection=undefined;return {enabled:!!body.enabled};}
+      case 'inspect':{const run=studio.required();ensure(run.controller==='human'&&!['running'].includes(run.execution),'Inspection requires human control',409);await studio.current().capture!.inspect(!!body.enabled);if(body.enabled)run.selection=undefined;return {enabled:!!body.enabled};}
       case 'pauseOperations':ensure(source==='ui','Capture controls require the trusted client',403);return studio.pauseOperations(!!body.paused);case 'pauseCapture':ensure(source==='ui','Capture controls require the trusted client',403);return studio.pauseCapture(!!body.paused);case 'seal':ensure(source==='ui','Recording controls require the trusted client',403);return studio.seal();case 'control':ensure(source==='ui','Browser ownership is granted by the trusted client',403);ensure(['human','agent'].includes(body.controller),'Invalid controller');return studio.control(body.controller);case 'saveProfile':ensure(source==='ui','Profile persistence requires the trusted client',403);return studio.saveProfile();
       case 'history':return studio.history(body.runId);case 'summary':return studio.reader(body.runId).summary(body);case 'events':return studio.reader(body.runId).events(body);case 'gaps':return studio.reader(body.runId).gaps(body);case 'checkpoints':return studio.reader(body.runId).checkpoints(body);case 'artifacts':return studio.reader(body.runId).artifacts(body);
       case 'artifact':{ensure(body.runId,'runId query required');const result=await studio.reader(body.runId).artifact(body.artifactId||body.id,body);return source==='ui'?{...result,url:`bes-artifact://${body.runId}/${body.artifactId||body.id}`}:result;}
@@ -127,10 +130,14 @@ export function makeDispatch(studio:Studio){
           const visiblePages=active?.pages.filter(page=>grant.pages.some(allowed=>allowed.pageId===page.pageId&&allowed.targetId===page.targetId))??[];
           const activeView=active&&active.projectId===projectId&&grant.capabilities.some(item=>['page-read','page-act','page-create','execute'].includes(item))?
             {id:active.id,projectId:active.projectId,profileId:active.profileId,sessionId:state.session?.sessionId,controller:active.controller,leaseEpoch:active.leaseEpoch,capture:active.capture,execution:active.execution,locked:active.locked,pages:visiblePages,selectedPageId:visiblePages.some(page=>page.pageId===active.selectedPageId)?active.selectedPageId:null}:null;
+          const session=state.session;
+          const sessionPages=session?.pages.filter(page=>grant.pages.some(allowed=>allowed.pageId===page.pageId&&allowed.targetId===page.targetId))??[];
+          const sessionView=session&&session.projectId===projectId&&session.sessionId===grant.sessionId&&session.profileId===grant.profileId&&grant.capabilities.some(item=>['page-read','page-act','page-create','execute'].includes(item))?
+            {sessionId:session.sessionId,projectId:session.projectId,profileId:session.profileId,recordingId:session.recordingId,controller:session.controller,leaseEpoch:session.leaseEpoch,locked:session.locked,pages:sessionPages,selectedPageId:sessionPages.some(page=>page.pageId===session.selectedPageId)?session.selectedPageId:null}:null;
           return {instanceId:state.instanceId,projects:state.projects.filter(item=>item.id===projectId),
             profiles:grant.capabilities.some(item=>['page-read','page-act','page-create','execute'].includes(item))?state.profiles.filter(item=>item.projectId===projectId):[],
             runs:grant.capabilities.includes('history-read')?state.runs.filter(item=>item.projectId===projectId):[],
-            validations:grant.capabilities.includes('results-read')?state.validations.filter(item=>state.runs.some(run=>run.id===item.runId&&run.projectId===projectId)):[],active:activeView};
+            validations:grant.capabilities.includes('results-read')?state.validations.filter(item=>state.runs.some(run=>run.id===item.runId&&run.projectId===projectId)):[],active:activeView,session:sessionView};
         }
         return result;
       },context.signal);

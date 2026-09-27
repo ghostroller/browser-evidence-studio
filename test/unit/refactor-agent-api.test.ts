@@ -18,6 +18,25 @@ async function fixture(){
   return {tasks,grant,run,calls,dispatch:makeDispatch(fake as unknown as Studio),body:{authorizationId:grant.authorizationId,runId:'run',projectId:'project',profileId:'profile',sessionId:'session',pageId:'page',generation:1,leaseEpoch:1}};
 }
 describe('new and legacy HTTP routes share task scope',()=>{
+  it('exposes only the granted live session and pages after recording stops',async()=>{
+    const tasks=new TaskAuthorizations();
+    const session={sessionId:'session',projectId:'project',profileId:'profile',controller:'agent',leaseEpoch:9,locked:false,selectedPageId:'private-page',pages:[{pageId:'allowed-page',targetId:'allowed-target',generation:2},{pageId:'private-page',targetId:'private-target',generation:3}]};
+    const state={active:null,session,projects:[{id:'project'},{id:'foreign-project'}],profiles:[{id:'profile',projectId:'project'},{id:'foreign-profile',projectId:'foreign-project'}],runs:[],validations:[]};
+    const dispatch=makeDispatch({tasks,state:()=>state,serialized:async(fn:any)=>fn()} as unknown as Studio);
+    try{
+      const grant=await tasks.issue({projectId:'project',profileId:'profile',sessionId:'session'},{origins:['https://fixture.test'],pages:[{pageId:'allowed-page',targetId:'allowed-target'}],capabilities:['page-read'],durationMs:60000,maxOperations:20});
+      const discovery=await dispatch('state',{authorizationId:grant.authorizationId},'api');
+      expect(discovery.active).toBeNull();expect(discovery.session.leaseEpoch).toBe(9);
+      expect(discovery.session.pages).toEqual([session.pages[0]]);expect(discovery.session.selectedPageId).toBeNull();
+      expect(discovery.projects).toEqual([{id:'project'}]);expect(discovery.profiles).toEqual([state.profiles[0]]);
+      const offline=await tasks.issue({projectId:'project'},{origins:[],pages:[],capabilities:['materials-read'],durationMs:60000,maxOperations:20});
+      expect(await dispatch('state',{authorizationId:offline.authorizationId},'api')).toMatchObject({session:null,profiles:[]});
+      session.sessionId='replacement-session';
+      expect((await dispatch('state',{authorizationId:grant.authorizationId},'api')).session).toBeNull();
+      tasks.revoke(grant.authorizationId);
+      await expect(dispatch('state',{authorizationId:grant.authorizationId},'api')).rejects.toMatchObject({code:'AUTHORIZATION_REVOKED'});
+    }finally{tasks.close();}
+  });
   it('page-read GETs use the current authorized identity without requiring duplicate query IDs',async()=>{
     const f=await fixture();try{
       const base={authorizationId:f.grant.authorizationId,runId:'run'};

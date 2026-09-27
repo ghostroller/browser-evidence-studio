@@ -156,7 +156,7 @@ export async function runRefactorRecoveryScenario(studio:Studio,phase:string):Pr
     const run=studio.required(),page=studio.current();
     await settleInitialCaptureBaseline(page, run.id);
     await page.page.evaluate(async()=>{await new Promise<void>((resolve,reject)=>{const link=document.createElement('link');link.rel='stylesheet';link.href='/soak-resource.css';link.onload=()=>resolve();link.onerror=()=>reject(new Error('Synthetic CSS failed'));document.head.appendChild(link);});});
-    await page.capture.flush();
+    await page.capture!.flush();
     const recording=new RecordingArchive(run.store.runDir),resources=new ResourceArchive(run.store.runDir);
     const streams=await recording.streams();assert.ok(streams.items.length>0,'Production recorder must save a format-2 stream');
     const cssCandidate=(await resources.list(1000)).items.find(item=>item.status==='captured'&&item.originalUrl.status==='present'&&item.originalUrl.value===fixture.url+'/soak-resource.css');

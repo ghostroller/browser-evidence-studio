@@ -51,6 +51,7 @@ const routes: Route[] = [
   route('GET', /^\/v1\/artifacts\/([^/]+)$/, ['artifactId'], 'artifact'),
   route('GET', /^\/v1\/artifacts\/([^/]+)\/content$/, ['artifactId'], 'artifactContent', { binary: true }),
   route('POST', /^\/v1\/handoffs\/([^/]+)\/cancel$/, ['handoffId'], 'cancelHandoff', { mutate: true, lease: true }),
+  route('POST', /^\/v1\/validations$/, [], 'startValidation', { mutate:true, lease:true }),
   route('GET', /^\/v1\/validations\/([^/]+)$/, ['validationId'], 'validation'),
   route('GET', /^\/v1\/validations\/([^/]+)\/reviews$/, ['validationId'], 'reviews'),
 ];

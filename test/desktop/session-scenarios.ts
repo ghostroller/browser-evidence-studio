@@ -34,7 +34,7 @@ export async function runSessionScenarios(studio:Studio,origin:string){
     const command={pageId:page.pageId,generation:page.navigationGeneration,leaseEpoch:first.leaseEpoch};
     await studio.action({...command,type:'fill',selector:'#filter',value:'unsaved synthetic form'});
     await studio.action({...command,type:'click',selector:'#increment'});
-    await studio.control('human');await page.capture.inspect(true);
+    await studio.control('human');await page.capture!.inspect(true);
     const before={targetId:page.targetId,webContentsId:page.webContentsId,pageId:page.pageId,generation:page.navigationGeneration,url:page.page.url()};
     await studio.seal();
     const originalHashes=await fileHashes(first.store.runDir);
@@ -51,7 +51,7 @@ export async function runSessionScenarios(studio:Studio,origin:string){
     assert.equal(studio.state().session?.sessionId,sessionId);assert.equal(studio.current(),page);
     assert.deepEqual({targetId:page.targetId,webContentsId:page.webContentsId,pageId:page.pageId,generation:page.navigationGeneration,url:page.page.url()},before);
     assert.equal(await page.page.$eval('#filter',element=>(element as HTMLInputElement).value),'unsaved synthetic form');
-    await page.capture.flush();
+    await page.capture!.flush();
     let snapshots=0,currentCounter:string|undefined;
     for(const file of await readdir(path.join(second.store.runDir,'raw','rrweb'))){
       for await(const row of jsonLines(path.join(second.store.runDir,'raw','rrweb',file))){
@@ -65,10 +65,10 @@ export async function runSessionScenarios(studio:Studio,origin:string){
     await studio.control('agent');await assert.rejects(()=>studio.action({...command,type:'click',selector:'#increment'}),/Stale lease/);await studio.control('human');
     report.checks.push('new run/store and full snapshot without navigation; old lease rejected');
 
-    const originalStop=page.capture.stop;
-    page.capture.stop=async()=>{throw new Error('Synthetic recorder teardown failure');};
+    const originalStop=page.capture!.stop;
+    page.capture!.stop=async()=>{throw new Error('Synthetic recorder teardown failure');};
     try{await assert.rejects(()=>studio.seal(),/Synthetic recorder teardown failure/);assert.equal(studio.active,second);assert.notEqual(second.store.manifest.status,'sealed');assert.equal(studio.state().session?.locked,true);}
-    finally{page.capture.stop=originalStop;}
+    finally{page.capture!.stop=originalStop;}
     await studio.seal();assert.equal(studio.active,undefined);assert.equal(studio.state().session?.locked,false);
     report.checks.push('teardown failure prevents sealed success; explicit retry retains data');
 

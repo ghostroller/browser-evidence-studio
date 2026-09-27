@@ -91,7 +91,7 @@ export async function captureUiFrame(studio: Studio, filename: string): Promise<
       const imageSize = image.getSize();
       assert(imageSize.width >= 800 && imageSize.height >= 500, `${filename} preserves reviewable window detail`);
       await writeFile(path.join(studio.root, filename), image.toPNG());
-      await writeFile(path.join(studio.root, filename.replace(/\.png$/, '.capture.json')), JSON.stringify({ kind: 'own-window-media-frame', processId: process.pid, sourceId, width: imageSize.width, height: imageSize.height }, null, 2));
+      await writeFile(path.join(studio.root, filename.replace(/\.png$/, '.capture!.json')), JSON.stringify({ kind: 'own-window-media-frame', processId: process.pid, sourceId, width: imageSize.width, height: imageSize.height }, null, 2));
       return;
     } catch (error) {
       failure = String(error);
@@ -114,7 +114,7 @@ export async function captureUiFrame(studio: Studio, filename: string): Promise<
     assert.equal(browserImage.isEmpty(), false, `${browserFile} contains the separate synthetic browser surface`);
     await writeFile(path.join(studio.root, browserFile), browserImage.toPNG());
   }
-  await writeFile(path.join(studio.root, filename.replace(/\.png$/, '.capture.json')), JSON.stringify({ kind: 'separate-surfaces', processId: process.pid, compositeAvailable: false, includesNativeViews: false, reason: failure, rendererFile, browserFile }, null, 2));
+  await writeFile(path.join(studio.root, filename.replace(/\.png$/, '.capture!.json')), JSON.stringify({ kind: 'separate-surfaces', processId: process.pid, compositeAvailable: false, includesNativeViews: false, reason: failure, rendererFile, browserFile }, null, 2));
 }
 
 /** Electron sends input directly to the trusted renderer; this is not an OS mouse-routing test. */

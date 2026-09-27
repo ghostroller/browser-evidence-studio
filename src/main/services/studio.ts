@@ -1,5 +1,5 @@
 import { WebContentsView, session, app, type Session, type DownloadItem, type WebContents } from 'electron';
-import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, open } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import puppeteer, { type Browser, type Page, type Dialog } from 'puppeteer-core';
@@ -34,8 +34,8 @@ import { commitValidation, recoverValidationCatalog, registerValidation, saveVal
 export type { ValidationLifecycleContext, ValidationLifecycleObserver, ValidationLifecycleStage } from './validation-lifecycle';
 
 interface Project { id:string; name:string; objective:string; scriptDirectory?:string; createdAt:string; }
-interface Profile { id:string; projectId:string; name:string; savedAt?:string; loginStatus:'unknown'|'verified'|'expired'; }
-interface ManagedPage extends PageIdentity { view:WebContentsView; page:Page; capture:CaptureCoordinator; }
+interface Profile { id:string; projectId:string; name:string; entryUrl?:string; instructions?:string; storageRef?:string; configRevision?:number; checkedAt?:string; checkSelector?:string; checkOrigin?:string; savedAt?:string; loginStatus:'unknown'|'verified'|'expired'; }
+interface ManagedPage extends PageIdentity { view:WebContentsView; page:Page; capture?:CaptureCoordinator; }
 interface ManagedOperation { browser:Browser; gate:GateTransport; page:Page; targetId:string; documentEpoch:number; }
 interface PendingOperation { targetId:string; leaseEpoch:number; abort:AbortController; gate?:GateTransport; promise:Promise<ManagedOperation>; }
 interface CheckpointOperation { id:string; pageId:string; phase:'draining'|'capturing'|'saving'; startedAt:string; abort:AbortController; done:Promise<void>; }
@@ -50,8 +50,8 @@ interface ValidationLaunch {
   grant?:ValidationStartGrant; claimed:boolean; handle?:WorkflowHandle;
   target?:{pageId:string;targetId:string;generation:number};
 }
-export interface ActiveRun {
-  id:string; projectId:string; profileId:string; store:EvidenceStore; pages:Map<string,ManagedPage>; selectedPageId:string;
+export interface SessionRuntime {
+  id?:string; projectId:string; profileId:string; store?:EvidenceStore; pages:Map<string,ManagedPage>; selectedPageId:string;
   foregroundOrdinal?:number;
   session:Session; controller:'human'|'agent'|'none'; leaseEpoch:number; capture:string; execution:string;
   operation?:ManagedOperation; pendingOperation?:PendingOperation; locked:boolean; stopping?:boolean; ending?:boolean; selection?:unknown; handoff?:any;
@@ -60,9 +60,10 @@ export interface ActiveRun {
   checkpointTask?:CheckpointOperation;
   handoffReleases?:Map<string,Promise<HandoffReleaseResult>>;
 }
+export interface ActiveRun extends SessionRuntime { id:string; store:EvidenceStore; }
 export class Studio {
   readonly instanceId=randomUUID();
-  private browser?:BrowserSessionLifecycle<ActiveRun>;
+  private browser?:BrowserSessionLifecycle<SessionRuntime>;
   get browserSessionId(){return this.browser?.id;}
   projects:Project[]=[]; profiles:Profile[]=[]; runs:any[]=[]; active?:ActiveRun;
   connection:any;
@@ -91,30 +92,35 @@ export class Studio {
     if(!this.closing&&this.executingAuthorizationId&&this.tasks.get(this.executingAuthorizationId).status!=='active')void this.stopRunner().catch(error=>console.error('Task revocation could not complete worker shutdown',error));
     this.onChanged();
   }
+  private async sessionAudit(type:string,data:unknown){
+    const directory=path.join(this.root,'session-audit');await mkdir(directory,{recursive:true});
+    const file=await open(path.join(directory,this.browserSessionId+'.jsonl'),'a',0o600);
+    try{await file.writeFile(JSON.stringify({at:now(),sessionId:this.browserSessionId,type,data})+'\n');await file.sync();}finally{await file.close();}
+  }
   async authorizeTask(body:any){return this.serialized(async()=>{
     const project=this.projects.find(item=>item.id===body.projectId);ensure(project,'Unknown project',404);
     ensure(Array.isArray(body.capabilities),'Choose task capabilities');
     const browser=body.capabilities.some((value:string)=>['page-read','page-act','page-create','execute'].includes(value));
     if(!browser)return this.tasks.issue({projectId:project.id},{origins:[],pages:[],capabilities:body.capabilities,durationMs:body.durationMs,maxOperations:body.maxOperations});
-    this.assertValidationIdle();const r=this.required();ensure(r.controller==='human','Task authorization requires human ownership',409);
+    this.assertValidationIdle();const r=this.live();ensure(r.controller==='human','Task authorization requires human ownership',409);
     ensure(body.projectId===r.projectId&&body.profileId===r.profileId&&body.sessionId===this.browserSessionId&&body.leaseEpoch===r.leaseEpoch,'Task authorization target or lease is stale',409);
     ensure(Array.isArray(body.pageIds)&&body.pageIds.length>0,'Choose the pages covered by task authorization');
     const pages=body.pageIds.map((id:string)=>{const page=r.pages.get(id);ensure(page,'Task page does not exist',409);return {pageId:page.pageId,targetId:page.targetId};});
     const grant=await this.tasks.issue({projectId:r.projectId,sessionId:this.browserSessionId!,profileId:r.profileId,directory:project.scriptDirectory},{origins:body.origins,pages,capabilities:body.capabilities,durationMs:body.durationMs,maxOperations:body.maxOperations});
-    try {await r.store.appendEvent({type:'task-authorization-issued',source:'ui',data:grant});await r.store.flush();if(grant.capabilities.some(value=>['page-act','page-create','execute'].includes(value))){this.browserAuthorizationId=grant.authorizationId;await this.control('agent');}}
+    try {await this.sessionAudit('task-authorization-issued',grant);if(this.active===r){await r.store!.appendEvent({type:'task-authorization-issued',source:'ui',data:grant});await r.store!.flush();}if(grant.capabilities.some(value=>['page-act','page-create','execute'].includes(value))){this.browserAuthorizationId=grant.authorizationId;await this.control('agent');}}
     catch(error){this.tasks.revoke(grant.authorizationId,'Authorization was not durably established');throw error;}
     return {...grant,leaseEpoch:r.leaseEpoch};
   });}
   async revokeTask(body:any){
     const grant=this.tasks.get(body.authorizationId);ensure(grant.projectId===body.projectId,'Task belongs to another project',403);
-    this.tasks.revoke(grant.authorizationId);
+    this.tasks.revoke(grant.authorizationId);await this.sessionAudit('task-authorization-revoked',{authorizationId:grant.authorizationId});
     if(this.executingAuthorizationId===grant.authorizationId)await this.stopRunner();
     if(this.browserAuthorizationId===grant.authorizationId)this.browserAuthorizationId=undefined;
-    const r=this.active;if(r&&this.browserSessionId===grant.sessionId){await this.revokeOperation(r);if(r.controller==='agent'&&!this.workflow&&!this.workflowStarting&&!this.workflowSettlement)await this.control('human');await r.store.appendEvent({type:'task-authorization-revoked',source:'ui',data:{authorizationId:grant.authorizationId}});}
+    const r=this.browser?.runtime;if(r&&this.browserSessionId===grant.sessionId){await this.revokeOperation(r);if(r.controller==='agent'&&!this.workflow&&!this.workflowStarting&&!this.workflowSettlement)await this.control('human');if(this.active===r)await r.store!.appendEvent({type:'task-authorization-revoked',source:'ui',data:{authorizationId:grant.authorizationId}});}
     return this.tasks.get(grant.authorizationId);
   }
   async authorizedOperation<T>(body:any,capability:TaskCapability,operation:(signal:AbortSignal)=>Promise<T>,signal?:AbortSignal):Promise<T>{
-    const r=this.required(),page=r.pages.get(body.pageId??r.selectedPageId),project=this.projects.find(item=>item.id===r.projectId)!;
+    const r=this.live(),page=r.pages.get(body.pageId??r.selectedPageId),project=this.projects.find(item=>item.id===r.projectId)!;
     ensure(page&&body.projectId===r.projectId&&body.profileId===r.profileId&&body.sessionId===this.browserSessionId,'Task browser identity is stale',409);
     if(capability!=='page-read')ensure(this.browserAuthorizationId===body.authorizationId,'This authorization does not own the agent browser lease',403);
     return this.tasks.run(body.authorizationId,capability,{projectId:r.projectId,sessionId:this.browserSessionId!,profileId:r.profileId,...(capability==='execute'?{directory:project.scriptDirectory}:{}),pageId:page.pageId,targetId:page.targetId,url:body.type==='navigate'?body.url:body.startUrl??page.page.url()},operation,signal);
@@ -183,14 +189,32 @@ export class Studio {
   private recordForeground(r:ActiveRun,previousPageId:string|null,reason:string,observedAtMs=Date.now()){
     const selectedPageId=r.selectedPageId||null;
     const transitionOrdinal=(r.foregroundOrdinal??0)+1;r.foregroundOrdinal=transitionOrdinal;
-    return r.store.appendEvent({type:'page-foreground',source:'electron',occurredAt:new Date(observedAtMs).toISOString(),timeBasis:'host-wall-clock',
+    return r.store!.appendEvent({type:'page-foreground',source:'electron',occurredAt:new Date(observedAtMs).toISOString(),timeBasis:'host-wall-clock',
       ...(selectedPageId?{pageId:selectedPageId}:{}),data:{version:1,previousPageId,selectedPageId,observedAtMs,transitionOrdinal,reason}});
   }
-  private browserState(){const browser=this.browser;if(!browser)return null;const r=browser.runtime;return {sessionId:browser.id,projectId:r.projectId,profileId:r.profileId,recordingId:browser.recordingId,controller:r.controller,leaseEpoch:r.leaseEpoch,locked:r.locked,selectedPageId:r.selectedPageId,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:!!this.active&&p.capture.inspecting,openerPageId:p.openerPageId,canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward()}]:[];})};}
-  state(){const r=this.active;return {instanceId:this.instanceId,session:this.browserState(),validationStarting:this.validationLaunch?{validationId:this.validationLaunch.validationId,validationRunId:this.validationLaunch.validationRunId}:null,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,executionId:result?.executionBinding?.executionId,executionBinding:result?.executionBinding,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:p.capture.inspecting,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,validationStartGrant:this.validationStartGrant({runId:r.id}).grant,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
+  private browserState(){const browser=this.browser;if(!browser)return null;const r=browser.runtime;return {sessionId:browser.id,projectId:r.projectId,profileId:r.profileId,recordingId:browser.recordingId,controller:r.controller,leaseEpoch:r.leaseEpoch,locked:r.locked,selectedPageId:r.selectedPageId,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:!!this.active&&!!p.capture?.inspecting,openerPageId:p.openerPageId,canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward()}]:[];})};}
+  state(){const r=this.active;return {instanceId:this.instanceId,session:this.browserState(),validationStarting:this.validationLaunch?{validationId:this.validationLaunch.validationId,validationRunId:this.validationLaunch.validationRunId}:null,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,executionId:result?.executionBinding?.executionId,executionBinding:result?.executionBinding,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:p.capture!.inspecting,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,validationStartGrant:this.validationStartGrant({runId:r.id}).grant,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
   async createProject(body:any){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');const p={id:randomUUID(),name:body.name.trim().slice(0,200),objective:String(body.objective||'').slice(0,4000),scriptDirectory:body.scriptDirectory?path.resolve(body.scriptDirectory):undefined,createdAt:now()};this.projects.push(p);await this.save();return p;}
   async updateProject(body:any){const project=this.projects.find(item=>item.id===(body.projectId||body.id));ensure(project,'Unknown project',404);if(body.name!==undefined){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');project.name=body.name.trim().slice(0,200);}if(body.objective!==undefined){ensure(typeof body.objective==='string','Objective must be text');project.objective=body.objective.slice(0,4000);}if(body.scriptDirectory!==undefined){ensure(typeof body.scriptDirectory==='string'||body.scriptDirectory===null,'Workflow directory must be a path');project.scriptDirectory=body.scriptDirectory?path.resolve(body.scriptDirectory):undefined;}await this.save();return project;}
-  async createProfile(body:any){ensure(this.projects.some(p=>p.id===body.projectId),'Unknown project');ensure(typeof body.name==='string'&&body.name.trim(),'Profile name required');const p:Profile={id:randomUUID(),projectId:body.projectId,name:body.name.trim().slice(0,120),loginStatus:'unknown'};this.profiles.push(p);await this.save();return p;}
+  async createProfile(body:any){ensure(this.projects.some(p=>p.id===body.projectId),'Unknown project');ensure(typeof body.name==='string'&&body.name.trim(),'Profile name required');const p:Profile={id:randomUUID(),projectId:body.projectId,name:body.name.trim().slice(0,120),entryUrl:String(body.entryUrl||'about:blank'),instructions:String(body.instructions||''),checkSelector:body.checkSelector||undefined,configRevision:1,loginStatus:'unknown'};p.storageRef=`persist:bes-${p.projectId}-${p.id}`;this.profiles.push(p);await this.save();return p;}
+  async openEnvironment(body:any){
+    ensure(!this.browser,'Close the current environment first',409);
+    const profile=this.profiles.find(p=>p.id===body.profileId&&p.projectId===body.projectId);ensure(profile,'Unknown environment',404);
+    const browserSession=session.fromPartition(profile.storageRef??`persist:bes-${profile.projectId}-${profile.id}`);
+    browserSession.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));browserSession.setPermissionCheckHandler(()=>false);
+    browserSession.webRequest.onBeforeRequest((details,callback)=>callback({cancel:(details.resourceType==='mainFrame'||details.resourceType==='subFrame')&&!this.navigationAllowed(details.url)}));
+    const runtime:SessionRuntime={projectId:profile.projectId,profileId:profile.id,pages:new Map(),selectedPageId:'',session:browserSession,controller:'human',leaseEpoch:1,capture:'not-recording',execution:'ready',locked:false};
+    this.browser=new BrowserSessionLifecycle(runtime);
+    try{const page=await this.addPage(runtime);await this.navigate(profile.entryUrl||'about:blank',page,true);this.window.lock(false);return this.state().session;}
+    catch(error){this.window.lock(false);throw error;}
+  }
+  async checkEnvironment(){
+    const runtime=this.live(),profile=this.profiles.find(p=>p.id===runtime.profileId)!;
+    ensure(runtime.controller==='human'&&!runtime.locked,'Environment check requires human ownership',409);
+    const page=this.current();profile.checkedAt=now();profile.checkOrigin=new URL(page.page.url()).origin;
+    profile.loginStatus=profile.checkSelector?(await page.page.$(profile.checkSelector)?'verified':'expired'):'unknown';
+    await this.save();return profile;
+  }
   async startRun(body:any, launch?:ValidationLaunch,options:{freshPage?:boolean}={}){
     ensure(!this.validationLaunch||this.validationLaunch===launch,'Validation startup owns the browser',409);launch?.abort.signal.throwIfAborted();
     ensure(!this.active,'Seal the active run first',409); const project=this.projects.find(p=>p.id===body.projectId);ensure(project,'Unknown project');
@@ -198,7 +222,7 @@ export class Studio {
     const previous=this.browser?.runtime;
     ensure(!previous||(previous.projectId===project.id&&previous.profileId===profile.id),'Close the live browser session before changing project or profile',409);
     ensure(!previous||previous.pages.size>0||options.freshPage,'Close the empty browser session before starting a new one',409);
-    const id=launch?.validationRunId??randomUUID();const browserSession=previous?.session??session.fromPartition(`persist:bes-${project.id}-${profile.id}`);
+    const id=launch?.validationRunId??randomUUID();const browserSession=previous?.session??session.fromPartition(profile.storageRef??`persist:bes-${project.id}-${profile.id}`);
     browserSession.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false)); browserSession.setPermissionCheckHandler(()=>false);
     browserSession.webRequest.onBeforeRequest((details,callback)=>callback({cancel:(details.resourceType==='mainFrame'||details.resourceType==='subFrame')&&!this.navigationAllowed(details.url)}));
     const store=await EvidenceStore.create(path.join(this.root,'runs',id),captureMetadata({id,projectId:project.id,kind:body.kind==='validate'?'validate':'demonstrate',mode:process.env.BES_TEST?'synthetic':'local',objective:project.objective,profileId:profile.id,versions:this.state().versions,browserEnvironment:browserEnvironmentMetadata(browserSession),appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}));
@@ -218,23 +242,23 @@ export class Studio {
         }
         if(options.freshPage){page=await this.addPage(r);launch?.abort.signal.throwIfAborted();await this.navigate(String(body.url||'about:blank'),page,true);}
         else page=this.current();
-        await store.appendEvent({type:'recording-started-in-existing-session',source:'lifecycle',pageId:page.pageId,navigationGeneration:page.navigationGeneration,data:{browserSessionId:this.browser.id,previousRecordingId:previous.id,historyBeforeStart:'not-recorded'}});
-        if(!options.freshPage)await this.recordForeground(r,null,'recording-started',recordingForegroundAt);
+        await store.appendEvent({type:'recording-started-in-existing-session',source:'lifecycle',pageId:page.pageId,navigationGeneration:page.navigationGeneration,data:{browserSessionId:this.browser.id,previousRecordingId:previous.id??null,historyBeforeStart:'not-recorded'}});
+        if(!options.freshPage)await this.recordForeground(r as ActiveRun,null,'recording-started',recordingForegroundAt);
       }else{page=await this.addPage(r);launch?.abort.signal.throwIfAborted();await this.navigate(String(body.url||'about:blank'),page,true);}
       launch?.abort.signal.throwIfAborted();if(launch){launch.target={pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration};ensure(r.selectedPageId===page.pageId,'Validation startup page was replaced',409);}
-      r.capture=[...r.pages.values()].some(p=>p.capture.health==='degraded')?'degraded':'recording';r.controller='human';r.locked=!!launch;this.window.lock(!!launch);await store.updateManifest({capture:r.capture,controller:'human',leaseEpoch:r.leaseEpoch});return this.state().active;
+      r.capture=[...r.pages.values()].some(p=>p.capture!.health==='degraded')?'degraded':'recording';r.controller='human';r.locked=!!launch;this.window.lock(!!launch);await store.updateManifest({capture:r.capture,controller:'human',leaseEpoch:r.leaseEpoch});return this.state().active;
     }
     catch(error){r.capture='degraded';r.execution='failed';await store.appendEvent({type:'gap',source:'lifecycle',data:{reason:String(error)}});throw error;}
   }
   private async manageDownloads(r:ActiveRun){
     const directory=path.join(this.root,'downloads');await mkdir(directory,{recursive:true});let accepting=true;const active=new Set<DownloadItem>(),writes=new Set<Promise<unknown>>();
     const listener=(event:Electron.Event,item:DownloadItem,wc:WebContents)=>{const p=[...r.pages.values()].find(page=>page.webContentsId===wc.id);if(!accepting||!p){event.preventDefault();return;}const download=path.join(directory,randomUUID());item.setSavePath(download);active.add(item);
-      item.once('done',(_event,state)=>{active.delete(item);if(!accepting)return;const source={pageId:p.pageId,url:item.getURL(),filename:item.getFilename()};const writing=(async()=>{if(state==='completed'){const size=(await stat(download)).size;const artifact=size>64*1024*1024?await r.store.putArtifact({kind:'download',mediaType:item.getMimeType()||'application/octet-stream',captureStatus:'excluded',reason:'Download exceeds the 64 MiB evidence import budget; original remains in the local downloads directory',source:{...source,downloadBytes:size},metadata:{localDownloadId:path.basename(download)}}):await r.store.putArtifact({kind:'download',mediaType:item.getMimeType()||'application/octet-stream',data:await readFile(download),source});await r.store.appendEvent({type:'download',source:'electron',artifactRefs:[artifact.id],data:{captureStatus:artifact.captureStatus}});}else await r.store.appendEvent({type:'gap',source:'electron',data:{reason:'download-'+state,...source}});})().catch(async error=>{r.capture='degraded';this.onChanged();await r.store.appendEvent({type:'gap',source:'electron',data:{reason:'download-capture-failed',error:String(error),...source}}).catch(failure=>console.error('Could not save download failure',failure));}).finally(()=>writes.delete(writing));writes.add(writing);});};
+      item.once('done',(_event,state)=>{active.delete(item);if(!accepting)return;const source={pageId:p.pageId,url:item.getURL(),filename:item.getFilename()};const writing=(async()=>{if(state==='completed'){const size=(await stat(download)).size;const artifact=size>64*1024*1024?await r.store.putArtifact({kind:'download',mediaType:item.getMimeType()||'application/octet-stream',captureStatus:'excluded',reason:'Download exceeds the 64 MiB evidence import budget; original remains in the local downloads directory',source:{...source,downloadBytes:size},metadata:{localDownloadId:path.basename(download)}}):await r.store.putArtifact({kind:'download',mediaType:item.getMimeType()||'application/octet-stream',data:await readFile(download),source});await r.store!.appendEvent({type:'download',source:'electron',artifactRefs:[artifact.id],data:{captureStatus:artifact.captureStatus}});}else await r.store!.appendEvent({type:'gap',source:'electron',data:{reason:'download-'+state,...source}});})().catch(async error=>{r.capture='degraded';this.onChanged();await r.store!.appendEvent({type:'gap',source:'electron',data:{reason:'download-capture-failed',error:String(error),...source}}).catch(failure=>console.error('Could not save download failure',failure));}).finally(()=>writes.delete(writing));writes.add(writing);});};
     r.session.on('will-download',listener);
-    r.stopDownloads=async()=>{if(!accepting)return;accepting=false;for(const item of active){const source={url:item.getURL(),filename:item.getFilename()};item.cancel();await r.store.appendEvent({type:'gap',source:'electron',data:{reason:'download-cancelled-at-run-end',...source}});}active.clear();await Promise.allSettled(writes);};
+    r.stopDownloads=async()=>{if(!accepting)return;accepting=false;for(const item of active){const source={url:item.getURL(),filename:item.getFilename()};item.cancel();await r.store!.appendEvent({type:'gap',source:'electron',data:{reason:'download-cancelled-at-run-end',...source}});}active.clear();await Promise.allSettled(writes);};
     r.releaseDownloads=()=>r.session.removeListener('will-download',listener);
   }
-  private pageDestroyed(r:ActiveRun,view:WebContentsView,identity:{pageId:string;webContentsId:number;openerPageId?:string},registered?:ManagedPage){
+  private pageDestroyed(r:SessionRuntime,view:WebContentsView,identity:{pageId:string;webContentsId:number;openerPageId?:string},registered?:ManagedPage){
     const closedAt=now(),wasSelected=r.selectedPageId===identity.pageId,targetId=registered?.targetId;
     const checkpoint=r.checkpointTask,controllerAtClosure=r.controller;
     r.pages.delete(identity.pageId);
@@ -253,7 +277,7 @@ export class Studio {
       const replacement=opener&&this.pageContents(opener)?opener:[...r.pages.values()].reverse().find(page=>this.pageContents(page));
       r.selectedPageId=replacement?.pageId||'';
       if(this.active===r&&!r.ending&&!this.closing){this.window.show(replacement?.view);this.window.lock(r.locked||r.controller!=='human');}
-      if(this.active===r&&!r.ending&&!this.closing)foregroundWrite=this.recordForeground(r,identity.pageId,'page-closed',Date.parse(closedAt));
+      if(this.active===r&&!r.ending&&!this.closing)foregroundWrite=this.recordForeground(r as ActiveRun,identity.pageId,'page-closed',Date.parse(closedAt));
     }
     if(r.ending||this.closing||this.active!==r){if(!r.pages.size)r.controller='none';this.onChanged();void revoked.catch(error=>console.error('Could not revoke closed-page operation',error));return;}
     if(r.handoff?.pageId===identity.pageId&&r.handoff.status==='waiting'){
@@ -273,14 +297,14 @@ export class Studio {
       r.locked=false;this.window.lock(r.controller!=='human');this.onChanged();
     })():Promise.resolve();
     const cleanup=(async()=>{
-      const outcomes=await Promise.allSettled([revoked,registered?.capture.stop(),checkpointRecovery,foregroundWrite]);
+      const outcomes=await Promise.allSettled([revoked,registered?.capture?.stop(),checkpointRecovery,foregroundWrite]);
       const errors=outcomes.flatMap(outcome=>outcome.status==='rejected'?[String(outcome.reason)]:[]);
-      await r.store.appendEvent({type:'page-closed',source:'electron',pageId:identity.pageId,data:{...identity,targetId,wasRegistered:!!registered,selectedPageId,operationRevoked,closedAt,cleanupErrors:errors}});
-      if(errors.length){r.capture='degraded';await r.store.appendEvent({type:'gap',source:'electron',pageId:identity.pageId,data:{reason:'closed-page-cleanup-failed',errors}});}
+      await r.store!.appendEvent({type:'page-closed',source:'electron',pageId:identity.pageId,data:{...identity,targetId,wasRegistered:!!registered,selectedPageId,operationRevoked,closedAt,cleanupErrors:errors}});
+      if(errors.length){r.capture='degraded';await r.store!.appendEvent({type:'gap',source:'electron',pageId:identity.pageId,data:{reason:'closed-page-cleanup-failed',errors}});}
     })().catch(error=>{r.capture='degraded';console.error('Could not persist business page closure',error);}).finally(()=>{closures.delete(cleanup);this.onChanged();});
     closures.add(cleanup);this.onChanged();
   }
-  private async addPage(r:ActiveRun,openerPageId?:string,existingView?:WebContentsView,activate=true){
+  private async addPage(r:SessionRuntime,openerPageId?:string,existingView?:WebContentsView,activate=true){
     const owner=this.browser!;
     const view=existingView||new WebContentsView({webPreferences:{session:r.session,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true,backgroundThrottling:false}});
     this.window.add(view,activate);this.window.lock(true);
@@ -293,9 +317,9 @@ export class Studio {
       // window.open/opener identity; creating another one throws in openGuestWindow.
       const child=new WebContentsView(options);
       const parentPageId=[...owner.runtime.pages.values()].find(page=>page.webContentsId===wc.id)?.pageId;
-      void this.serialized(async()=>{const live=owner.runtime;if(this.browser!==owner||live.ending||this.closing){if(child.webContents&&!child.webContents.isDestroyed())child.webContents.close();return;}const p=await this.addPage(live,parentPageId,child);if(this.active===live)await live.store.appendEvent({type:'gap',source:'electron',pageId:p.pageId,data:{reason:'popup-before-capture-ready',openerPageId:parentPageId}});this.window.lock(live.locked||live.controller!=='human');}).catch(async error=>{this.window.remove(child);const live=owner.runtime;if(this.active===live&&!live.ending)await live.store.appendEvent({type:'gap',source:'electron',data:{reason:String(error)}}).catch(writeError=>console.error('Could not persist popup failure',writeError));else console.error('Could not register live session popup',error);});return child.webContents;
+      void this.serialized(async()=>{const live=owner.runtime;if(this.browser!==owner||live.ending||this.closing){if(child.webContents&&!child.webContents.isDestroyed())child.webContents.close();return;}const p=await this.addPage(live,parentPageId,child);if(this.active===live)await live.store!.appendEvent({type:'gap',source:'electron',pageId:p.pageId,data:{reason:'popup-before-capture-ready',openerPageId:parentPageId}});this.window.lock(live.locked||live.controller!=='human');}).catch(async error=>{this.window.remove(child);const live=owner.runtime;if(this.active===live&&!live.ending)await live.store!.appendEvent({type:'gap',source:'electron',data:{reason:String(error)}}).catch(writeError=>console.error('Could not persist popup failure',writeError));else console.error('Could not register live session popup',error);});return child.webContents;
     }}));
-    wc.on('render-process-gone',(_e,details)=>{registered?.capture.documentDestroyed();const live=owner.runtime;if(live.ending)return;live.capture='degraded';this.onChanged();if(this.active===live)void live.store.appendEvent({type:'gap',source:'electron',data:{reason:'render-process-gone',details}}).catch(error=>console.error('Could not persist renderer failure',error));});
+    wc.on('render-process-gone',(_e,details)=>{registered?.capture?.documentDestroyed();const live=owner.runtime;if(live.ending)return;live.capture='degraded';this.onChanged();if(this.active===live)void live.store!.appendEvent({type:'gap',source:'electron',data:{reason:'render-process-gone',details}}).catch(error=>console.error('Could not persist renderer failure',error));});
     // An un-navigated WebContents has an empty URL and Puppeteer intentionally keeps
     // its target uninitialized. Prime only new views with about:blank before binding.
     if(!existingView)await wc.loadURL('about:blank');
@@ -307,10 +331,10 @@ export class Studio {
     // Navigation identity belongs to the browser session and must keep advancing
     // when there is no recorder. The Puppeteer observer outlives capture CDP.
     page.on('framenavigated',frame=>{if(frame===page.mainFrame()){identity.navigationGeneration++;this.onChanged();}});
-    const capture=this.createCapture(r,Object.assign(identity,{page}));
+    const capture=this.active===r?this.createCapture(this.active,Object.assign(identity,{page})):undefined;
     const p=Object.assign(identity,{view,page,capture}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);const previousPageId=r.selectedPageId||null;if(activate)r.selectedPageId=p.pageId;const foregroundAt=Date.now();
     if(openerPageId&&r.controller==='agent'&&this.browserAuthorizationId)this.tasks.addPage(this.browserAuthorizationId,{pageId:p.pageId,targetId:p.targetId});
-    if(this.active===r){await capture.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{...identity,view:undefined,page:undefined,capture:undefined,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});if(activate)await this.recordForeground(r,previousPageId,'page-created',foregroundAt);}if(activate)this.window.show(view);this.onChanged();return p;
+    if(this.active===r){await capture!.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store!.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{...identity,view:undefined,page:undefined,capture:undefined,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});if(activate)await this.recordForeground(r as ActiveRun,previousPageId,'page-created',foregroundAt);}if(activate)this.window.show(view);this.onChanged();return p;
   }
   private createCapture(r:ActiveRun,p:PageIdentity&{page:Page}){return new CaptureCoordinator(p.page,p,r.store,selection=>{if(this.active===r&&r.pages.has(p.pageId)){r.selection=selection;this.onChanged();}},reason=>{if(r.ending||this.active!==r||!r.pages.has(p.pageId))return;r.capture='degraded';this.onChanged();void r.store.updateManifest({capture:'degraded',captureHealthReason:reason}).catch(error=>console.error('Could not persist capture health',error));},false);}
   async createTaskPage(body:any,signal?:AbortSignal){
@@ -350,7 +374,7 @@ export class Studio {
     ensure(!r.locked&&!r.ending&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Cannot change execution target while running or locked',409);
     ensure(!r.pendingOperation,'Operation connection is still starting',409);
     const operation=r.operation;if(operation){await operation.gate.quiesce();await operation.browser.disconnect();if(r.operation===operation)r.operation=undefined;}
-    ensure(this.browser?.runtime===r&&r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Page selection was cancelled',409);const previousPageId=r.selectedPageId||null;r.selectedPageId=p.pageId;r.leaseEpoch++;this.window.show(p.view);if(previousPageId!==p.pageId)await this.recordForeground(r,previousPageId,'page-selected');this.onChanged();return this.state();
+    ensure(this.browser?.runtime===r&&r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Page selection was cancelled',409);const previousPageId=r.selectedPageId||null;r.selectedPageId=p.pageId;r.leaseEpoch++;this.window.show(p.view);if(previousPageId!==p.pageId)await this.recordForeground(r as ActiveRun,previousPageId,'page-selected');this.onChanged();return this.state();
   }
   async closePage(pageId:string){
     const r=this.live(),p=r.pages.get(pageId);ensure(p,'Unknown page',404);
@@ -400,19 +424,19 @@ export class Studio {
     try{await this.revokeOperation(r);for(const p of [...r.pages.values()])await this.closePageContents(p);this.browser=undefined;this.browserAuthorizationId=undefined;return {closed:true,sessionId:browser.id};}
     finally{r.ending=false;r.locked=false;this.window.lock(false);this.onChanged();}
   }
-  private assertOperationOwner(r:ActiveRun,p:ManagedPage,leaseEpoch:number,generation?:number){
+  private assertOperationOwner(r:SessionRuntime,p:ManagedPage,leaseEpoch:number,generation?:number){
     ensure(this.active===r&&!this.closing&&!r.ending&&r.controller==='agent'&&!r.locked&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Agent no longer owns this browser',409);
     ensure(r.leaseEpoch===leaseEpoch&&r.pages.get(p.pageId)===p,'Control lease or operation page changed',409);
     if(generation!==undefined)ensure(p.navigationGeneration===generation,'Stale navigation generation',409);
   }
-  private async revokeOperation(r:ActiveRun){
+  private async revokeOperation(r:SessionRuntime){
     const pending=r.pendingOperation,operation=r.operation;
     pending?.abort.abort(new Error('Operation connection revoked'));
     pending?.gate?.close();operation?.gate.close();r.operation=undefined;
     await Promise.allSettled([pending?.promise,operation?.browser.disconnect()]);
     if(r.pendingOperation===pending)r.pendingOperation=undefined;
   }
-  private async operation(r:ActiveRun,p:ManagedPage,leaseEpoch:number){
+  private async operation(r:SessionRuntime,p:ManagedPage,leaseEpoch:number){
     this.assertOperationOwner(r,p,leaseEpoch);
     if(r.operation?.targetId===p.targetId)return r.operation;
     if(r.pendingOperation){ensure(r.pendingOperation.targetId===p.targetId&&r.pendingOperation.leaseEpoch===leaseEpoch,'Another operation connection is starting',409);return r.pendingOperation.promise;}
@@ -424,7 +448,7 @@ export class Studio {
         if(r.operation){const previous=r.operation;await previous.gate.quiesce();await previous.browser.disconnect();if(r.operation===previous)r.operation=undefined;}
         pending.abort.signal.throwIfAborted();this.assertOperationOwner(r,p,leaseEpoch);
         const transport=await SocketTransport.connect(this.endpoint,pending.abort.signal);
-        const gate=new GateTransport(transport,{onConflict:conflict=>{void r.store.appendEvent({type:'control-conflict',source:'gate',data:conflict}).catch(error=>console.error('Could not save control conflict',error));}});
+        const gate=new GateTransport(transport,{onConflict:conflict=>{void r.store!.appendEvent({type:'control-conflict',source:'gate',data:conflict}).catch(error=>console.error('Could not save control conflict',error));}});
         pending.gate=gate;
         pending.abort.signal.throwIfAborted();this.assertOperationOwner(r,p,leaseEpoch);
         const connected=await connectManagedPage(gate,p.targetId);browser=connected.browser;
@@ -439,15 +463,15 @@ export class Studio {
   }
   async control(controller:'human'|'agent',launch?:ValidationLaunch){
     ensure(!this.validationLaunch||this.validationLaunch===launch,'Validation startup owns the browser',409);launch?.abort.signal.throwIfAborted();
-    const r=this.required();ensure(r.handoff?.status!=='waiting','Use the handoff release or stop button',409);ensure(!['running','waiting-human','finalizing'].includes(r.execution),'Stop the runner before changing ownership',409);
+    const r=this.live();ensure(r.handoff?.status!=='waiting','Use the handoff release or stop button',409);ensure(!['running','waiting-human','finalizing'].includes(r.execution),'Stop the runner before changing ownership',409);
     r.locked=true;const transitionEpoch=++r.leaseEpoch;this.window.lock(true);
     if(r.pendingOperation)await this.revokeOperation(r);
     if(r.operation){const operation=r.operation;await operation.gate.quiesce();await operation.browser.disconnect();if(r.operation===operation)r.operation=undefined;}
-    ensure(this.active===r&&r.leaseEpoch===transitionEpoch&&!this.closing,'Control transition was cancelled',409);
-    if(controller==='agent')await Promise.all([...r.pages.values()].filter(page=>page.capture.inspecting).map(page=>page.capture.inspect(false)));
-    ensure(this.active===r&&r.leaseEpoch===transitionEpoch&&!this.closing,'Control transition was cancelled',409);
+    ensure(this.browser?.runtime===r&&r.leaseEpoch===transitionEpoch&&!this.closing,'Control transition was cancelled',409);
+    if(controller==='agent')await Promise.all([...r.pages.values()].filter(page=>page.capture?.inspecting).map(page=>page.capture!.inspect(false)));
+    ensure(this.browser?.runtime===r&&r.leaseEpoch===transitionEpoch&&!this.closing,'Control transition was cancelled',409);
     r.controller=controller;r.locked=false;this.window.lock(controller!=='human');
-    await r.store.appendEvent({type:'control',source:'studio',data:{controller,leaseEpoch:r.leaseEpoch}});return this.state().active;
+    if(this.active===r)await r.store!.appendEvent({type:'control',source:'studio',data:{controller,leaseEpoch:r.leaseEpoch}});return this.state().session;
   }
   async action(body:any,signal?:AbortSignal){
     const timeout=AbortSignal.timeout(15_000),combined=signal?AbortSignal.any([signal,timeout]):timeout;
@@ -461,7 +485,7 @@ export class Studio {
     combined.addEventListener('abort',abort,{once:true});
     try{
       op=await this.operation(r,p,leaseEpoch);documentEpoch=op.documentEpoch;check();this.assertOperationOwner(r,p,leaseEpoch,body.generation);op.gate.setCommandGuard(check);
-      const commandId=randomUUID();await r.store.appendEvent({type:'command',source:'api',pageId:p.pageId,data:{commandId,type:body.type,selector:body.selector,controller:r.controller}});check();
+      const commandId=randomUUID();await r.store!.appendEvent({type:'command',source:'api',pageId:p.pageId,data:{commandId,type:body.type,selector:body.selector,controller:r.controller}});check();
       phase='preparation';
       const input=async()=>{
         const inputCheck=()=>{check();this.window.assertInputReady(p.view);};inputCheck();op!.gate.setCommandGuard(inputCheck);phase='input';
@@ -532,13 +556,13 @@ export class Studio {
   }
   async snapshot(body:any={}){const r=this.required(),p=body.pageId?r.pages.get(body.pageId):this.current();ensure(p,'Snapshot page no longer exists',409);const generation=p.navigationGeneration;if(body.generation!==undefined)ensure(body.generation===generation,'Stale navigation generation',409);const max=body.maxBytes??4000;ensure(Number.isSafeInteger(max)&&max>=512&&max<=16000,'Snapshot maxBytes must be between 512 and 16000');const elements=await p.page.evaluate(snapshotElements);ensure(this.active===r&&r.pages.get(p.pageId)===p&&p.navigationGeneration===generation,'Snapshot target navigated during capture; refresh its identity',409);const result={pageId:p.pageId,generation,url:p.view.webContents.getURL(),elements:[] as typeof elements,outputTruncated:false};for(const item of elements){const candidate={...result,elements:[...result.elements,item]};if(Buffer.byteLength(JSON.stringify(candidate))+32>max)break;result.elements.push(item);}result.outputTruncated=result.elements.length<elements.length;ensure(Buffer.byteLength(JSON.stringify(result))<=max,'Snapshot metadata exceeds maxBytes; increase the budget',413);return captureMetadata(result);}
   async pauseOperations(paused:boolean){const r=this.required();ensure(r.controller==='human','Only manual control can be paused here',409);r.locked=paused;this.window.lock(paused);return this.state().active;}
-  async pauseCapture(paused:boolean){const r=this.required();for(const p of r.pages.values())await p.capture.pause(paused);r.capture=paused?'paused':[...r.pages.values()].some(p=>p.capture.health==='degraded')?'degraded':'recording';return this.state().active;}
-  async saveProfile(){const r=this.live();await r.session.cookies.flushStore();r.session.flushStorageData();const p=this.profiles.find(p=>p.id===r.profileId)!;p.savedAt=now();p.loginStatus='unknown';await this.save();if(this.active===r)await r.store.appendEvent({type:'profile-saved',source:'studio',data:{profileId:p.id,loginStatus:'unknown',scope:'persistent cookies/localStorage/IndexedDB; memory/sessionStorage not guaranteed'}});return p;}
+  async pauseCapture(paused:boolean){const r=this.required();for(const p of r.pages.values())await p.capture!.pause(paused);r.capture=paused?'paused':[...r.pages.values()].some(p=>p.capture!.health==='degraded')?'degraded':'recording';return this.state().active;}
+  async saveProfile(){const r=this.live();await r.session.cookies.flushStore();r.session.flushStorageData();const p=this.profiles.find(p=>p.id===r.profileId)!;p.savedAt=now();p.loginStatus='unknown';await this.save();if(this.active===r)await r.store!.appendEvent({type:'profile-saved',source:'studio',data:{profileId:p.id,loginStatus:'unknown',scope:'persistent cookies/localStorage/IndexedDB; memory/sessionStorage not guaranteed'}});return p;}
   async seal(launch?:ValidationLaunch){ensure(!this.validationLaunch||this.validationLaunch===launch,'Validation startup owns the browser',409);launch?.abort.signal.throwIfAborted();const r=this.required();ensure(!this.workflow&&!this.workflowStarting&&!this.workflowSettlement&&!r.stopping&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Stop the runner and finish saving its report before sealing',409);r.ending=true;r.locked=true;this.window.lock(true);
     r.leaseEpoch++;
     try{
       await this.revokeOperation(r);await r.stopDownloads?.();await Promise.all([...(r.pageClosures??[])]);
-      for(const p of [...r.pages.values()])await p.capture.stop();await r.store.seal();const manifest=r.store.manifest;await r.store.close();
+      for(const p of [...r.pages.values()])await p.capture!.stop();await r.store.seal();const manifest=r.store.manifest;await r.store.close();
       r.releaseDownloads?.();r.releaseDownloads=undefined;r.stopDownloads=undefined;
       this.runs=this.runs.map(x=>x.id===r.id?manifest:x);this.browser!.detach(r.id);this.active=undefined;
       r.ending=false;r.capture='stopped';r.controller=r.pages.size?'human':'none';r.locked=false;r.selection=undefined;r.handoff=undefined;
@@ -613,15 +637,15 @@ export class Studio {
     this.assertValidationIdle();const r=this.required();ensure(r.controller==='human','Only the human controller can authorize validation startup',409);
     ensure(body.runId===r.id&&body.projectId===r.projectId&&body.profileId===r.profileId&&body.leaseEpoch===r.leaseEpoch,'Authorization identity or lease is stale',409);
     const binding=await this.grantBinding(r,body.input??{});this.assertValidationIdle();ensure(r.controller==='human','Control changed during authorization',409);
-    const prior=this.validationGrants.revoke();if(prior)await r.store.appendEvent({type:'validation-start-grant-revoked',source:'ui',data:{grantId:prior.grantId,reason:'replaced'}});
+    const prior=this.validationGrants.revoke();if(prior)await r.store!.appendEvent({type:'validation-start-grant-revoked',source:'ui',data:{grantId:prior.grantId,reason:'replaced'}});
     this.assertValidationIdle();ensure(this.active===r&&r.leaseEpoch===binding.leaseEpoch&&r.selectedPageId===binding.pageId&&this.current().navigationGeneration===binding.generation,'Browser changed while replacing authorization',409);
     const grant=this.validationGrants.issue(binding);
-    try{await r.store.appendEvent({type:'validation-start-grant-issued',source:'ui',data:{...grant}});await r.store.flush();}catch(error){this.validationGrants.revoke();throw error;}
+    try{await r.store!.appendEvent({type:'validation-start-grant-issued',source:'ui',data:{...grant}});await r.store.flush();}catch(error){this.validationGrants.revoke();throw error;}
     this.onChanged();return grant;
   }
   async revokeValidationStart(body:any){
     const r=this.required();ensure(body.runId===r.id&&body.leaseEpoch===r.leaseEpoch,'Authorization identity or lease is stale',409);
-    const grant=this.validationGrants.revoke();if(grant){await r.store.appendEvent({type:'validation-start-grant-revoked',source:'ui',data:{grantId:grant.grantId,reason:'human-revoked'}});await r.store.flush();}
+    const grant=this.validationGrants.revoke();if(grant){await r.store!.appendEvent({type:'validation-start-grant-revoked',source:'ui',data:{grantId:grant.grantId,reason:'human-revoked'}});await r.store.flush();}
     this.onChanged();return {revoked:!!grant};
   }
   async validate(body:any,options:{signal?:AbortSignal;requireGrant?:boolean}={}){
@@ -659,7 +683,7 @@ export class Studio {
     }catch(error){
       const r=this.active;
       if(r&&(!original||r===original||r.id===launch.validationRunId)){
-        await r.store.appendEvent({type:launch.grant?'validation-start-failed':'validation-start-rejected',source:'studio',data:{grantId:launch.grant?.grantId,validationId:launch.validationId,validationRunId:launch.validationRunId,cancelled:launch.abort.signal.aborted,error:String(error).slice(0,512)}}).then(()=>r.store.flush()).catch(()=>console.warn('Validation startup failure evidence could not be published',JSON.stringify({runId:r.id,validationId:launch.validationId})));
+        await r.store!.appendEvent({type:launch.grant?'validation-start-failed':'validation-start-rejected',source:'studio',data:{grantId:launch.grant?.grantId,validationId:launch.validationId,validationRunId:launch.validationRunId,cancelled:launch.abort.signal.aborted,error:String(error).slice(0,512)}}).then(()=>r.store.flush()).catch(()=>console.warn('Validation startup failure evidence could not be published',JSON.stringify({runId:r.id,validationId:launch.validationId})));
         if(launch.claimed&&(r.locked||r.controller!=='human')&&!r.stopping&&!r.ending&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;r.execution=launch.abort.signal.aborted?'cancelled':'failed';this.window.lock(false);}
       }
       if(!r&&launch.claimed&&this.browser&&!this.closing){
@@ -701,22 +725,22 @@ export class Studio {
     let fixed:ManagedExecution|undefined;
     if(body.materialRevisionId)fixed=await this.executions.begin({executionId:id,projectId:r.projectId,materialRevisionId:body.materialRevisionId,materialContentHash:body.materialContentHash,directory,dependencyLockPath:path.join(app.getAppPath(),'package-lock.json'),input:body.input??{},mode:body.executionMode,runId:r.id,pageId:p.pageId,environmentRef:`${this.instanceId}/${this.browserSessionId}/${r.profileId}`});
     let finishStartup!:()=>void;const startup={abort:launch.abort,gate:undefined as GateTransport|undefined,done:new Promise<void>(resolve=>{finishStartup=resolve;}),finish:()=>finishStartup()};this.workflowStarting=startup;
-    try{const gate=new GateTransport(await SocketTransport.connect(this.endpoint,startup.abort.signal),{onConflict:conflict=>{void r.store.appendEvent({type:'control-conflict',source:'runner',data:{validationId:id,pageId:p.pageId,...conflict}}).catch(error=>console.error('Could not persist runner control conflict',error));},onClosed:details=>{void r.store.appendEvent({type:'operation-transport-closed',source:'runner',data:{validationId:id,pageId:p.pageId,...details}}).catch(error=>console.error('Could not persist runner transport closure',error));}});startup.gate=gate;startup.abort.signal.throwIfAborted();ensure(this.active===r&&r.controller==='agent'&&!r.locked,'Workflow startup lost control',409);this.workflow=await startWorkflow({directory,input:body.input??{},targetId:p.targetId,transport:gate,dependencyLockPath:path.join(app.getAppPath(),'package-lock.json'),startupSignal:startup.abort.signal,
+    try{const gate=new GateTransport(await SocketTransport.connect(this.endpoint,startup.abort.signal),{onConflict:conflict=>{void r.store!.appendEvent({type:'control-conflict',source:'runner',data:{validationId:id,pageId:p.pageId,...conflict}}).catch(error=>console.error('Could not persist runner control conflict',error));},onClosed:details=>{void r.store!.appendEvent({type:'operation-transport-closed',source:'runner',data:{validationId:id,pageId:p.pageId,...details}}).catch(error=>console.error('Could not persist runner transport closure',error));}});startup.gate=gate;startup.abort.signal.throwIfAborted();ensure(this.active===r&&r.controller==='agent'&&!r.locked,'Workflow startup lost control',409);this.workflow=await startWorkflow({directory,input:body.input??{},targetId:p.targetId,transport:gate,dependencyLockPath:path.join(app.getAppPath(),'package-lock.json'),startupSignal:startup.abort.signal,
       ...(fixed?{execution:{binding:fixed.binding,datasets:fixed.datasets,saveStep:(event:Parameters<ManagedExecution['saveStep']>[0])=>fixed!.saveStep(event)},snapshotDirectory:fixed.snapshotDirectory}:{}),selection:body.selection,
-      beforeWorker:async prepared=>{verifyTarget();await fixed?.prepared(prepared);if(launch.grant){ensure(prepared.manifest.workflowId===launch.grant.workflowId&&prepared.fingerprintBefore.sha256===launch.grant.workflowSha256&&prepared.inputSha256===launch.grant.inputSha256,'Workflow or input changed after authorization',409);await r.store.appendEvent({type:'validation-start-grant-applied',source:'runner',data:{grantId:launch.grant.grantId,authorizationRunId:launch.grant.runId,validationRunId:r.id,validationId:id}});}Object.assign(record,await registerValidation(r.store,record,prepared));this.onChanged();await this.observeValidation('registered-before-worker',context,startup.abort.signal);verifyTarget();},
-      onStarted:async(nodeVersion,signal)=>{await r.store.appendEvent({type:'validation-running',source:'runner',data:{id,runId:r.id,startEventId:record.recovery?.startEventId,nodeVersion}});await this.observeValidation('running',context,signal);},hooks:{
+      beforeWorker:async prepared=>{verifyTarget();await fixed?.prepared(prepared);if(launch.grant){ensure(prepared.manifest.workflowId===launch.grant.workflowId&&prepared.fingerprintBefore.sha256===launch.grant.workflowSha256&&prepared.inputSha256===launch.grant.inputSha256,'Workflow or input changed after authorization',409);await r.store!.appendEvent({type:'validation-start-grant-applied',source:'runner',data:{grantId:launch.grant.grantId,authorizationRunId:launch.grant.runId,validationRunId:r.id,validationId:id}});}Object.assign(record,await registerValidation(r.store,record,prepared));this.onChanged();await this.observeValidation('registered-before-worker',context,startup.abort.signal);verifyTarget();},
+      onStarted:async(nodeVersion,signal)=>{await r.store!.appendEvent({type:'validation-running',source:'runner',data:{id,runId:r.id,startEventId:record.recovery?.startEventId,nodeVersion}});await this.observeValidation('running',context,signal);},hooks:{
        checkpoint:async(key,details,signal,hostScope)=>{
          const generation=p.navigationGeneration;
          const current=()=>{signal?.throwIfAborted();ensure(this.active===r&&r.pages.get(p.pageId)===p&&p.navigationGeneration===generation&&r.controller==='agent'&&!r.stopping&&!this.closing,'Checkpoint source target changed or was revoked',409);};
          current();const cp=await this.checkpoint({key,...details},{fromRunner:true,pageId:p.pageId,signal});current();
          if(cp.metadata?.captureOutcome!=='completed'||cp.metadata?.captureStatus!=='complete'||cp.captureConsistency!=='consistent')throw new Error(`Checkpoint capture is incomplete (${cp.metadata?.captureOutcome}/${cp.metadata?.captureStatus}/${cp.captureConsistency}); retained checkpoint ${cp.id} cannot satisfy validation coverage`);
          if(!fixed)return {id:cp.id};ensure(hostScope?.executionId===fixed.binding.executionId,'Checkpoint manager did not supply the fixed execution scope',409);
-         const sourceRefs=await this.executions.sampleCheckpoint(r.projectId,hostScope,p.capture,details?.requirementIds,current,signal);current();return {id:cp.id,sourceRefs};
+         const sourceRefs=await this.executions.sampleCheckpoint(r.projectId,hostScope,p.capture!,details?.requirementIds,current,signal);current();return {id:cp.id,sourceRefs};
        },
-      emitData:async(name,records,provenance)=>{const artifact=await r.store.putArtifact({kind:'dataset',mediaType:'application/json',data:JSON.stringify({name,records,...provenance}),source:{origin:'runner'}});await r.store.appendEvent({type:'dataset',source:'runner',artifactRefs:[artifact.id],data:{name,count:records.length,provenance}});},
+      emitData:async(name,records,provenance)=>{const artifact=await r.store.putArtifact({kind:'dataset',mediaType:'application/json',data:JSON.stringify({name,records,...provenance}),source:{origin:'runner'}});await r.store!.appendEvent({type:'dataset',source:'runner',artifactRefs:[artifact.id],data:{name,count:records.length,provenance}});},
       attachArtifact:async(name,content,mediaType)=>{const a=await r.store.putArtifact({kind:'runner-attachment',mediaType,data:content,metadata:{name}});return {id:a.id};},
-      assertion:async(assertion)=>{await r.store.appendEvent({type:'assertion',source:'runner',data:assertion});},
-      progress:async(message)=>{await r.store.appendEvent({type:'progress',source:'runner',data:{message}});},
+      assertion:async(assertion)=>{await r.store!.appendEvent({type:'assertion',source:'runner',data:assertion});},
+      progress:async(message)=>{await r.store!.appendEvent({type:'progress',source:'runner',data:{message}});},
       requestHuman:async(request,signal)=>{const state=await this.beginHuman(request,'runner',p.pageId,signal);await this.observeValidation('waiting-human',context,signal);return state.completion;},
     }});
     const handle=this.workflow;launch.handle=handle;let terminalRecord:ValidationRecord|undefined,terminalExecution:string|undefined;
@@ -732,7 +756,7 @@ export class Studio {
       const message='Validation report could not be committed: '+String(error);
       terminalRecord={...record,status:'interrupted',error:message,recovery:{...record.recovery,state:'interrupted',reason:message}};delete terminalRecord.result;delete terminalRecord.artifactId;terminalExecution='failed';
       this.validationRecovery.diagnostics.push({runId:r.id,validationId:id,code:'validation-commit-failed',message});
-      await r.store.appendEvent({type:'gap',source:'runner',data:{reason:message,validationId:id}}).catch(()=>{});await this.saveValidations(catalogSnapshot(terminalRecord));
+      await r.store!.appendEvent({type:'gap',source:'runner',data:{reason:message,validationId:id}}).catch(()=>{});await this.saveValidations(catalogSnapshot(terminalRecord));
     }).finally(async()=>{
       await fixed?.close();
       const continuing=!!body.authorizationId&&this.tasks.get(body.authorizationId).status==='active'&&this.browserAuthorizationId===body.authorizationId;
@@ -744,7 +768,7 @@ export class Studio {
       if(fixed)this.tasks.publish(r.projectId,'execution-finished',{executionId:id,runId:r.id});this.onChanged();
     });
     this.workflowSettlement=settlement;if(this.closing||startup.abort.signal.aborted){await handle.cancel('Application closing or takeover during worker startup');await settlement;}return {id,executionId:fixed?id:undefined,runId:r.id,status:record.status};
-    }catch(error){startup.gate?.close();await fixed?.close();this.executingAuthorizationId=undefined;r.execution=startup.abort.signal.aborted?'cancelled':'failed';if(!r.stopping&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;this.window.lock(false);}record.status=r.execution;record.error=String(error);await r.store.appendEvent({type:'validation-launch-failed',source:'studio',data:{id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory,status:record.status,error:record.error,startEventId:record.recovery?.startEventId}}).catch(failure=>{this.validationRecovery.diagnostics.push({runId:r.id,validationId:id,code:'validation-launch-unrecorded',message:String(failure)});});await this.saveValidations();throw error;}
+    }catch(error){startup.gate?.close();await fixed?.close();this.executingAuthorizationId=undefined;r.execution=startup.abort.signal.aborted?'cancelled':'failed';if(!r.stopping&&!this.closing){r.controller='human';r.locked=false;r.leaseEpoch++;this.window.lock(false);}record.status=r.execution;record.error=String(error);await r.store!.appendEvent({type:'validation-launch-failed',source:'studio',data:{id,runId:r.id,projectId:r.projectId,profileId:r.profileId,directory,status:record.status,error:record.error,startEventId:record.recovery?.startEventId}}).catch(failure=>{this.validationRecovery.diagnostics.push({runId:r.id,validationId:id,code:'validation-launch-unrecorded',message:String(failure)});});await this.saveValidations();throw error;}
     finally{if(this.workflowStarting===startup)this.workflowStarting=undefined;startup.finish();}
   }
   private async beginHuman(request:HumanRequest,owner:'runner'|'agent',pageId:string,signal?:AbortSignal){
@@ -754,7 +778,7 @@ export class Studio {
     const onAbort=()=>{handoff.status='needs-attention';if(this.humanDone===done)this.humanDone=undefined;reject(new Error('Execution stopped while waiting for human'));};
     const done={resolve:()=>{signal?.removeEventListener('abort',onAbort);resolve();},reject:(error:Error)=>{signal?.removeEventListener('abort',onAbort);reject(error);}};this.humanDone=done;signal?.addEventListener('abort',onAbort,{once:true});
     r.execution='waiting-human';r.controller='human';r.locked=false;r.leaseEpoch++;const previousPageId=r.selectedPageId||null;this.window.show(r.pages.get(pageId)!.view);r.selectedPageId=pageId;const foregroundAt=Date.now();this.window.lock(false);
-    try{if(previousPageId!==pageId)await this.recordForeground(r,previousPageId,'human-handoff',foregroundAt);await r.store.appendEvent({type:'handoff',source:owner==='runner'?'runner':'api',data:handoff});}catch(error){handoff.status='needs-attention';r.execution='paused';done.reject(error instanceof Error?error:new Error(String(error)));throw error;}this.onChanged();return {handoff,completion};
+    try{if(previousPageId!==pageId)await this.recordForeground(r as ActiveRun,previousPageId,'human-handoff',foregroundAt);await r.store!.appendEvent({type:'handoff',source:owner==='runner'?'runner':'api',data:handoff});}catch(error){handoff.status='needs-attention';r.execution='paused';done.reject(error instanceof Error?error:new Error(String(error)));throw error;}this.onChanged();return {handoff,completion};
   }
   async requestHuman(request:HumanRequest,signal?:AbortSignal,pageId=this.current().pageId){const state=await this.beginHuman(request,'runner',pageId,signal);return state.completion;}
   async startHandoff(body:any){
@@ -764,7 +788,7 @@ export class Studio {
     const handoffPage=r.pages.get(body.pageId);ensure(handoffPage,'Handoff page no longer exists',409);this.assertOperationOwner(r,handoffPage,body.leaseEpoch,body.generation);
     const state=await this.beginHuman({id:body.id||randomUUID(),instructions:body.instructions,completionCheck:body.completionCheck,timeoutMs},'agent',body.pageId);
     const timer=setTimeout(()=>{if(state.handoff.status==='waiting'){state.handoff.status='needs-attention';r.execution='paused';this.humanDone?.reject(new Error('Human assistance timed out; success remains unverified'));this.humanDone=undefined;this.onChanged();}},timeoutMs);
-    void state.completion.catch(error=>r.store.appendEvent({type:'handoff-failed',source:'api',data:{id:state.handoff.handoffId,reason:String(error)}})).finally(()=>clearTimeout(timer)).catch(error=>console.error('Could not save handoff outcome',error));return {...state.handoff,accepted:true};
+    void state.completion.catch(error=>r.store!.appendEvent({type:'handoff-failed',source:'api',data:{id:state.handoff.handoffId,reason:String(error)}})).finally(()=>clearTimeout(timer)).catch(error=>console.error('Could not save handoff outcome',error));return {...state.handoff,accepted:true};
   }
   async releaseHuman(handoffId?:string):Promise<HandoffReleaseResult>{
     const r=this.required();
@@ -803,7 +827,7 @@ export class Studio {
         }
         ensure(current(),'Handoff changed while checking',409);
         ensure(result&&(!check.text||result.text.includes(check.text))&&(!check.attribute||result.value===check.equals),'Completion check failed; human control is retained',409);
-        await r.store.appendEvent({type:'handoff-completed',source:'studio',data:{id:handoff.handoffId,pageId:p.pageId,check}});
+        await r.store!.appendEvent({type:'handoff-completed',source:'studio',data:{id:handoff.handoffId,pageId:p.pageId,check}});
         ensure(current(),'Handoff was cancelled while saving its completion check',409);
         if(handoff.owner==='agent'&&r.operation)r.operation.gate.resume();
         r.controller='agent';r.leaseEpoch++;r.execution=handoff.owner==='runner'?'running':handoff.resumeExecution;handoff.status='completed';this.humanDone=undefined;r.locked=false;done.resolve();this.onChanged();return {passed:true,handoffId:id};
@@ -838,5 +862,5 @@ export class Studio {
   async validation(id:string){const record=this.validations.find(v=>v.id===id);ensure(record,'Unknown validation',404);let currentVersion='unknown';if(record.result){const registered=this.projects.find(project=>project.id===record.projectId)?.scriptDirectory;if(!registered||path.relative(path.resolve(record.directory),path.resolve(registered))!=='')currentVersion='needs-revalidation';else try{const hash=await fingerprintWorkflow(registered,path.join(app.getAppPath(),'package-lock.json'));currentVersion=hash.sha256===record.result.fingerprintAfter.sha256?'matched':'needs-revalidation';}catch{currentVersion='unavailable';}}return {...record,currentVersion};}
   async review(body:any){ensure(this.validations.some(v=>v.id===body.id),'Unknown validation',404);return appendReview(this.root,body.id,body);}
   async reviews(id:string,options:ReviewQuery={}){ensure(this.validations.some(v=>v.id===id),'Unknown validation',404);return readReviews(this.root,id,options);}
-  async close(){this.closing=true;this.replayHost.close();this.tasks.close();this.validationLaunch?.abort.abort(new Error('Application closing during validation startup'));this.active?.checkpointTask?.abort.abort(new Error('Application closing'));const startup=this.workflowStarting;startup?.abort.abort(new Error('Application closing'));startup?.gate?.close();if(this.active){this.active.ending=true;this.active.locked=true;this.active.leaseEpoch++;await this.revokeOperation(this.active);}await this.queue.catch(()=>{});if(startup)await startup.done;const settlement=this.workflowSettlement;if(this.workflow)await this.workflow.cancel('Application closing');if(settlement)await settlement;this.humanDone?.reject(new Error('Application closing'));this.humanDone=undefined;if(this.active){const r=this.active;await r.stopDownloads?.();await Promise.allSettled([...(r.pageClosures??[])]);for(const p of [...r.pages.values()])await p.capture.stop().catch(()=>{});await r.store.updateManifest({status:'interrupted',execution:'interrupted'});await r.store.close();this.window.closeViews();r.releaseDownloads?.();this.active=undefined;}await this.fixture?.close();this.observer?.disconnect();this.window.closeViews();this.browser=undefined;}
+  async close(){this.closing=true;this.replayHost.close();this.tasks.close();this.validationLaunch?.abort.abort(new Error('Application closing during validation startup'));this.active?.checkpointTask?.abort.abort(new Error('Application closing'));const startup=this.workflowStarting;startup?.abort.abort(new Error('Application closing'));startup?.gate?.close();if(this.active){this.active.ending=true;this.active.locked=true;this.active.leaseEpoch++;await this.revokeOperation(this.active);}await this.queue.catch(()=>{});if(startup)await startup.done;const settlement=this.workflowSettlement;if(this.workflow)await this.workflow.cancel('Application closing');if(settlement)await settlement;this.humanDone?.reject(new Error('Application closing'));this.humanDone=undefined;if(this.active){const r=this.active;await r.stopDownloads?.();await Promise.allSettled([...(r.pageClosures??[])]);for(const p of [...r.pages.values()])await p.capture!.stop().catch(()=>{});await r.store.updateManifest({status:'interrupted',execution:'interrupted'});await r.store.close();this.window.closeViews();r.releaseDownloads?.();this.active=undefined;}await this.fixture?.close();this.observer?.disconnect();this.window.closeViews();this.browser=undefined;}
 }

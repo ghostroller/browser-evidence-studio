@@ -45,7 +45,7 @@ async function eventRecords(reader: EvidenceReader, types: string[]): Promise<an
 async function responseArtifact(studio: Studio, url: string): Promise<Artifact> {
   const run = studio.required(), reader = studio.reader(run.id);
   const found = await waitFor<any>(async () => {
-    await Promise.all([...run.pages.values()].map(page => page.capture.flush()));
+    await Promise.all([...run.pages.values()].map(page => page.capture!.flush()));
     const artifacts = await pages(cursor => reader.artifacts({ cursor, limit: 100, maxBytes: 32768, fields: ['kind', 'source', 'captureStatus', 'capturedBytes'] }));
     return artifacts.find(artifact => artifact.kind === 'response-body' && artifact.source?.url === url);
   }, Boolean, `persisted response body for ${new URL(url).pathname}`);
@@ -121,16 +121,16 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
   });
 
   const beforeClicks = await parent.page.$eval('#action-count', element => element.textContent);
-  await parent.capture.inspect(true);
+  await parent.capture!.inspect(true);
   await nativeFixtureClick(studio, '#increment');
   await waitFor(() => run.selection as any, selection => selection?.element?.selectors?.includes('#increment'), 'element inspection persisted');
   assert.equal(await parent.page.$eval('#action-count', element => element.textContent), beforeClicks, 'Inspection click must not execute the site click handler');
   await nativeFixtureClick(studio, '#increment');
   assert.equal(await parent.page.$eval('#action-count', element => element.textContent), beforeClicks, 'A second inspection click must also be intercepted');
-  assert.equal(parent.capture.inspecting, true, 'Inspection remains enabled until the user exits or the page navigates');
+  assert.equal(parent.capture!.inspecting, true, 'Inspection remains enabled until the user exits or the page navigates');
   assert.equal((run.selection as any).pageId, parent.pageId);
   await studio.control('agent');
-  assert.equal(parent.capture.inspecting, false, 'Agent control clears inspection before automation resumes');
+  assert.equal(parent.capture!.inspecting, false, 'Agent control clears inspection before automation resumes');
   const racingAction = Promise.allSettled([studio.action({ type: 'click', selector: '#increment', pageId: parent.pageId, generation: parent.navigationGeneration, leaseEpoch: run.leaseEpoch })]);
   await studio.stopRunner();
   assert.equal((await racingAction)[0].status, 'rejected', 'Takeover must revoke a still-connecting operation before it can click');
@@ -189,9 +189,9 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
   await studio.pauseCapture(true);
   await studio.pauseCapture(false);
   assert.equal(studio.required().capture, 'recording', 'Resuming with an iframe must request only ready main-document recorders');
-  await parent.capture.flush();
+  await parent.capture!.flush();
   const raw = await rrwebRecords(run.store.runDir);
-  const currentPosition = parent.capture.recordingPosition;
+  const currentPosition = parent.capture!.recordingPosition;
   assert.ok(currentPosition, 'The current document must have a durable source position');
   assert.equal(currentPosition.recordingId, run.id);
   assert.equal(currentPosition.pageId, parent.pageId);
@@ -208,7 +208,7 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
   // synthetic metadata event, then removes live URLs. Compare that exact
   // window without treating its presentation events as new source records.
   assert.deepEqual(replay.events, prepareReplayEvents(sourceWindow).events.map(event => rewriteReplayEvent(event, () => 'about:blank')), 'Replay must include only the requested business page top-document stream');
-  assert.equal(parent.capture.health, 'recording');
+  assert.equal(parent.capture!.health, 'recording');
 
   await action(studio, { type: 'navigate', url: `${origin}/lab` });
   for (const bytes of [1024 * 1024, 9 * 1024 * 1024]) {
@@ -226,7 +226,7 @@ export async function runLifecycleScenarios(studio: Studio, siteUrl: string): Pr
   await parent.page.waitForFunction(() => {
     try { return new URL(JSON.parse(document.querySelector('#lab-result')?.textContent || '{}').url).pathname === '/orders'; } catch { return false; }
   });
-  await parent.capture.flush();
+  await parent.capture!.flush();
   const redirects = (await eventRecords(studio.reader(run.id), ['network-redirect'])).filter(event => event.pageId === parent.pageId && /\/redirect(?:-final)?$/.test(event.data.response.url));
   assert.equal(redirects.length, 2, 'Both HTTP redirect hops must remain visible');
   const first = redirects.find(event => event.data.response.url === `${origin}/redirect`)!;

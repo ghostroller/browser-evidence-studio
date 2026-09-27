@@ -89,7 +89,7 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     async function boundary(label: string, text: string): Promise<void> {
       const started = Date.now();
       while (true) {
-        await current.capture.flush(); const position = current.capture.recordingPosition;
+        await current.capture!.flush(); const position = current.capture!.recordingPosition;
         if (position) {
           try {
             const window = await new ArchiveReplayService(run.store.runDir).window(position), model = new SourceModel(window.records);
@@ -98,7 +98,7 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
               const ref: HistoricalElementRef = { kind: 'dom-node', position, nodeId: selected.id, frameId: selected.metadata.frameId, mirrorScopeId: selected.metadata.mirrorScopeId };
               const observed=model.node(ref).text;
               if (observed.status === 'present' && observed.value === text) {
-                const sample=await current.capture.samplePresentation(ref);
+                const sample=await current.capture!.samplePresentation(ref);
                 assert.equal(sample.presentation.status,'present','Explicit source text observation must be available');
                 if(sample.presentation.status==='present'){assert.equal(sample.presentation.value.text,text);assert.deepEqual(sample.presentation.value.sampledAt,sample.ref.position);assert.ok(sample.presentation.value.basis.includes('source-innerText'));}
                 positions.push({ label, position:sample.ref.position, originalHtml: await current.page.content() }); return;
@@ -112,14 +112,14 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     }
     await boundary('initial', 'initial');
     await current.page.evaluate(()=>{const node=document.createElement('div');node.id='display-check';node.innerHTML='shown<span hidden>hidden-source-text</span>';document.body.appendChild(node);});
-    await delay(20);await current.capture.flush();
-    const displayPosition=current.capture.recordingPosition!,displayWindow=await new ArchiveReplayService(run.store.runDir).window(displayPosition),displayModel=new SourceModel(displayWindow.records);
+    await delay(20);await current.capture!.flush();
+    const displayPosition=current.capture!.recordingPosition!,displayWindow=await new ArchiveReplayService(run.store.runDir).window(displayPosition),displayModel=new SourceModel(displayWindow.records);
     const displayNode=[...displayModel.nodes.values()].find(node=>node.metadata?.attributes.id?.status==='present'&&node.metadata.attributes.id.value==='display-check');assert.ok(displayNode?.metadata);
     const displayRef:HistoricalElementRef={kind:'dom-node',position:displayPosition,nodeId:displayNode.id,frameId:displayNode.metadata.frameId,mirrorScopeId:displayNode.metadata.mirrorScopeId};
     assert.deepEqual(displayModel.node(displayRef).text,{status:'present',value:'shownhidden-source-text'});
     const cancelledSample=new AbortController();cancelledSample.abort(new Error('synthetic-presentation-cancelled'));
-    await assert.rejects(current.capture.samplePresentation(displayRef,cancelledSample.signal),/synthetic-presentation-cancelled/);
-    const displaySample=await current.capture.samplePresentation(displayRef);assert.equal(displaySample.presentation.status,'present');
+    await assert.rejects(current.capture!.samplePresentation(displayRef,cancelledSample.signal),/synthetic-presentation-cancelled/);
+    const displaySample=await current.capture!.samplePresentation(displayRef);assert.equal(displaySample.presentation.status,'present');
     if(displaySample.presentation.status==='present'){assert.equal(displaySample.presentation.value.text,'shown');assert.equal(displaySample.presentation.value.visibility,'visible');}
     report.sourcePresentation=displaySample;
     await current.page.evaluate(async () => {
@@ -150,7 +150,7 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
       return {data:data.naturalWidth>0,blob:blob.naturalWidth>0,blobUrl:blob.src};
     },png.toString('base64'));
     assert.ok(inlineSource.data&&inlineSource.blob,'Source data and blob images load before the recorded boundary');
-    await current.capture.flush();
+    await current.capture!.flush();
     report.inlineSource={data:inlineSource.data,blob:inlineSource.blob};
     const workerSource=await current.page.evaluate(async()=>{
       const registration=await navigator.serviceWorker.register('/sw.js');await navigator.serviceWorker.ready;
@@ -176,8 +176,8 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     const beforeStarted = Date.now();
     let lateBefore: ReplayPosition | undefined;
     while (!lateBefore) {
-      await current.capture.flush();
-      const position = current.capture.recordingPosition;
+      await current.capture!.flush();
+      const position = current.capture!.recordingPosition;
       if (position) {
         const window = await new ArchiveReplayService(run.store.runDir).window(position);
         if ([...new SourceModel(window.records).nodes.values()].some(node => node.metadata?.attributes.id?.status === 'present' && node.metadata.attributes.id.value === 'late-picture')) lateBefore = position;
@@ -188,18 +188,18 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
     assert.equal(await current.page.evaluate(() => (document.querySelector('#late-picture') as HTMLImageElement).naturalWidth), 0);
     slowResponse.end(png);
     await current.page.waitForFunction(() => (document.querySelector('#late-picture') as HTMLImageElement).naturalWidth > 0);
-    await current.capture.flush();
+    await current.capture!.flush();
     await current.page.evaluate(() => document.querySelector('#fixture')!.setAttribute('data-late-image-observed', 'yes'));
-    await current.capture.flush();
-    const lateAfter = current.capture.recordingPosition;
+    await current.capture!.flush();
+    const lateAfter = current.capture!.recordingPosition;
     assert.ok(lateAfter && lateAfter.eventSeq > lateBefore.eventSeq, 'A later source mutation must follow the image response');
     report.lateImage = { before: lateBefore, after: lateAfter };
     await current.page.evaluate(() => {
       (document.querySelector('#incremental-style')!.firstChild as Text).data = '#fixture {background-image:url("/assets/style-background.png")}';
     });
     await current.page.waitForFunction(() => getComputedStyle(document.querySelector('#fixture')!).backgroundImage.includes('/assets/style-background.png'));
-    await current.capture.flush();
-    const locatorPosition=current.capture.recordingPosition!,locatorWindow=await new ArchiveReplayService(run.store.runDir).window(locatorPosition),locatorModel=new SourceModel(locatorWindow.records);
+    await current.capture!.flush();
+    const locatorPosition=current.capture!.recordingPosition!,locatorWindow=await new ArchiveReplayService(run.store.runDir).window(locatorPosition),locatorModel=new SourceModel(locatorWindow.records);
     assert.equal([...locatorModel.nodes.values()].some(node=>node.metadata?.attributes['data-key']?.status==='present'&&node.metadata.attributes['data-key'].value==='cross-frame-only'),false,'Cross-origin iframe DOM must not be claimed as captured by the top-document recorder');
     const capabilityEvents=await studio.reader(run.id).events({types:['capture-ready'],limit:10,maxBytes:16384,fields:['type','data']});
     assert.ok(capabilityEvents.items.some(event=>(event as {data?:{capabilities?:{crossOriginFrames?:string}}}).data?.capabilities?.crossOriginFrames==='unsupported'),'Observed cross-origin iframe must remain explicit in the capture capability report');
@@ -222,9 +222,9 @@ async function recordScenario(studio: Studio): Promise<Record<string, unknown>> 
       sourceChecks.push({key,ref,candidates:candidates.length,results});
     }
     report.sourceLocatorChecks=sourceChecks;
-    const queueMetrics = current.capture.queueMetrics;
+    const queueMetrics = current.capture!.queueMetrics;
     await studio.control('human'); await studio.seal();
-    const final = current.capture.recordingPosition!;
+    const final = current.capture!.recordingPosition!;
     const resources = await new ResourceArchive(run.store.runDir).list(1000);
     for (const mediaType of ['text/css', 'image/png', 'font/ttf']) assert.ok(resources.items.some(item => item.status === 'captured' && item.mediaType === mediaType), `Production archive must contain ${mediaType}`);
     assert.ok(resources.items.some(item=>item.status==='captured'&&item.originalUrl.status==='present'&&item.originalUrl.value===crossOrigin+'/final/styles.css'),'Redirected cross-origin CSS must retain its observed final URL');
