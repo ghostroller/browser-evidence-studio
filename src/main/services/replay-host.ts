@@ -16,6 +16,7 @@ import type { StudioWindow } from '../window';
 import type { ProjectMaterials } from './project-materials';
 import type { ReplayHostState, ReplayOpenInput, ReplaySeekInput, ReplayPlayInput } from './client-types';
 import rrwebSource from '../../../node_modules/rrweb/dist/rrweb.umd.cjs?raw';
+import rrwebStyles from '../../../node_modules/rrweb/dist/style.css?raw';
 
 interface ActiveReplay {
   view: WebContentsView; partition: Electron.Session; state: ReplayHostState; abort?: AbortController;
@@ -79,7 +80,7 @@ export class ReplayHost {
     active.ready = (async () => {
       await view.webContents.loadURL('about:blank');
       if(this.active!==active||view.webContents.isDestroyed())return;
-      await view.webContents.executeJavaScript(`document.head.innerHTML=${JSON.stringify(`<meta http-equiv="Content-Security-Policy" content="${OFFLINE_CSP.replace(/"/g, '&quot;')}"><style>html,body{margin:0;height:100%;overflow:auto;background:white}#replay-stage{position:relative;overflow:hidden}#replay{position:absolute;left:0;top:0;transform-origin:top left}#selection{position:fixed;inset:0;z-index:2147483647;display:none;cursor:crosshair;background:transparent}#selected{position:fixed;pointer-events:none;border:2px solid #2563eb;z-index:2147483646;display:none}</style>`)};document.body.innerHTML='<div id="replay-stage"><div id="replay"></div></div><div id="selected"></div><div id="selection" tabindex="0" aria-label="选择历史元素；Escape 退出"></div>';true`);
+      await view.webContents.executeJavaScript(`document.head.innerHTML=${JSON.stringify(`<meta http-equiv="Content-Security-Policy" content="${OFFLINE_CSP.replace(/"/g, '&quot;')}"><style>html,body{margin:0;height:100%;overflow:auto;background:white}#replay-stage{position:relative;overflow:hidden}#replay{position:absolute;left:0;top:0;transform-origin:top left}#selection{position:fixed;inset:0;z-index:2147483647;display:none;cursor:crosshair;background:transparent}#selected{position:fixed;pointer-events:none;border:2px solid #2563eb;z-index:2147483646;display:none}</style>`)};const replayStyle=document.createElement('style');replayStyle.textContent=${JSON.stringify(rrwebStyles)};document.head.append(replayStyle);document.body.innerHTML='<div id="replay-stage"><div id="replay"></div></div><div id="selected"></div><div id="selection" tabindex="0" aria-label="选择历史元素；Escape 退出"></div>';true`);
       if(this.active!==active||view.webContents.isDestroyed())return;
       await view.webContents.executeJavaScript(rrwebSource);
       if(this.active!==active||view.webContents.isDestroyed())return;

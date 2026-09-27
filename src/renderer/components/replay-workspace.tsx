@@ -13,6 +13,7 @@ const same = (a?: ReplayPosition | null, b?: ReplayPosition | null) => a && b &&
   a.documentId === b.documentId && a.streamEpoch === b.streamEpoch && a.eventSeq === b.eventSeq && a.sourceTimeMs === b.sourceTimeMs;
 const streamId = (value: Stream) => `${value.first.pageId}/${value.first.documentId}/${value.first.streamEpoch}`;
 const IDLE_SKIP_MS = 5000;
+const BASELINE_PROBE_LIMIT = 1000;
 const sourceGapMs = (from: ReplayPosition, to: ReplayPosition) => Math.max(0, to.sourceTimeMs - from.sourceTimeMs);
 function waitForSourceGap(milliseconds: number, signal: AbortSignal): Promise<void> {
   if (milliseconds <= 0 || signal.aborted) return Promise.resolve();
@@ -114,15 +115,28 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const loadPositions = useCallback(async (selected: Stream, ordinal = 0): Promise<PositionRow[]> => {
     const result: { items: PositionRow[]; nextOrdinal?: number } = await call('recordingPositions', { position: selected.first, ordinal, limit: 100 });
     if (!mounted.current || streamRef.current !== selected) return [];
-    const next = ordinal ? [...positionsRef.current, ...result.items].slice(-500) : result.items;
+    const next = ordinal && positionsRef.current.length ? [...positionsRef.current, ...result.items].slice(-500) : result.items;
     positionsRef.current = next; nextOrdinalRef.current = result.nextOrdinal;
     setPositions(next); setNextOrdinal(result.nextOrdinal);
-    return next;
+    return result.items;
   }, [call]);
+  const firstBaseline = useCallback(async (selected: Stream): Promise<ReplayPosition> => {
+    for (let ordinal = 0; ordinal < Math.min(selected.events, BASELINE_PROBE_LIMIT); ordinal += 100) {
+      const rows = await loadPositions(selected, ordinal);
+      if (!mounted.current || streamRef.current !== selected) throw new Error('页面流已切换，停止定位完整快照。');
+      const baseline = rows.find(row => row.type === 2)?.position;
+      if (baseline) return baseline;
+      if (rows.length < 100) break;
+    }
+    throw new Error(selected.events > BASELINE_PROBE_LIMIT
+      ? '前 1000 个源事件没有完整快照；可在时间轴选择后续位置，不能把未采集的结构当作空白页面。'
+      : '此页面流没有可还原的完整快照；请查看录制缺口。');
+  }, [loadPositions]);
   useEffect(() => {
     mounted.current = true;
     const token = ++loadToken.current;
-    streamsRef.current=[];foregroundRef.current=null;setStreams([]); setForeground(null); setStream(null); setPositions([]); setStreamCursor(''); setError('');
+    streamsRef.current=[];foregroundRef.current=null;streamRef.current=null;positionsRef.current=[];nextOrdinalRef.current=undefined;
+    setStreams([]); setForeground(null); setStream(null); setPositions([]); setStreamCursor(''); setError('');
     void Promise.all([
       call('recordingForeground',{recordingId,limit:100}) as Promise<Foreground>,
       call('recordingStreams', { recordingId, limit: 50 }) as Promise<{items:Stream[];nextCursor?:string}>,
@@ -130,21 +144,25 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
       if (token !== loadToken.current) return;
       foregroundRef.current=timeline;setForeground(timeline);
       streamsRef.current=page.items;setStreams(page.items); setStreamCursor(page.nextCursor || '');
-      const first = page.items.find(entry => requestedPosition && streamId(entry) === `${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}`) ||
-        (completeForeground(timeline)?page.items.filter(entry=>entry.first.pageId===timeline.items[0].pageId).sort((a,b)=>a.first.sourceTimeMs-b.first.sourceTimeMs)[0]:undefined) || page.items[0];
-      if (first) { streamRef.current = first; setStream(first);
-        requestedHandled.current = requestedPosition ? `${requestedPosition.recordingId}/${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}/${requestedPosition.eventSeq}` : '';
-        void loadPositions(first).then(rows => {
-          if (!mounted.current || streamRef.current !== first) return;
-          const baseline = rows.find(row => row.type === 2)?.position;
-          if (!baseline) { setError('当前流的首批事件没有可还原的完整快照。'); return; }
-          const requested = requestedPosition && requestedPosition.eventSeq > first.first.eventSeq ? requestedPosition : baseline;
-          void seek(requested);
-        }).catch(failure => setError(String(failure))); }
+      if (!page.items.length) { setError('这个存档没有可读取的历史页面流；请检查原件与索引。'); return; }
+      const anchored = requestedPosition && page.items.find(entry => streamId(entry) === `${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}`);
+      const foregroundPage = completeForeground(timeline) ? [...timeline.items].reverse().find(item => item.pageId)?.pageId : undefined;
+      const candidates = foregroundPage ? page.items.filter(entry => entry.first.pageId === foregroundPage) : [];
+      const recent = [...(candidates.length ? candidates : page.items)].sort((a,b) => b.last.sourceTimeMs - a.last.sourceTimeMs)[0];
+      const selected = anchored || recent;
+      streamRef.current = selected; setStream(selected);
+      requestedHandled.current = anchored && requestedPosition ? `${requestedPosition.recordingId}/${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}/${requestedPosition.eventSeq}` : '';
+      if (requestedPosition && !anchored) { setError('请求的历史页面流未在当前已加载的列表中；请读取更多页面流。'); return; }
+      void (async () => {
+        const target = requestedPosition && requestedPosition.eventSeq > selected.first.eventSeq
+          ? (await loadPositions(selected), requestedPosition)
+          : await firstBaseline(selected);
+        if (mounted.current && streamRef.current === selected) void seek(target);
+      })().catch(failure => { if (mounted.current && streamRef.current === selected) setError(String(failure)); });
     }).catch(failure => { if (token === loadToken.current) setError(String(failure)); });
     return () => { mounted.current = false; ++loadToken.current; ++seekToken.current; playRef.current = false; gapWait.current?.abort(); const current = hostRef.current;
       hostRef.current = null; if(pendingOpen.current){closeNative(pendingOpen.current);pendingOpen.current=null;} if (current) closeNative(current.replayId); };
-  }, [projectId, recordingId, call, loadPositions, seek, closeNative]);
+  }, [projectId, recordingId, call, loadPositions, firstBaseline, seek, closeNative]);
   const requestedKey = requestedPosition && `${requestedPosition.recordingId}/${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}/${requestedPosition.eventSeq}`;
   useEffect(() => {
     if (selecting || !requestedPosition || !streams.length || requestedHandled.current === requestedKey || same(positionRef.current, requestedPosition)) return;
@@ -213,9 +231,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const followStream = useCallback(async (selected:Stream,sourceTimeMs:number)=>{
     if(!selected.monotonicTime)throw new Error('目标页面流的源时钟不单调，请手动选择事件位置。');
     streamRef.current=selected;setStream(selected);positionsRef.current=[];nextOrdinalRef.current=undefined;
-    const rows=await loadPositions(selected);
-    const baseline=rows.find(row=>row.type===2)?.position;
-    if(!baseline)throw new Error('目标前台流没有可还原的完整快照。');
+    const baseline=await firstBaseline(selected);
     let target=baseline;
     if(sourceTimeMs>=baseline.sourceTimeMs){
       target=await call('resolveRecordingTime',{position:selected.first,sourceTimeMs:Math.min(sourceTimeMs,selected.last.sourceTimeMs)});
@@ -228,7 +244,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
       if(waiter.signal.aborted||!playRef.current)return;
     }
     if(playRef.current&&streamRef.current===selected)await seek(target,true);
-  },[call,loadPositions,seek]);
+  },[call,firstBaseline,seek]);
   const waitUntil = useCallback(async (from:number,to:number)=>{
     const gap=Math.max(0,to-from);
     if(skipIdleRef.current&&gap>IDLE_SKIP_MS||!gap)return true;
@@ -307,9 +323,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const changeStream = (index: number) => { const selected = streams[index]; if (!selected) return;
     gapWait.current?.abort();playRef.current=false;setPlaying(false);setWaitingGapMs(0);
     streamRef.current = selected; setStream(selected); positionsRef.current = []; nextOrdinalRef.current = undefined;
-    void loadPositions(selected).then(rows => { const baseline=rows.find(row=>row.type===2)?.position;
-      if (baseline) void seek(baseline); else setError('当前流的首批事件没有可还原的完整快照。');
-    }).catch(failure => setError(String(failure))); };
+    void firstBaseline(selected).then(baseline => void seek(baseline)).catch(failure => setError(String(failure))); };
   const scrub = async (value: number) => { if (!stream) return; setScrubTime(null);
     try { const target: ReplayPosition = await call('resolveRecordingTime', { position: stream.first, sourceTimeMs: value }); await seek(target); }
     catch (failure) { setError(String(failure)); } };

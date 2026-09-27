@@ -4,6 +4,7 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Studio } from '@/main/services/studio';
 import { clickSyntheticHuman } from './native-input';
+import { captureUiFrame } from './ui-layout';
 import { startFixture } from '../fixtures/site';
 
 export async function runNativeInputScenarios(studio:Studio){
@@ -29,13 +30,61 @@ export async function runNativeInputScenarios(studio:Studio){
     await front.capture.flush();const position=front.capture.recordingPosition;assert(position);
     for(let i=0;i<3;i++){
       const opened=await studio.replayHost.open({projectId:project.id,position});assert.equal(opened.status,'ready',opened.error);
+      if(i===0){
+        const replay=(studio.replayHost as any).active.view;
+        report.replayPresentation={native:studio.window.presentationStatus(),frame:await replay.webContents.executeJavaScript(`(()=>{const f=document.querySelector('#replay iframe'),r=f?.getBoundingClientRect(),root=document.querySelector('#replay')?.getBoundingClientRect();return {iframe:r&&{x:r.x,y:r.y,width:r.width,height:r.height},root:root&&{x:root.x,y:root.y,width:root.width,height:root.height},bodyTextLength:f?.contentDocument?.body?.innerText?.length||0,visible:document.visibilityState,viewportHeight:window.innerHeight,mousePosition:getComputedStyle(document.querySelector('.replayer-mouse')).position}})()`)};
+        assert(replay.getVisible(),JSON.stringify(studio.window.presentationStatus()));
+        assert.equal(report.replayPresentation.frame.mousePosition,'absolute','rrweb cursor must not push the page iframe below the viewport');
+        assert(report.replayPresentation.frame.iframe.y<report.replayPresentation.frame.viewportHeight/4,JSON.stringify(report.replayPresentation.frame));
+        assert(report.replayPresentation.frame.bodyTextLength>50,'Source content must exist in the visible replay iframe');
+        await captureUiFrame(studio,'native-replay.png');
+      }
       assert(!front.view.getVisible());await assert.rejects(action(),/replay-owner/);studio.replayHost.close(opened.replayId);
+      if(i===0)await captureUiFrame(studio,'native-live-after-replay.png');
       assert(front.view.getVisible(),JSON.stringify(studio.window.presentationStatus()));await action();assert.equal(await count(),i+2);
     }
     record('live archive live real clicks and closed owner');
+    const ui=studio.window.window.webContents;
+    const wait=async(predicate:()=>Promise<boolean>|boolean,label:string)=>{
+      const until=Date.now()+10000;
+      while(Date.now()<until){if(await predicate())return;await delay(50);}
+      throw new Error(`${label}: ${JSON.stringify(studio.window.presentationStatus())}`);
+    };
+    for(let i=0;i<5;i++){
+      await ui.executeJavaScript(`Array.from(document.querySelectorAll('.evidence-strip button')).find(button=>button.textContent.trim()==='打开历史回放').click()`);
+      await wait(()=>!!(studio.replayHost as any).active?.state?.status&&
+        (studio.replayHost as any).active.state.status==='ready','React history replay ready');
+      const replay=(studio.replayHost as any).active.view;
+      assert(replay.getVisible(),JSON.stringify(studio.window.presentationStatus()));
+      const frame=await replay.webContents.executeJavaScript(`(()=>{const f=document.querySelector('#replay iframe'),r=f.getBoundingClientRect();return {top:r.top,height:r.height,viewport:innerHeight,bodyTextLength:f.contentDocument.body.innerText.length}})()`);
+      assert(frame.top<frame.viewport/4&&frame.bodyTextLength>50,JSON.stringify(frame));
+      if(i===0)await captureUiFrame(studio,'native-react-replay.png');
+      await ui.executeJavaScript(`Array.from(document.querySelectorAll('.replay-controls button')).find(button=>button.textContent.trim()==='返回实时页面').click()`);
+      await wait(()=>!(studio.replayHost as any).active&&front.view.getVisible(),'React return to live page');
+      if(i===0||i===4)await captureUiFrame(studio,`native-react-live-restored-${i+1}.png`);
+    }
+    record('React replay repeatedly paints source and restores live native view');
     studio.window.setPresentation('overlay',true);await assert.rejects(action(),/overlay/);assert.equal(await count(),4);studio.window.setPresentation('overlay',false);
     assert(studio.window.mask.getVisible());await action();assert.equal(await count(),5);record('overlay rejects input and retains mask');
     await studio.control('human');
+    await front.page.evaluate(()=>{
+      (window as any).__besPointerDownCount=0;
+      document.querySelector('#increment')?.addEventListener('pointerdown',()=>{(window as any).__besPointerDownCount++;});
+    });
+    await wait(()=>ui.executeJavaScript(`Array.from(document.querySelectorAll('.browser-toolbar button')).some(button=>button.textContent.trim()==='选取元素（实时页）'&&!button.disabled)`),'live picker button available');
+    await ui.executeJavaScript(`Array.from(document.querySelectorAll('.browser-toolbar button')).find(button=>button.textContent.trim()==='选取元素（实时页）').click()`);
+    await wait(()=>front.capture.inspecting,'live picker enabled');
+    const beforePick=await count();
+    await clickSyntheticHuman(studio,'#increment');
+    await wait(()=>!!(r.selection as any)?.element&&(r.selection as any).element.tag==='button','native live target selected');
+    assert.equal(await count(),beforePick,'Inspection must not execute the site click handler');
+    assert.equal(await front.page.evaluate(()=>(window as any).__besPointerDownCount),0,'Inspection must not execute the site pointerdown handler');
+    await wait(()=>ui.executeJavaScript(`document.querySelector('.live-element-selection')?.textContent?.includes('已选实时元素')||false`),'live selection summary visible');
+    await ui.executeJavaScript(`Array.from(document.querySelectorAll('.browser-toolbar button')).find(button=>button.textContent.trim()==='结束选取（实时页）').click()`);
+    await wait(()=>!front.capture.inspecting,'live picker disabled');
+    await clickSyntheticHuman(studio,'#increment');
+    assert.equal(await count(),beforePick+1,'Normal native page click resumes after inspection');
+    record('React live picker intercepts native click and pointerdown, then restores normal page input');
     const grant=await studio.authorizeTask({projectId:project.id,profileId:profile.id,sessionId:studio.browserSessionId,leaseEpoch:r.leaseEpoch,pageIds:[front.pageId],origins:[fixture.url],capabilities:['page-read','page-act','page-create'],durationMs:180000,maxOperations:100});
     const created=await studio.createTaskPage({authorizationId:grant.authorizationId,pageId:front.pageId,generation:front.navigationGeneration,leaseEpoch:r.leaseEpoch,startUrl:fixture.url+'/orders'});
     const back=r.pages.get(created.pageId)!;await back.page.waitForFunction(()=>document.querySelector('#api-state')?.textContent==='已就绪');await action(back);

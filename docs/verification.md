@@ -1,5 +1,18 @@
 # 实际验证记录
 
+## 2026-09-27 回放白屏与实时元素选取修复
+
+以 `main@4122c4c` 为修复基线，补入缺失的 rrweb `style.css`。修复前的白屏排查发现回放 iframe 被布局推到视口下方（`y≈730`）；修复后真实 Electron 的 `native-input` 报告记录 iframe `y=0`、视口高 734、回放正文可见，且 rrweb 鼠标层为绝对定位。这里的可见性结论来自合成页面的 DOM 位置断言和实际像素截图，不代表任意真实录制都能完整回放。
+
+| 命令 / 证据 | 实际结果 |
+| --- | --- |
+| `npm test`、`npm run typecheck`、`npm run make`、`npm run test:release-assets -- out/Browser Evidence Studio-win32-x64/resources/app.asar` | **通过**；63 文件/377 项、类型检查、Windows ZIP 构建和 4 个内部构建文件及 13 个外置资源检查。日志分别为 `output/replay-selection-candidate-unit.log`、`output/replay-selection-candidate-typecheck.log`、`output/replay-selection-candidate-make.log`、`output/replay-selection-candidate-assets.log`。 |
+| `node test/desktop/launch.js --executable=...` | **通过**；`output/replay-selection-candidate-full-desktop.log`、`output/desktop-1790493068043/desktop-summary.json`。打包程序完整串行桌面矩阵主阶段、新进程 profile 读取、5 个恢复阶段通过。首轮在新增历史入口的无录制可用性断言失败；补齐禁用条件后重打包通过，原失败日志 `output/replay-selection-packaged-full-desktop.log` 保留。 |
+| `node test/desktop/launch.js --native-input --executable=...` | **通过**；`output/replay-selection-candidate-native.log`、`output/desktop-1790493273142/native-input-report.json`。同一打包程序完成 3 次直接打开/关闭回放，以及 5 次 React 历史回放→实时页面切换；核对回放 iframe 在可见区域、源正文存在、原生实时视图恢复，并保存 `native-replay.png`、`native-react-replay.png`、`native-react-live-restored-1.png`、`native-react-live-restored-5.png` 等实际像素截图。实时页“选取元素”拦截原生点击及 `pointerdown`，未触发站点计数；结束选取后普通点击恢复。 |
+| `node test/desktop/launch.js --refactor-system --executable=...` | **通过**；`output/replay-selection-candidate-system.log`、`output/desktop-1790493301258/refactor-system-report.json`。打包程序的生产 ReplayHost/React 工作台在合成数据上完成 241 条事件的回放、暂停与定位，并核对移动节点来源、字段/注释选择、需求编辑、固定版本及授权/撤销等原有断言。 |
+
+候选 ZIP 为 `output/replay-selection-F010665CEE5F4A4FEA9539C91ADACF2E9ABD4AE97F33BE80977049E1E05A28D6.zip`，SHA-256 `F010665CEE5F4A4FEA9539C91ADACF2E9ABD4AE97F33BE80977049E1E05A28D6`。旧发行 ZIP 仍保留在 `output/release-ee904cd-D4A031A3232CD0CBCC5B6836E2F303A8A2BF698ACDF4202F94BBC448C0247FC1.zip`。先前白屏排查及失败日志保留，不能改记为通过；本节未验证用户真实录制、真实账号或此候选的 30 分钟长测。
+
 ## 2026-09-27 D07 同候选发布门
 
 本轮以 `main@ee904cd` 冻结实现/测试/发行内容。D01 首次 staging 失败保留 legacy 可读、D02 坏资源版本保留且不回退、D03 原始封存完整性独立验证、D04 长测经生产 ReplayHost 检查 ready/位置/资源/DOM/节点、D05 AT39 将 harness/Agent 交付/独立业务报告拆开；负例与修复日志见 [G4 交接](refactor-handoffs/G4-20260926.md)。未重置历史成果或修改原件。

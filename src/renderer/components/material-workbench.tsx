@@ -317,6 +317,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   };
   return <div className="material-workbench">
     <div className="material-toolbar"><strong>任务资料</strong><span className="muted">草稿可编辑 · 发布后按固定 hash 读取</span><Button disabled={!!pending} onClick={() => void refreshLists().catch(failure => setError(String(failure)))}>刷新列表</Button></div>
+    <p className="hint">绑定资料卡片：新建或打开草稿 → 打开历史回放并定位可靠时刻 → 新建、保存并选中卡片 → 点「在历史页选择元素」或「从历史页绑定元素」→ 点击右侧历史页面。实时页可在右侧浏览器下方开启元素选取；实时采样不会自动绑定这张卡片。</p>
     {error && <p className="error-inline" role="alert">{error}</p>}{notice && <p className="notice" role="status">{notice}</p>}
     {conflict && <Button onClick={() => void openDraft(conflict.draftId).catch(failure => setError(String(failure)))}>读取修订 {conflict.draftRevision} 并处理冲突</Button>}
     <div className="material-layout"><aside className="material-list"><div className="section-label">草稿 <Button disabled={!!pending} onClick={() => void createDraft()}>新建</Button></div>

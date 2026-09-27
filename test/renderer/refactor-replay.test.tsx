@@ -27,6 +27,52 @@ test('opens the first complete snapshot when a stream begins with a meta event',
   await waitFor(() => expect(call).toHaveBeenCalledWith('openReplay', expect.objectContaining({ position: at(1) })));
 });
 
+test('ordinary archive opening uses the most recent source document instead of hash order', async () => {
+  const older={...at(1),documentId:'older-document',streamEpoch:'older-epoch',sourceTimeMs:1001};
+  const olderLast={...older,eventSeq:4,sourceTimeMs:1004};
+  const recent={...at(20),documentId:'recent-document',streamEpoch:'recent-epoch',sourceTimeMs:2020};
+  const recentLast={...recent,eventSeq:21,sourceTimeMs:2021};
+  const call=vi.fn(async(method:string,body:any)=>{
+    if(method==='recordingForeground')return {status:'legacy',items:[]};
+    if(method==='recordingStreams')return {items:[
+      {first:older,last:olderLast,events:4,monotonicTime:true},
+      {first:recent,last:recentLast,events:2,monotonicTime:true}]};
+    if(method==='recordingPositions')return {items:body.position.documentId==='recent-document'
+      ?[{position:recent,type:2,source:-1},{position:recentLast,type:3,source:0}]
+      :[{position:older,type:2,source:-1},{position:olderLast,type:3,source:0}]};
+    if(method==='openReplay'||method==='replayStatus'||method==='selectReplay')return host(body.position??recentLast,1);
+    if(method==='closeReplay')return {...host(recentLast,1),status:'closed'};
+    throw new Error(method);
+  });
+  window.studio={call,bounds:vi.fn()};
+  render(<ReplayWorkspace projectId="project-one" recordingId="run-one" selecting={false} canStop={false}
+    onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
+  await waitFor(()=>expect(call).toHaveBeenCalledWith('openReplay',expect.objectContaining({position:recent})));
+});
+
+test('first source snapshot after the initial page of positions can still open', async () => {
+  const baseline=at(125);
+  const call=vi.fn(async(method:string,body:any)=>{
+    if(method==='recordingForeground')return {status:'legacy',items:[]};
+    if(method==='recordingStreams')return {items:[{first:at(0),last:at(150),events:151,monotonicTime:true}]};
+    if(method==='recordingPositions'){
+      const start=body.ordinal??0;
+      return {items:Array.from({length:Math.min(100,151-start)},(_,index)=>{
+        const position=at(start+index);
+        return {position,type:position.eventSeq===125?2:4,source:-1};
+      }),...(start+100<151?{nextOrdinal:start+100}:{})};
+    }
+    if(method==='openReplay'||method==='replayStatus'||method==='selectReplay')return host(body.position??baseline,1);
+    if(method==='closeReplay')return {...host(baseline,1),status:'closed'};
+    throw new Error(method);
+  });
+  window.studio={call,bounds:vi.fn()};
+  render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={at(0)} selecting={false} canStop={false}
+    onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
+  await waitFor(()=>expect(call).toHaveBeenCalledWith('recordingPositions',expect.objectContaining({ordinal:100})));
+  await waitFor(()=>expect(call).toHaveBeenCalledWith('openReplay',expect.objectContaining({position:baseline})));
+});
+
 test('closes a native replay host that opens after the workspace unmounts', async () => {
   const opening = deferred<ReturnType<typeof host>>();
   const call = vi.fn(async (method: string, _body?:any) => {
