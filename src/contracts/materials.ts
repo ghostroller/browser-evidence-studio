@@ -34,6 +34,8 @@ export interface CheckpointCard {
   capturedAt: string;
   createdAt: string;
   derivedFrom?: string;
+  sourceReceiptRef?: string;
+  operationId?: string;
   title: string;
   notes: string;
   requirementIds: string[];
@@ -49,6 +51,7 @@ export interface MaterialAnnotation {
   bindingStatus: 'bound' | 'needs-rebind' | 'unavailable';
 }
 export interface MaterialContent {
+  taskBrief?: { objective:string; scope:string };
   requirements: MaterialRequirement[];
   fields: MaterialField[];
   checkpoints: CheckpointCard[];
@@ -77,7 +80,7 @@ export interface TaskMaterialRevision {
   content: MaterialContent;
 }
 export interface MaterialDifference {
-  collection: keyof Omit<MaterialContent, 'recordingRefs'> | 'recordingRefs';
+  collection: keyof Omit<MaterialContent, 'recordingRefs' | 'taskBrief'> | 'recordingRefs';
   id: string;
   change: 'added' | 'removed' | 'changed';
   changedFields: string[];

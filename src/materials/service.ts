@@ -146,8 +146,9 @@ export class FileMaterialService implements MaterialService {
       ...(raw.parentRevisionId === undefined ? {} : { parentRevisionId: id(raw.parentRevisionId, 'parentRevisionId') }),
       contentHash, createdAt: raw.createdAt, author: authorOf(raw.author), content };
   }
-  private async checkRecordingRefs(root: string, projectId: string, content: MaterialContent): Promise<void> {
+  private async checkRecordingRefs(root: string, projectId: string, content: MaterialContent, previous?: MaterialContent): Promise<void> {
     for (const recordingId of content.recordingRefs) {
+      if(previous?.recordingRefs.includes(recordingId))continue;
       id(recordingId, 'recordingId');
       const runs = path.join(root, 'runs');
       const run = path.join(runs, recordingId);
@@ -164,6 +165,7 @@ export class FileMaterialService implements MaterialService {
     }
     if (content.checkpoints.length && !this.sourceVerifier) throw new MaterialError('SOURCE_VERIFIER_REQUIRED', 'Checkpoint anchors require a recording source verifier.', 409);
     for (const checkpoint of content.checkpoints) {
+      if(previous?.checkpoints.some(old=>old.id===checkpoint.id&&JSON.stringify(old.anchor)===JSON.stringify(checkpoint.anchor)))continue;
       const reliability = await this.sourceVerifier!.position(checkpoint.anchor);
       if (reliability === 'unsupported') throw new MaterialError('INVALID_SOURCE', `Checkpoint ${checkpoint.id} has unsupported historical identity.`);
       if (reliability !== 'reliable' && content.annotations.some(annotation => annotation.checkpointId === checkpoint.id && annotation.bindingStatus === 'bound')) {
@@ -171,9 +173,11 @@ export class FileMaterialService implements MaterialService {
       }
     }
     for (const annotation of content.annotations) {
+      if(previous?.annotations.some(old=>old.id===annotation.id&&old.bindingStatus===annotation.bindingStatus&&JSON.stringify(old.target)===JSON.stringify(annotation.target)))continue;
       if (annotation.bindingStatus === 'bound' && !await this.sourceVerifier!.target(annotation.target)) throw new MaterialError('INVALID_SOURCE', `Annotation ${annotation.id} target is not recorded.`);
     }
     for (const field of content.fields) {
+      if(previous?.fields.some(old=>old.id===field.id&&old.bindingStatus===field.bindingStatus&&JSON.stringify(old.target)===JSON.stringify(field.target)))continue;
       if (field.target && field.bindingStatus === 'bound') {
         if (!this.sourceVerifier || await this.sourceVerifier.position(field.target.position) !== 'reliable' || !await this.sourceVerifier.target(field.target)) {
           throw new MaterialError('INVALID_SOURCE', `Field ${field.id} target is not reliable recorded source.`);
@@ -186,7 +190,7 @@ export class FileMaterialService implements MaterialService {
     return this.locked(projectId, async (root, paths) => {
       const base = baseRevisionId === undefined ? undefined : await this.storedRevision(projectId, baseRevisionId, root, paths);
       const draft: TaskMaterialDraft = { schemaVersion: 1, projectId, draftId: randomUUID(), draftRevision: 0,
-        ...(base ? { baseRevisionId: base.revisionId } : {}), author, updatedAt: new Date().toISOString(), content: clone(base?.content ?? EMPTY) };
+        ...(base ? { baseRevisionId: base.revisionId } : {}), author, updatedAt: new Date().toISOString(), content: clone(base?.content ?? {...EMPTY,taskBrief:{objective:String(((await readJson(path.join(root,'workspace.json'),root)) as any).projects.find((p:any)=>p.id===projectId)?.objective??''),scope:''}}) };
       await createJson(path.join(paths.drafts, `${draft.draftId}.json`), draft);
       return draft;
     });
@@ -200,7 +204,7 @@ export class FileMaterialService implements MaterialService {
     return this.locked(projectId, async (root, paths) => {
       const current = await this.storedDraft(projectId, draftId, root, paths);
       if (current.draftRevision !== expectedDraftRevision) return { status: 'conflict', current, expectedDraftRevision };
-      await this.checkRecordingRefs(root, projectId, validated);
+      await this.checkRecordingRefs(root, projectId, validated, current.content);
       const draft: TaskMaterialDraft = { ...current, draftRevision: current.draftRevision + 1, author, updatedAt: new Date().toISOString(), content: validated };
       await atomicJson(path.join(paths.drafts, `${draftId}.json`), draft);
       return { status: 'saved', draft };
@@ -236,7 +240,7 @@ export class FileMaterialService implements MaterialService {
     });
   }
   /** E can expose this page directly without serializing the complete draft/revision. */
-  async pageCollection<K extends keyof MaterialContent>(projectId: string,
+  async pageCollection<K extends Exclude<keyof MaterialContent,"taskBrief">>(projectId: string,
     source: { kind: 'draft'; id: string } | { kind: 'revision'; id: string; expectedHash?: string },
     collection: K, budget: ReadBudget): Promise<BoundedPage<MaterialContent[K][number]>> {
     if (!['requirements', 'fields', 'checkpoints', 'annotations', 'recordingRefs'].includes(collection)) throw new MaterialError('INVALID_COLLECTION', 'Unknown material collection.');

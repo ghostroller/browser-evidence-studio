@@ -110,7 +110,7 @@ export function validateContent(value: unknown): MaterialContent {
   if (bytes > MAX_CONTENT_BYTES) fail(`Material content exceeds ${MAX_CONTENT_BYTES} bytes`);
   if (!record(value)) fail('Material content must be an object');
   const content = value as Record<string, unknown>;
-  keys(content, ['requirements', 'fields', 'checkpoints', 'annotations', 'recordingRefs'], 'content');
+  keys(content, ['requirements', 'fields', 'checkpoints', 'annotations', 'recordingRefs', 'taskBrief'], 'content');
   const recordingRefs = ids(content.recordingRefs, 'recordingRefs');
   const requirements = list(content.requirements, 'requirements').map((raw): MaterialRequirement => {
     if (!record(raw)) fail('Requirement must be an object');
@@ -147,13 +147,15 @@ export function validateContent(value: unknown): MaterialContent {
   const checkpoints = list(content.checkpoints, 'checkpoints').map((raw): CheckpointCard => {
     if (!record(raw)) fail('Checkpoint must be an object');
     const item = raw as Record<string, unknown>;
-    keys(item, ['id', 'kind', 'anchor', 'capturedAt', 'createdAt', 'derivedFrom', 'title', 'notes', 'requirementIds', 'annotationIds'], 'checkpoint');
+    keys(item, ['id', 'kind', 'anchor', 'capturedAt', 'createdAt', 'derivedFrom', 'sourceReceiptRef', 'operationId', 'title', 'notes', 'requirementIds', 'annotationIds'], 'checkpoint');
     if (item.kind !== 'observation' && item.kind !== 'requirement') fail('Invalid checkpoint kind');
     const capturedAt = string(item.capturedAt, 'checkpoint.capturedAt', 64);
     const createdAt = string(item.createdAt, 'checkpoint.createdAt', 64);
     if (!Number.isFinite(Date.parse(capturedAt)) || !Number.isFinite(Date.parse(createdAt))) fail('Invalid checkpoint timestamp');
     return { id: id(item.id, 'checkpoint.id'), kind: item.kind as CheckpointCard['kind'], anchor: position(item.anchor, 'checkpoint.anchor'), capturedAt, createdAt,
       ...(item.derivedFrom === undefined ? {} : { derivedFrom: id(item.derivedFrom, 'checkpoint.derivedFrom') }),
+      ...(item.sourceReceiptRef === undefined ? {} : { sourceReceiptRef: id(item.sourceReceiptRef, 'checkpoint.sourceReceiptRef') }),
+      ...(item.operationId === undefined ? {} : { operationId: id(item.operationId, 'checkpoint.operationId') }),
       title: string(item.title, 'checkpoint.title', 500, false), notes: string(item.notes, 'checkpoint.notes', 16000, false),
       requirementIds: ids(item.requirementIds, 'checkpoint.requirementIds'), annotationIds: ids(item.annotationIds, 'checkpoint.annotationIds') };
   });
@@ -204,7 +206,8 @@ export function validateContent(value: unknown): MaterialContent {
       if (field.checkpointId && field.checkpointId !== annotation.checkpointId) fail(`Field ${field.id} checkpoint and annotation disagree`);
     }
   }
-  return { requirements, fields, checkpoints, annotations, recordingRefs };
+  if(content.taskBrief!==undefined){if(!record(content.taskBrief))fail('taskBrief must be an object');keys(content.taskBrief as Record<string,unknown>,['objective','scope'],'taskBrief');}
+  return { requirements, fields, checkpoints, annotations, recordingRefs, ...(content.taskBrief===undefined?{}:{taskBrief:{objective:string((content.taskBrief as any).objective,'taskBrief.objective',8000,false),scope:string((content.taskBrief as any).scope,'taskBrief.scope',8000,false)}}) };
 }
 
 function stableTarget(value: HistoricalTarget): string {
