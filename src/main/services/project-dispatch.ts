@@ -1,3 +1,4 @@
+import { implementationMapping } from './implementation-mapping';
 import type { Studio } from './studio';
 import { app } from 'electron';
 import path from 'node:path';
@@ -7,7 +8,7 @@ import { MATERIAL_COLLECTIONS, materialBudget, materialSummary } from './project
 import { parseReplayPosition } from '@/contracts/recording';
 import { ensure } from '@/shared/errors';
 
-export const PROJECT_METHODS = new Set(['taskAuthorizations', 'authorizeTask', 'revokeTask', 'exportFixedTaskHandoff', 'taskChanges', 'materialDrafts', 'materialRevisions', 'materialDraft', 'materialRevision', 'materialCollection', 'createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft', 'materialDiff', 'recordingStreams', 'recordingForeground', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators', 'execution', 'executionItems', 'datasetBatches', 'datasetRecords', 'assessExecution', 'executionReport', 'executionReportItems', 'reviewExecution']);
+export const PROJECT_METHODS = new Set(['previewImplementation','confirmImplementation','taskAuthorizations', 'authorizeTask', 'revokeTask', 'exportFixedTaskHandoff', 'taskChanges', 'materialDrafts', 'materialRevisions', 'materialDraft', 'materialRevision', 'materialCollection', 'createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft', 'materialDiff', 'recordingStreams', 'recordingForeground', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators', 'execution', 'executionItems', 'datasetBatches', 'datasetRecords', 'assessExecution', 'executionReport', 'executionReportItems', 'reviewExecution']);
 const EDIT = new Set(['createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft']);
 const HISTORY = new Set(['recordingStreams', 'recordingForeground', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators']);
 const RESULTS = new Set(['execution','executionItems','datasetBatches','datasetRecords','assessExecution','executionReport','executionReports','executionReportItems','reviewExecution']);
@@ -17,6 +18,7 @@ for(const method of RESULTS)PROJECT_METHODS.add(method);
  * enter Studio's browser-operation queue or change the selected live page. */
 export async function dispatchProject(studio: Studio, method: string, body: any, source: 'api' | 'ui', signal?: AbortSignal): Promise<unknown> {
   ensure(typeof body.projectId === 'string' && studio.projects.some(project => project.id === body.projectId), 'Unknown project', 404);
+  if(method==='previewImplementation'||method==='confirmImplementation'){ensure(source==='ui','Mapping confirmation requires trusted UI',403);return implementationMapping(studio,body,method==='confirmImplementation');}
   if (method === 'authorizeTask') { ensure(source === 'ui', 'Only the trusted client can authorize a task', 403); return studio.authorizeTask(body); }
   if (method === 'revokeTask') { ensure(source === 'ui', 'Only the trusted client can revoke task authorization', 403); return studio.revokeTask(body); }
   if (method === 'exportFixedTaskHandoff') {
