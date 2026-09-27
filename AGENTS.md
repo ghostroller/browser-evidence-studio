@@ -8,7 +8,9 @@
 
 当前仓库已有客户端实现与合成验证，实际通过范围见 docs/verification.md。后续实现按 docs/implementation-plan.md 推进；仅要求评估或文档时不要自行实施功能。
 
-先读 docs/design.md、docs/architecture.md、docs/implementation-plan.md；其余资料按需查阅。新的已验证发现应同步修订文档，不能将设计目标写成已完成。
+先读 docs/design.md、docs/architecture.md、docs/implementation-plan.md；本轮产品纠偏同时必读 docs/refactor/08-product-realignment.md 与 docs/refactor/09-user-journey-acceptance.md，冲突的用户行为与完成口径以 08/09 为准。新的已验证发现应同步修订文档，不能将设计目标写成已完成。
+
+2026-09-27 产品 M0/M1 由工具实际配置的 Astra/high 单一实施流直接落地，在主目录集成；根负责审查与文档同步，不并行拆旧 A–G 实现包。先完成空隔离数据根的 U01–U06 可见 UI 连续旅程，再由独立上下文按普通用户路径复走，交付可运行成果后暂停等待用户确认核心交互。此前不得自动全面展开长测、打包或 M2/M3。旅程不通过隐藏 dispatch 预建或修补被测任务，不借其他 fixture 的执行结果；旧测试按原范围保留。
 
 ## 工程边界
 
