@@ -1,24 +1,28 @@
 # 重构状态（S0/G 独写）
 
-更新：2026-09-27。本轮产品行为以 [08 产品主线纠偏](refactor/08-product-realignment.md) 与 [09 用户旅程验收](refactor/09-user-journey-acceptance.md) 为准；01–07 的历史事实、安全与真实性边界保留。下方旧发布记录不表示 U01–U06 已通过。
+更新：2026-09-28。本轮产品行为以 [08 产品主线纠偏](refactor/08-product-realignment.md) 与 [09 用户旅程验收](refactor/09-user-journey-acceptance.md) 为准；01–07 的历史事实、安全与真实性边界保留。下方旧发布记录不表示 U01–U06 已通过。
 
-## 产品主线 M0/M1（E01–E04 代码已修复；桌面暂停）
+## 产品主线 M0/M1（E01–E04 已修复；独立 U06 失败，等待用户确认）
 
-最新代码/测试冻结和构建 SHA：`0271bf2f5b09ccb9994579e9fab37ad150ec9cc1`。分包提交 E01/E03 `a22db1c`、E02 `5b271dd`、E04 `f8d2a80`；`0271bf2` 仅修复回归测试等待集合加载的时序，不改产品源码。真实 renderer/service/HTTP 定向并集 13 文件 / 107 项、typecheck、开发 build 通过；项目 skill 格式校验通过。有效修前失败、测试夹具问题及前次并集失败均分别保留，见 [E01–E04 交接](refactor-handoffs/PRODUCT-M1-E01-E04-20260927.md)。本轮没有启动桌面、重跑可见 U01–U06 或独立复走，不能宣布 M1 产品门通过。
+本次按用户“开始做 U01–U06 和独立普通用户复走”授权，从 `c1b533334a62517439c2fbeaaed63df08ae3c01b` 接续。冻结候选 `dc78b3d3dad2c12426cf43f86bba492d022bec06` 的开发构建与实施者新空根两进程旅程通过，报告 `output/desktop-1790524925652/product-journey-summary.json`；原生采样证据64/13帧，原件 hash 未变。E01 多处编辑直接发布和封存后 E04 实际公开页读写通过，故障注入组合仍明确为 module-only。
+
+实际 `gpt-6-astra/high/fork_turns=none` 独立上下文 `/root/m1_independent_replay` 随后从另一空根普通复走、自行写代码并真实退出重开，未使用演示实现器。U02–U05 主线及重启回读成立，U01 自动登录判定 unknown/失败过期负例未测，独立 E04 首次录制前读写及撤销拒绝成立。独立 U06 的 number/page-displayed 字段与 dom-text 精确字符串规则冲突，真实/错值/缺来源三次均 fail，未得到应有的三态；M1 产品门未通过。公开协议文档缺口已在 `be0dd1f` 修订，但没有修改任务语义或证明规则掩盖该失败。细节和证据见 [独立报告](refactor-handoffs/PRODUCT-M1-INDEPENDENT-20260927.md) 与 [验证记录](verification.md)。本轮暂停供用户确认，旧用户窗口未接管。
+
+此前代码修复阶段的代码/测试冻结和构建 SHA：`0271bf2f5b09ccb9994579e9fab37ad150ec9cc1`。分包提交 E01/E03 `a22db1c`、E02 `5b271dd`、E04 `f8d2a80`；`0271bf2` 仅修复回归测试等待集合加载的时序，不改产品源码。真实 renderer/service/HTTP 定向并集 13 文件 / 107 项、typecheck、开发 build 通过；项目 skill 格式校验通过。有效修前失败、测试夹具问题及前次并集失败均分别保留，见 [E01–E04 交接](refactor-handoffs/PRODUCT-M1-E01-E04-20260927.md)。该代码修复阶段没有启动桌面、重跑可见 U01–U06 或独立复走，不能据此宣布 M1 产品门通过。
 
 - 基线：主目录 `D:\Workspace\browser-evidence-studio`，开始时 HEAD `97d6623`；08/09 规范随本轮进度纳入版本控制，`review-evidence/` 原样保留且不提交。Node/npm 实测 `24.21.0 / 11.19.0`。Git 按命令指定 safe.directory，不改全局配置。
 - 唯一实施 owner：原生 Agent `/root/product_m0_m1`，通过 `collaboration.spawn_agent` 实际参数 `model=gpt-6-astra`、`reasoning_effort=high`、`fork_turns=none` 启动。单一实施流直接在最终集成主目录工作，无其他并行代码写入者；本状态文件由根维护。既有工作树不重置、不清理。
 - 范围：先核实 P01–P13，直接实施 M0/M1；以空隔离 BES_DATA 经可见 UI 创建同一任务资料并验证 U01–U06。禁止内部 dispatch 补被测资料、借另一 fixture 的执行结果、真实账号、推送与全面长测/打包。
 - M0：已完成 P01–P13 基线路径核对，见 [本轮实施交接](refactor-handoffs/PRODUCT-M1-20260927.md)。M1 环境/session、统一保存点、实时来源、显式绑定编辑、固定版及同版执行已实现；后续完整边界仍按 U07–U24 分列，不将本轮纵向路径等同于所有产品整改完成。
-- 实施者可见 UI 门：`output/desktop-1790510374062/product-journey-summary.json` 两个真实进程均通过。空 BES_DATA 从 U01–U06 建立同一任务，UI 导出版本供明确标记的实现器读取公共 API，UI 确认映射后同版正确/错误/缺证据分别为 pass/fail/inconclusive；旧/错误 run 启动拒绝。第二进程恢复同一字段及历史节点，固定版与 6 个原始文件 hash 不变。连续原生窗口视频/帧/操作索引保存在该根的 `journey-evidence/` 与 `journey-reopen-evidence/`，主旅程 56 帧、最大间隔 1721 ms，重启 13 帧。
-- 独立 Agent `/root/product_review` 实际启动参数同为 `gpt-6-astra/high/fork_turns=none`。仅给产品规范、启动方式和可见 UI 任务，不提供实施脚本、内部目标或成功执行 ID。已启动空根 `output/product-demo-1790510518319`，但创建项目时检测到外来输入，暂停全部操作；U01–U06 均未独立完成，见 [独立报告](refactor-handoffs/PRODUCT-M1-REVIEW-20260927.md)。不能宣布 M1 最终交付通过。
-- 暂停前根审查发现未录制/封存后切页仍调用原录制存储、关闭子页没有恢复父视图，以及审计写失败可能阻断撤销收尾。实施者先用 5 项窄回归复现（`output/product-session-boundaries-before.log`），再完成最小修复，当时 7 文件 / 44 项与 typecheck 通过但未 build。本轮已复测这些窄回归并构建当前源码；可见旅程仍未复跑，不能混用旧构建的通过结论。
+- 暂停前实施者可见 UI 门（历史候选）：`output/desktop-1790510374062/product-journey-summary.json` 两个真实进程均通过。空 BES_DATA 从 U01–U06 建立同一任务，UI 导出版本供明确标记的实现器读取公共 API，UI 确认映射后同版正确/错误/缺证据分别为 pass/fail/inconclusive；旧/错误 run 启动拒绝。第二进程恢复同一字段及历史节点，固定版与 6 个原始文件 hash 不变。连续原生窗口视频/帧/操作索引保存在该根的 `journey-evidence/` 与 `journey-reopen-evidence/`，主旅程 56 帧、最大间隔 1721 ms，重启 13 帧。
+- 暂停前独立 Agent `/root/product_review` 实际启动参数同为 `gpt-6-astra/high/fork_turns=none`。仅给产品规范、启动方式和可见 UI 任务，不提供实施脚本、内部目标或成功执行 ID。已启动空根 `output/product-demo-1790510518319`，但创建项目时检测到外来输入，暂停全部操作；U01–U06 均未独立完成，见 [独立报告](refactor-handoffs/PRODUCT-M1-REVIEW-20260927.md)。不能宣布 M1 最终交付通过。
+- 暂停前根审查发现未录制/封存后切页仍调用原录制存储、关闭子页没有恢复父视图，以及审计写失败可能阻断撤销收尾。实施者先用 5 项窄回归复现（`output/product-session-boundaries-before.log`），再完成最小修复，当时 7 文件 / 44 项与 typecheck 通过但未 build。本轮已复测窄回归、重建并复走切页/popup恢复；审计写失败仍仅为真实 service 注入证据，未在桌面注入磁盘失败。
 
 ### 当前授权与接续顺序
 
-此前按用户要求暂停并提交进度，随后把本地大提交按可审查范围拆为九个提交，最终树保持不变，审查基线为 `f2894456e2a9364044067ddbdbd813300e5a8dde`。用户现明确“先修 E01–E04”，仅恢复代码修复、定向回归与开发构建；桌面继续暂停。预先存在的审查附件、录制原件、固定版本、profile 和未提交内容保留，不推送、不清理任何树、数据或窗口。先前独立 demo 启动 session `82105` 与站点 `http://127.0.0.1:10554/orders` 只记录为历史现场，本轮没有重新探测或接管窗口。
+此前按用户要求暂停并提交进度，随后把本地大提交按可审查范围拆为九个提交，最终树保持不变，审查基线为 `f2894456e2a9364044067ddbdbd813300e5a8dde`。“先修 E01–E04”阶段只恢复代码修复、定向回归与开发构建；现新增 U01–U06 与独立普通用户复走授权。预先存在的审查附件、录制原件、固定版本、profile 和未提交内容保留，不推送、不清理任何树、数据或窗口。先前独立 demo 启动 session `82105` 与站点 `http://127.0.0.1:10554/orders` 只记录为历史现场，本次不接管该窗口。
 
-E01–E04 代码修复已按包提交并完成上方定向验证。桌面明确恢复后，复跑三个暂停前 session 修复的可见路径、同一 UI 资料的 U01–U06 与指定组合，再由独立上下文完成普通用户复走。独立通过后交付真实 SHA、运行入口和连续证据，等待用户确认核心交互。E05/E06、旧 A–G、M2/M3、全面长测和打包均不展开。
+E01–E04 代码修复已按包提交；本轮实施者旅程、独立普通路径与同根重启的结果已收集。独立 U06 的实际失败保留为未修复问题，不按已通过交付；报告真实 SHA、运行入口、原生采样证据及未测边界后暂停，等待用户确认核心交互与下一步修复范围。E05/E06、旧 A–G、M2/M3、全面长测和打包均不展开。
 
 ## 历史发布记录
 

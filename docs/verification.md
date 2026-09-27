@@ -1,6 +1,57 @@
 # 实际验证记录
 
-## E01–E04 代码修复完成，桌面继续暂停 — 2026-09-27
+## 当前：独立复走完成，U06 失败，M1 产品门未通过 — 2026-09-28
+
+实施者指定站点旅程通过；独立普通用户选择数值字段后，正确值、错值、缺来源均被现有精确字符串来源规则判为 fail。独立 U06 未达到预期三态，不能宣布 M1 验收通过。本轮已正常关闭两个独立测试实例，保留现场并暂停供用户确认核心交互与下一步范围。完整独立经过见 [独立报告](refactor-handoffs/PRODUCT-M1-INDEPENDENT-20260927.md)。
+
+用户现已明确恢复 U01–U06 和独立普通用户复走；起点为 `c1b533334a62517439c2fbeaaed63df08ae3c01b`。分包提交 `ec813b9` 增加仅本实例精确窗口的 opt-in 证据入口，`e30dbc4` 扩展指定可见组合，`dc78b3d` 修正测试在历史视图时先正常返回实时页并断言可见。本次不改 E01–E04 产品逻辑，不预置或修补被测任务。
+
+候选 `dc78b3d3dad2c12426cf43f86bba492d022bec06` 的 `npm run typecheck`、`npm run build` 与 `node test/desktop/launch.js --product-journey` 通过。日志为 `output/M1-visible-popup-guard-typecheck.log`、`output/M1-visible-dc78b3d-build.log`、`output/M1-visible-dc78b3d.log`。报告 `output/desktop-1790524925652/product-journey-summary.json` 两个真实 PID 为 33524、29504，均 exit 0。根核对两份 timeline 的源码 hash 与当前文件一致，并抽看实际原生窗口像素。
+
+| 当前实施者可见范围 | 结果与边界 |
+| --- | --- |
+| U01–U06 | 新空 BES_DATA 经正常 UI 创建环境、任务、保存点与字段；停录后历史编辑、固定 V1/V2、UI 导出与确认演示实现器映射、同份固定资料执行；新进程恢复绑定/历史节点/版本通过。明确演示实现器仅证明该合成站点，不代替独立复走。 |
+| E01 组合 | 同时修改卡片类型/关联、普通注释、需求与已绑定字段说明后直接发布；固定图和旧绑定保留。新增字段与需求同时直接发布仍由真实 renderer/service 回归覆盖。 |
+| session 与 E04 | 未录制及封存后 popup 切页/关闭回父页通过；封存后正常 UI 授权的公开 session snapshot、实际 click、后台建页/read、前台不变、零新增示范、撤销后 403 通过。审计写失败仍撤销由模块回归覆盖。 |
+| E02 / E03 组合 | 可见 UI 的取消实时选择后重选通过。采集前失败、partial 后只关联、响应未知恢复、双项目迟到响应使用真实 renderer/service 故障注入回归，不冒称可见桌面故障注入通过。 |
+| 原件与结果 | 6 个原始文件 hash 不变；同一固定版 `634130dd-19ba-45f1-9898-b3b584b015fe` 的正确、错误、缺来源输出依次 pass/fail/inconclusive，未借另一 fixture 的执行结果。 |
+
+连续原生窗口证据入口：`output/desktop-1790524925652/journey-evidence/index.html`（64 帧，最大间隔 1461 ms）及 `journey-reopen-evidence/index.html`（13 帧，1393 ms），两者精确 sourceId、0 缺帧、编码 exit 0，目录保留 MP4、原始 PNG、时间线和源码身份。首轮默认权限 GPU 子进程启动失败保留在 `output/desktop-1790524312124`；同一授权命令提升权限后正常启动，没有自动审批拒绝。`e30dbc4` 首轮在历史视图对隐藏实时页进行 popup 操作的 driver 错误保留于 `output/desktop-1790524774399`，不计完整通过；修正后从新空根重跑。
+
+独立普通用户复走由全新实际 Astra/high 上下文完成。普通可运行入口 `npm run demo:product -- --record-visible` 自动新空根，正常关闭新实例后完成本窗口证据编码；不调用演示实现器、不接管旧用户窗口。下节“桌面暂停”是此前代码修复阶段的历史边界；旧桌面结果仍只对应各自冻结源码。
+
+独立现场为 `output/product-demo-1790525097044`，窗口 855554，连续记录在 `visible-evidence-1790525097799`，动作时间线在 `independent/actions.jsonl`。检查者自行创建“秋季订单实付复核”和“秋季复核专用环境”，观察到合成登录在关闭/重开环境后保留，未开始任何录制；未填可选 CSS，自动登录判定如实为 unknown，不能计为 verified。独立 E04 从 UI 授权/连接面板发现实例后，公开 `/health`、`/state` 核对 `runs=[]`、`active=null`，snapshot 发现可见按钮并实际 click 使计数 0→1，UI 撤销后 snapshot 返回 403 / AUTHORIZATION_REVOKED。根已核对 `independent/e04-action-result.json` 和 `e04-revoked.json`。连接文件 ACL 未修改；首次沙箱启动 GPU 失败根 `output/product-demo-1790525083265` 保留。Computer Use 间歇截图/tree 错配经只读重新选窗恢复，未传播错配聊天截图，不能据此声称发现人工输入。
+
+独立 U06 导出后发现公开 skill 缺完整 sourceProof/历史查询请求、steps 回调和批次参数形状。`be0dd1f133dee94f6288d2d09fe4572188c911b1` 单独修订现有 API/skill 文档，提供通用协议示例与真实能力边界，不提供测试站点 selector、任务实现或隐藏写入。实际 `parseWorkflowManifest/parseFieldSourceProof` 接受三个 JSON 示例，异步 step 片段语法检查、`quick_validate.py`、`git diff --check` 通过；运行时代码/构建仍为 dc78b3d。独立检查从原 `access.skillFile` 入口重读后继续。只读/导出 UI 授权一度因审批器认为可能含页面动作/执行而被拒；以当前勾选和本机接收者证据复核后获准，读取完成已通过 UI 撤销，没有绕过或扩大权限。
+
+### 独立 U06 实际失败：数值字段与页面来源证明冲突
+
+检查者选择的普通字段是 `records.实付元`，`valueType=number`、`sourcePolicy=page-displayed`，示例为第二行显示金额；技术映射经正常 UI 可读确认后固定 V3 `e9bfc171-07e6-4b87-856f-ff6db68b3130`，hash `c68bf6861ae02160cfde34cef689b069193a1605312d13b86ec334b66fe4977a`。独立代码从本次 UI 资料的公开 DOM artifact 推导选择器，输出数字 amount 和原始 displayAmount，不用示例金额作为采集常量，也未改任务类型/来源政策。三次执行使用相同代码指纹 `b68550318abd2477deb25a57540a1d5e73dd028ba60c13160a946de4de886763`，均实际提交两条记录。
+
+| 独立输入 | executionId / reportId | 实际机器结果 |
+| --- | --- | --- |
+| observed：真实 12 / 45 | `4ff26135-0222-4c10-b6f8-ed352ff10c88` / `fe803692-ada9-40d1-b015-91525e1b079d` | fail / complete；格式 pass、来源 fail。真实值未获通过。 |
+| wrong-value：第二行改为 46 | `69f2df55-885a-4c6d-b60f-f16aa3002142` / `2f026470-d428-4171-8f7d-03b93b68f230` | fail / complete，但仍为精确字符串限制，不能计为已识别金额错配。 |
+| missing-source：不提供批次来源引用 | `4514b7ab-edb1-4a6a-ae8b-48d0b490f6f2` / `2b9ce476-7867-4364-a81f-71cdb9c0057c` | fail / complete；没有得到预期 inconclusive。 |
+
+三份报告均命中现有 `dom-text` 的“输出及实体属性必须为精确字符串，不隐式转换数值/掩码”限制；这不是三态成功，也不是 Agent 自报失败。根核对固定报告及真实结果页截图 `independent/u06-observed-failure.png`。本轮保留用户 number 语义，不改成 string 或换成网络来源凑 pass。**独立 U06 未通过，M1 产品门未通过；实施者指定站点路径的成功不能覆盖这个普通用户失败。** 此问题尚未修复，也不因 E05/E06 留待后续而改记为通过。
+
+### 独立重启、原件核对与证据边界
+
+独立 U02–U05 的普通 UI 主线和最终重启回读成立。初始 PID 32532 正常退出后，以同一绝对 BES_DATA 启动 PID 10336；UI 恢复同字段的完整说明、number/page-displayed、无附加注释、node 33/event 20/源文本45.00、V1–V3及四卡，最后正常退出 exit 0。保留 `independent/restart-{initial,history-event20,field,binding-node33,v3}.png`，根目视核对字段绑定与 V3 页面。U06 报告与数据可查看，但结果页直接定位同一保存点没有点通，列为未测；不把显示内部 ID 当作已验证导航。
+
+根最终只读审计入口 `node output/product-demo-1790525097044/independent/root-final-audit.mjs`，结果 `independent/root-final-audit.json`：封存示范的8个原件文件大小/SHA256及文件集合不变；V1/V2完整文件和contentHash不变；V2→V3除技术 outputPath/sourceProof 外任务语义不变；三个执行的4个代码快照文件分别与独立源码相同、宿主snapshotVerified=true；两个视频记录的7个关键源码hash与当前文件一致。真实/错值/缺来源批次分别是12/45带2引用、12/46带2引用、12/45带空引用，输入指纹互异。
+
+| 独立原生证据（位于该独立数据根） | 帧数 / 最大采样间隔 | 实际边界 |
+| --- | --- | --- |
+| `visible-evidence-1790525097799/index.html` | 687 / 6654 ms | 主旅程约57分钟；精确窗口855554，编码exit0。 |
+| `visible-evidence-1790528580052/index.html` | 54 / 6473 ms | 同根新进程回读约5分钟；精确窗口527418，编码exit0。 |
+
+两段均保留MP4、原始PNG、timeline和操作记录；采样器missingFrames=0/errors=[]。但两实例进程输出存在WGC首帧超时/GetFrame失败警告，采样有重复静止图，无法单凭这些指标区分页面静止和底层返回旧图。**这是按原时间戳记录的原生窗口采样，不能宣称无间隙或30fps录像；未验证采样之间每个短暂状态。** 重启段记录的仓库HEAD为文档提交 `fee53cd5358334e23889f41b4c83b5cede134845`，实际运行构建仍是dc78b3d；中间没有rebuild。公开文档修订和后续验证文档不能冒称为另一个已构建运行版本。
+
+仍未测：U01真实登录失败/过期（仅合成登录及unknown如实显示）、结果→保存点直接跳转、E02/E03桌面故障注入、审计磁盘失败的桌面演练，以及真实账号、M2/M3、全面长测和当前候选打包。所有原件、固定版、profile、失败日志、旧工作树及原先未提交审查资料保留；没有推送。
+
+## 历史阶段：E01–E04 代码修复完成，桌面暂停 — 2026-09-27
 
 用户在暂停并核对范围后明确要求“先修 E01–E04”。本轮只完成代码修复、真实 renderer/service/HTTP 定向回归与开发构建，没有启动 Electron 或操作用户窗口。开始时 HEAD 为 `f2894456e2a9364044067ddbdbd813300e5a8dde`；最终代码/测试冻结及构建 SHA 为 `0271bf2f5b09ccb9994579e9fab37ad150ec9cc1`。Node/npm 实测 `24.21.0 / 11.19.0`，依赖未升级。原实际配置 Astra/high 的单一实施流负责代码，根审查、同步文档及分包提交。
 
