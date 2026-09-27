@@ -1,6 +1,24 @@
 # 重构状态（S0/G 独写）
 
-更新：2026-09-27。总规范是 refactor/01-modification-plan.md；本表区分已验证原型与生产集成，不以提交数量计完成。
+更新：2026-09-27。本轮产品行为以 [08 产品主线纠偏](refactor/08-product-realignment.md) 与 [09 用户旅程验收](refactor/09-user-journey-acceptance.md) 为准；01–07 的历史事实、安全与真实性边界保留。下方旧发布记录不表示 U01–U06 已通过。
+
+## 产品主线 M0/M1（用户要求暂停）
+
+- 基线：主目录 `D:\Workspace\browser-evidence-studio`，开始时 HEAD `97d6623`；08/09 规范随本轮进度纳入版本控制，`review-evidence/` 原样保留且不提交。Node/npm 实测 `24.21.0 / 11.19.0`。Git 按命令指定 safe.directory，不改全局配置。
+- 唯一实施 owner：原生 Agent `/root/product_m0_m1`，通过 `collaboration.spawn_agent` 实际参数 `model=gpt-6-astra`、`reasoning_effort=high`、`fork_turns=none` 启动。单一实施流直接在最终集成主目录工作，无其他并行代码写入者；本状态文件由根维护。既有工作树不重置、不清理。
+- 范围：先核实 P01–P13，直接实施 M0/M1；以空隔离 BES_DATA 经可见 UI 创建同一任务资料并验证 U01–U06。禁止内部 dispatch 补被测资料、借另一 fixture 的执行结果、真实账号、推送与全面长测/打包。
+- M0：已完成 P01–P13 基线路径核对，见 [本轮实施交接](refactor-handoffs/PRODUCT-M1-20260927.md)。M1 环境/session、统一保存点、实时来源、显式绑定编辑、固定版及同版执行已实现；后续完整边界仍按 U07–U24 分列，不将本轮纵向路径等同于所有产品整改完成。
+- 实施者可见 UI 门：`output/desktop-1790510374062/product-journey-summary.json` 两个真实进程均通过。空 BES_DATA 从 U01–U06 建立同一任务，UI 导出版本供明确标记的实现器读取公共 API，UI 确认映射后同版正确/错误/缺证据分别为 pass/fail/inconclusive；旧/错误 run 启动拒绝。第二进程恢复同一字段及历史节点，固定版与 6 个原始文件 hash 不变。连续原生窗口视频/帧/操作索引保存在该根的 `journey-evidence/` 与 `journey-reopen-evidence/`，主旅程 56 帧、最大间隔 1721 ms，重启 13 帧。
+- 独立 Agent `/root/product_review` 实际启动参数同为 `gpt-6-astra/high/fork_turns=none`。仅给产品规范、启动方式和可见 UI 任务，不提供实施脚本、内部目标或成功执行 ID。已启动空根 `output/product-demo-1790510518319`，但创建项目时检测到外来输入，暂停全部操作；U01–U06 均未独立完成，见 [独立报告](refactor-handoffs/PRODUCT-M1-REVIEW-20260927.md)。不能宣布 M1 最终交付通过。
+- 根审查发现未录制/封存后切页仍调用原录制存储、关闭子页没有恢复父视图，以及审计写失败可能阻断撤销收尾。实施者先用 5 项窄回归复现（`output/product-session-boundaries-before.log`），再完成最小源码修复，合计 7 文件 / 44 项与 typecheck 通过。当前源码比上述已通过旅程的冻结构建多这三个修复，**尚未重新 build 或复跑可见旅程**，不能混用旧构建的通过结论。
+
+### 本次停点与恢复顺序
+
+用户明确要求“先在某个适合停下的地方停下，然后总结一下进度”，当前停止代码、测试和桌面工作；仅收口接续文档。用户随后仅授权提交当前进度：源码、测试、规范及暂停记录保存为本地提交，其身份以本段所在 Git 提交为准；不恢复实施、测试或桌面操作。不推送，不清理任何树、数据或窗口，录制原件、profile、运行证据及 `review-evidence/` 均不纳入提交。独立 demo 启动 session `82105`、站点 `http://127.0.0.1:10554/orders` 和新建项目弹窗保留，用户输入不覆盖。
+
+恢复后先确认用户已让出窗口，再协调关闭/切换测试实例；对三个后续源码修复重新构建并只跑受影响的窄回归及可见旅程，随后独立上下文从空数据完成普通用户 U01–U06。独立通过后交付运行入口和连续证据，等待用户确认核心交互。此前不展开 M2/M3、全面长测或打包。
+
+## 历史发布记录
 
 | 当前发布证据（2026-09-27） | 已核实状态 / 边界 |
 | --- | --- |
