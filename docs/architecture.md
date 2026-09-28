@@ -231,7 +231,7 @@ appData/
 | CheckpointCard | 用户说明、精确 anchor、sourceReceiptRef/operationId、需求/注释关联、复制 derivedFrom；同一工作草稿编辑 |
 | MaterialRequirement / Field | 自然语言含义、dataset、fieldIds、来源语义与历史例证；含数据字段的需求须有唯一一致数据集 |
 | TaskMaterialRevision / TaskBrief | 固定目标/范围、卡片/字段/需求集合与 contentHash；旧版不补当前目标或默认 dataset |
-| 实现映射 | 引用资料 hash 的字段→输出路径/来源检查技术提案；用户可读确认，不能改任务语义；M1 先沿用 sourceProof 类型 |
+| 实现映射 | 引用资料 hash 的字段→输出路径/来源检查技术提案；用户可读确认，不能改任务语义；dom-text 可显式选择有限的 plain-decimal v1，宿主独立核验；未声明仍按旧精确文本规则 |
 | Validation | 代码/构建/配置/依赖指纹、实际入口、执行事件、模式、断言、覆盖和人工评审 |
 | Handoff | 对象/任务/完成检查/超时策略、控制权代际、恢复位置、attempt、等待状态 |
 
