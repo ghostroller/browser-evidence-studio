@@ -15,6 +15,7 @@ import { implementExportedProductTask } from './product-implementer';
  * never task data, and its proposal is confirmed through the normal editor. */
 export async function runProductJourney(studio:Studio,reopen=false){
   const numeric=process.env.BES_TEST_NUMERIC==='1';
+  const authoringFault=process.env.BES_TEST_AUTHORING_CUT==='1';
   if(!reopen){assert.equal(studio.projects.length,0);assert.equal(studio.runs.length,0);}
   studio.window.window.show();studio.window.window.focus();
   const site=await startProductSite(),ui=studio.window.window.webContents;
@@ -51,7 +52,17 @@ export async function runProductJourney(studio:Studio,reopen=false){
   const draft=async()=>{if(knownDraftId)return studio.materials.service.getDraft(studio.projects[0].id,knownDraftId);const project=studio.projects[0];const page=await studio.materials.service.listDrafts(project.id,{limit:100,maxBytes:28672});assert(page.items.length===1);knownDraftId=page.items[0].draftId;return studio.materials.service.getDraft(project.id,page.items[0].draftId);};
   try{
     await wait(async()=>frames.length,n=>n>0,'visible native-window capture');
-    if(reopen){
+    if(reopen&&authoringFault){
+      await wait(()=>read<boolean>("!!document.querySelector('.material-card-list button')"),Boolean,'restored interrupted editor');
+      const text=await read<string>('document.body.innerText');
+      if(text.includes('查询采集操作状态'))await click('查询采集操作状态');
+      await wait(()=>read<string>('document.body.innerText'),value=>value.includes('原来源失效：重新选择'),'orphan operation recovered to terminal');
+      await click('原来源失效：重新选择');
+      await fill('说明','进程中断后仍可编辑，旧操作和原件保留');await click('保存卡片草稿');
+      assert.equal((await draft()).content.checkpoints[0].notes,'进程中断后仍可编辑，旧操作和原件保留');
+      report.interruptedRecovery={visible:true,oldOperationRetained:true,unrelatedEditSaved:true};report.passed=true;
+      await wait(async()=>frames.length,n=>n>12,'recovery visible evidence');
+    }else if(reopen){
       const saved=JSON.parse(await readFile(path.join(studio.root,'journey-state.json'),'utf8'));
       assert.notEqual(saved.processId,process.pid);knownDraftId=saved.draftId;
       await wait(()=>read<boolean>("!!document.querySelector('.material-card-list button')"),Boolean,'restored working draft');
@@ -93,11 +104,24 @@ export async function runProductJourney(studio:Studio,reopen=false){
     await fill('标题','订单列表');await fill('说明','这两条订单的实付金额需要保留元单位。');await click('存档');await click('保存点与字段');
     assert.equal(await read(`document.querySelector('.material-editor textarea')?.value`),'这两条订单的实付金额需要保留元单位。');await click('保存卡片草稿');
     const first=(await draft()).content.checkpoints[0];assert(first.sourceReceiptRef);report.journeys.U02={passed:true,cardId:first.id,receiptId:first.sourceReceiptRef};
+    if(authoringFault){
+      // Fault injection only: UI still creates the request and durable acquiring journal.
+      studio.checkpoint=async()=>{
+        await writeFile(path.join(studio.root,'recovery-cut.json'),JSON.stringify({processId:process.pid,stage:'authoring-acquiring',firstCardId:first.id,draftId:knownDraftId}));
+        console.log('BES_RECOVERY_READY');return new Promise(()=>{});
+      };
+      await click('记录当前结果');await new Promise(()=>{});
+    }
     await fill('新需求含义','两条订单的实付金额');await click('新建并关联需求');
+    await choose('需求','两条订单的实付金额');
     await click('添加所需字段（实时页面）');await click('取消实时选择（Esc）');
     if(numeric)await fill('说明','采集前未保存的旧卡片说明必须保留');
+    let associationFailures=0;
+    const authorReceipt=studio.materials.authorReceipt.bind(studio.materials);
+    if(numeric)studio.materials.authorReceipt=async(...args)=>{if(associationFailures++===0)throw new Error('Synthetic one-shot material association failure');return authorReceipt(...args);};
     await click('添加所需字段（实时页面）');await wait(async()=>studio.current().capture?.inspecting,Boolean,'live selection');
     await clickExpression("document.querySelector('[data-field=amount]')",studio.current().view.webContents);
+    if(numeric){await click('重试关联已保存原件');studio.materials.authorReceipt=authorReceipt;report.partialAssociation={visibleRetry:true,associationFailures:1};}
     await wait(async()=>(await draft()).content.checkpoints.length,n=>n===2,'durable live example');
     if(numeric){assert.equal((await draft()).content.checkpoints[0].notes,'采集前未保存的旧卡片说明必须保留');report.dirtyBeforeCapture=true;await choose('值类型','number');}
     await fill('数据集','orders');await fill('字段名','实付金额');await choose('来源要求','必须按页面显示值');await fill('明确含义','订单实际支付的金额，单位元，保持页面显示。');await click('保存字段');

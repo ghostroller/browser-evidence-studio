@@ -81,6 +81,13 @@ function launchPhase(phase, timeoutMs, { dataRoot = root, extraEnv = {}, termina
 }
 
 async function main() {
+  if(process.argv.includes('--authoring-recovery')){
+    const cut=await launchPhase('product-journey',180000,{terminateAtReady:true,extraEnv:{BES_TEST_AUTHORING_CUT:'1',BES_RECOVERY_STAGE:'authoring-acquiring'}});
+    const reopen=cut.forcedAtBoundary?await launchPhase('product-reopen',180000,{extraEnv:{BES_TEST_AUTHORING_CUT:'1'}}):undefined;
+    const summary={passed:cut.forcedAtBoundary===true&&reopen?.passed===true,output:root,cut,reopen};
+    fs.writeFileSync(path.join(root,'authoring-recovery-summary.json'),JSON.stringify(summary,null,2));
+    console.log(JSON.stringify({passed:summary.passed,output:root,forcedAtBoundary:cut.forcedAtBoundary,error:reopen?.result?.error||cut.error},null,2));process.exitCode=summary.passed?0:1;return;
+  }
   if (process.argv.includes('--refactor-soak')) {
     const minutes = Number(soakArgument ? soakArgument.slice('--soak='.length) : 30);
     const summary = { passed: false, output: root, minutes, phases: [] };
