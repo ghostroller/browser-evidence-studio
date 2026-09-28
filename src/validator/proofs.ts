@@ -4,6 +4,7 @@ import { canonicalJson } from '@/runner/datasets';
 import { equal, pointer } from './rules';
 import { sameReplayPosition } from '@/contracts/recording';
 import type { Check, SourceDocument } from './types';
+import { sourceProofCompatibility, interpretPlainDecimal } from '@/contracts/value-interpretation';
 
 /** Strip only the frozen page parameter. Filters, variants, origin and remaining query stay significant. */
 export function matchesUrl(actual: string | undefined, expected: string, pageParameter?: string): boolean {
@@ -56,8 +57,14 @@ function displayedFieldProof(field: MaterialField, row: JsonValue, docs: SourceD
   const name = `source:${field.id}`, proof = field.sourceProof;
   if (proof?.kind !== 'dom-text' || field.outputPath === undefined) return { name, verdict: 'inconclusive', reason: 'No frozen DOM text proof' };
   const output = pointer(row, field.outputPath), entity = pointer(row, proof.outputEntityPath);
-  if (!output.exists || !entity.exists || typeof output.value !== 'string' || typeof entity.value !== 'string') return { name, verdict: 'fail', reason: 'Displayed text and its source entity attribute require exact string output; no implicit numeric or mask conversion' };
+  const interpretation = proof.valueInterpretation ? 'plain-decimal-v1' as const : 'exact-text' as const;
+  const diagnostic = { fieldId: field.id, outputPath: field.outputPath, interpretation, ...(entity.exists ? { entity: entity.value } : {}), ...(output.exists ? { actual: output.value } : {}) };
+  const incompatible = sourceProofCompatibility(field);
+  if (incompatible) return { name, verdict: 'inconclusive', reason: incompatible, diagnostic: { ...diagnostic, code: 'mapping-incompatible' } };
+  const outputType = proof.valueInterpretation ? 'number' : 'string';
+  if (!output.exists || !entity.exists || typeof output.value !== outputType || typeof entity.value !== 'string' || typeof output.value === 'number' && !Number.isFinite(output.value)) return { name, verdict: 'fail', reason: `输出类型错误：字段须为 ${outputType}，实体标识须为精确字符串。`, diagnostic: { ...diagnostic, code: 'output-type' } };
   let matched = false, conflicting = false;
+  let observed: Check['diagnostic'], unsupported: string | undefined;
   for (const doc of docs) {
     const node = doc.dom?.node, sample = node?.presentation;
     if (doc.representation !== 'dom-text' || doc.display !== 'observed' || doc.content.status !== 'present' || !node?.metadataComplete || sample?.status !== 'present' ||
@@ -70,9 +77,13 @@ function displayedFieldProof(field: MaterialField, row: JsonValue, docs: SourceD
     const owner = ancestry.find(parent => Object.hasOwn(parent.attributes, proof.entityAttribute));
     const key = owner?.attributes[proof.entityAttribute];
     if (key?.status !== 'present' || key.value !== entity.value) continue;
-    if (sample.value.text === output.value) matched = true; else conflicting = true;
+    const interpreted = proof.valueInterpretation ? interpretPlainDecimal(sample.value.text) : { ok: true as const, value: sample.value.text };
+    if (!interpreted.ok) { unsupported = interpreted.reason; continue; }
+    const matches = interpreted.value === output.value;
+    if (matches) matched = true; else conflicting = true;
+    if (!observed || !matches) observed = { ...diagnostic, code: matches ? 'value-match' : 'value-mismatch', rawText: sample.value.text.slice(0, 256), expected: interpreted.value, sourceRef: doc.sourceRef, target: node.ref };
   }
-  return { name, verdict: conflicting ? 'fail' : matched ? 'pass' : 'inconclusive', reason: conflicting ? 'The same captured entity/field has different visible source text' : matched ? 'Exact visible source sample, semantic attribute, entity and fixed URL match the output' : 'No visible source sample at its exact event boundary matches the fixed entity/field meaning' };
+  return { name, verdict: conflicting ? 'fail' : unsupported ? 'inconclusive' : matched ? 'pass' : 'inconclusive', reason: conflicting ? '值不一致：同一实体的原始可见文本按固定规则解释后与输出不同。' : unsupported ? `依据不足：${unsupported}` : matched ? `原件核验通过：可见采样、语义属性、实体及固定 URL 一致（${interpretation}）。` : '依据不足：没有同次执行、同一实体和字段的有效可见原始采样。', diagnostic: observed ?? { ...diagnostic, code: 'source-insufficient' } };
 }
 
 export function paginationProof(rule: Extract<DataRule, { type: 'pagination-complete' }>, rows: JsonValue[], docs: SourceDocument[]): Check {

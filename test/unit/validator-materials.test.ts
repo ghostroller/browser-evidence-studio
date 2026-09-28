@@ -51,6 +51,31 @@ async function fixture(content = material()) {
 }
 
 describe('fixed material validation using real B/C stores', () => {
+  it('C02-C05: same fixed numeric material gives pass / value fail / source inconclusive / type fail', async () => {
+    const content = material();
+    content.requirements[0].rules = [{ type:'min-rows',count:2 },{type:'unique',field:'id'}];
+    content.fields[0] = { ...content.fields[0], valueType:'number', sourcePolicy:'page-displayed', sourceProof: {kind:'dom-text',sourceUrl:'https://fixture.test/orders',nodeAttribute:{name:'data-field',value:'paid'},entityAttribute:'data-order',outputEntityPath:'/id',valueInterpretation:{kind:'plain-decimal',version:1}} };
+    const f = await fixture(content), reports = [];
+    for (const variant of ['correct','wrong','missing','type'] as const) {
+      const identity = {...f.identity,attemptId:variant}, refs: string[] = [];
+      for (const [i, value] of [12,45].entries()) {
+        const sourceRef=`${variant}-${i}`, position={recordingId:'recording-f',pageId:'page',documentId:'doc',streamEpoch:'epoch',sourceTimeMs:1,eventSeq:1};
+        const ref={kind:'dom-node' as const,position,frameId:'frame',mirrorScopeId:'scope',nodeId:i+1};
+        f.docs.set(sourceRef,{sourceRef,scope:{executionId:f.binding.executionId,attemptId:variant,recordingId:'recording-f'},capturedAt:'2026-09-28T00:00:00Z',requestUrl:'https://fixture.test/orders',content:{status:'present',value:value.toFixed(2)},representation:'dom-text',display:'observed',dom:{node:{ref,tagName:'span',namespaceURI:'http://www.w3.org/1999/xhtml',documentUrl:{status:'present',value:'https://fixture.test/orders'},baseURI:{status:'present',value:'https://fixture.test/orders'},text:{status:'present',value:value.toFixed(2)},attributes:{'data-field':{status:'present',value:'paid'},'data-order':{status:'present',value:`o-${i+1}`}},properties:{},metadataComplete:true,presentation:{status:'present',value:{text:value.toFixed(2),visibility:'visible',sampledAt:position,rect:{x:0,y:0,width:30,height:20},basis:['source-layout']}}},ancestors:[]}});
+        refs.push(sourceRef);
+      }
+      await f.data.begin(identity);
+      await f.data.append({...identity,batchId:'batch',records:[{id:'o-1',amount:12},{id:'o-2',amount:variant==='wrong'?46:variant==='type'?'45':45}],provenance:{origin:'browser',sourceRefs:variant==='missing'||variant==='type'?[]:refs}});
+      await f.data.finish({...identity,status:'complete',committedBatches:1,committedRecords:2});
+      const report=await f.validator().validate({...f.request,attemptId:variant}); reports.push(report);
+      expect(report.binding.materialContentHash).toBe(f.revision.contentHash);
+    }
+    expect(reports.map(r=>r.overall)).toEqual(['pass','fail','inconclusive','fail']);
+    expect(reports.map(r=>r.requirements[0].schemaVerdict)).toEqual(['pass','pass','pass','fail']);
+    expect(reports[1].requirements[0].fieldDiagnostics?.[1]).toMatchObject({code:'value-mismatch',rawText:'45.00',expected:45,actual:46,identity:{attemptId:'wrong'},batchId:'batch',recordIndex:1});
+    expect(reports[2].requirements[0].fieldDiagnostics?.every(d=>d.expected===undefined)).toBe(true);
+    expect((await f.materials.revision(f.binding.projectId,f.revision.revisionId)).contentHash).toBe(f.revision.contentHash);
+  });
   it('passes complete original contents without any script assertions and keeps published material a candidate', async () => {
     const f = await fixture(); await f.append();
     const report = await f.validator().validate(f.request);

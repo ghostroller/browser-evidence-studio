@@ -1,3 +1,4 @@
+import { parseValueInterpretation, type ValueInterpretation } from './value-interpretation';
 export type Verdict = 'pass' | 'fail' | 'inconclusive' | 'not-run';
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
@@ -15,6 +16,8 @@ export interface JsonRecordSourceProof {
 /** Meaning is pinned by source attributes; an example node/value is not a constant. */
 export interface DomTextSourceProof {
   kind: 'dom-text';
+  /** Omitted in legacy materials: exact source text, without conversion. */
+  valueInterpretation?: ValueInterpretation;
   sourceUrl: string;
   pageParameter?: string;
   nodeAttribute: { name: string; value: string };
@@ -208,7 +211,7 @@ export function parseJsonRecordProof(value: unknown): JsonRecordSourceProof {
 }
 export function parseFieldSourceProof(value: unknown): FieldSourceProof {
   if (object(value) && value.kind === 'json-record') return parseJsonRecordProof(value);
-  const item = proofObject(value, ['kind', 'sourceUrl', 'pageParameter', 'nodeAttribute', 'entityAttribute', 'outputEntityPath']);
+  const item = proofObject(value, ['kind', 'sourceUrl', 'pageParameter', 'nodeAttribute', 'entityAttribute', 'outputEntityPath', 'valueInterpretation']);
   if (item.kind !== 'dom-text') throw new Error('Invalid DOM text proof kind');
   const attribute = proofObject(item.nodeAttribute, ['name', 'value']);
   const name = (input: unknown): string => {
@@ -216,7 +219,7 @@ export function parseFieldSourceProof(value: unknown): FieldSourceProof {
     return input;
   };
   if (typeof attribute.value !== 'string' || !attribute.value || attribute.value.length > 1024 || /[\u0000-\u001f\u007f]/u.test(attribute.value)) throw new Error('Invalid source attribute value');
-  return { kind: 'dom-text', sourceUrl: proofUrl(item.sourceUrl), ...(item.pageParameter === undefined ? {} : { pageParameter: pageParameter(item.pageParameter) }),
+  return { kind: 'dom-text', ...(item.valueInterpretation === undefined ? {} : { valueInterpretation: parseValueInterpretation(item.valueInterpretation) }), sourceUrl: proofUrl(item.sourceUrl), ...(item.pageParameter === undefined ? {} : { pageParameter: pageParameter(item.pageParameter) }),
     nodeAttribute: { name: name(attribute.name), value: attribute.value }, entityAttribute: name(item.entityAttribute), outputEntityPath: parseJsonPointer(item.outputEntityPath) };
 }
 export function parsePaginationProof(value: unknown): NumberedPaginationProof {

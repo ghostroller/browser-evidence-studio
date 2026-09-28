@@ -1,5 +1,5 @@
 import type { DatasetIdentity, ExecutionBinding, RequirementResult } from '@/contracts/execution';
-import type { ReadBudget, SourceNode, SourceValue } from '@/contracts/recording';
+import type { HistoricalElementRef, ReadBudget, SourceNode, SourceValue } from '@/contracts/recording';
 import type { JsonValue, ReportedAssertion, Verdict } from '@/contracts/workflow';
 import type { PersistentDatasetService } from '@/runner/datasets';
 
@@ -22,7 +22,13 @@ export interface SourceDocument {
 export interface SourceReader {
   read(sourceRef: string, budget: ReadBudget): Promise<SourceDocument | undefined>;
 }
-export interface Check { name: string; verdict: Verdict; reason: string }
+export interface FieldDiagnostic {
+  fieldId: string; outputPath: string; entity?: JsonValue; actual?: JsonValue;
+  interpretation: 'exact-text' | 'plain-decimal-v1';
+  code: 'mapping-incompatible' | 'output-type' | 'source-insufficient' | 'value-mismatch' | 'value-match';
+  rawText?: string; expected?: JsonValue; sourceRef?: string; target?: HistoricalElementRef;
+}
+export interface Check { name: string; verdict: Verdict; reason: string; diagnostic?: FieldDiagnostic }
 export interface HumanReview {
   id: string; requirementId: string; decision: 'accept' | 'reject' | 'exception'; reason: string;
   materialRevisionId: string; materialContentHash: string; codeFingerprint: string; inputFingerprint: string;
@@ -47,6 +53,9 @@ export interface ValidatedRequirement extends RequirementResult {
   sourceVerdict: Verdict;
   scriptAssertions: ReportedAssertion[];
   humanReviews: HumanReview[];
+  /** Bounded row diagnostics; values are only from host-verified, privacy-filtered sources. */
+  fieldDiagnostics?: Array<FieldDiagnostic & { identity: DatasetIdentity; batchId: string; recordIndex: number; verdict: Verdict; reason: string }>;
+  diagnosticsTruncated?: boolean;
 }
 export interface ValidationReport {
   schemaVersion: 1; binding: ExecutionBinding; attemptId: string;

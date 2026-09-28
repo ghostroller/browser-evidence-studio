@@ -1,0 +1,30 @@
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { expect, it } from 'vitest';
+import { FileMaterialService, materialContentHash } from '@/materials';
+import { implementationMapping } from '@/main/services/implementation-mapping';
+import type { Studio } from '@/main/services/studio';
+
+it('C01/C06: previews incompatibility, refuses confirmation, preserves old hashes, then accepts an explicit new rule',async()=>{
+  const parent=path.resolve('output/t1-t3');await mkdir(parent,{recursive:true});const root=await mkdtemp(path.join(parent,'mapping-'));
+  await writeFile(path.join(root,'workspace.json'),JSON.stringify({schemaVersion:1,projects:[{id:'project'}]}));
+  const service=new FileMaterialService(root), draft=await service.createDraft('project','human');
+  const proof={kind:'dom-text' as const,sourceUrl:'https://fixture.invalid/orders',nodeAttribute:{name:'data-field',value:'paid'},entityAttribute:'data-order',outputEntityPath:'/id'};
+  const content={requirements:[{id:'req',description:'数值金额',dataset:'records',fieldIds:['f'],rules:[]}],fields:[{id:'f',dataset:'records',name:'到账元',description:'页面数字',valueType:'number' as const,sourcePolicy:'page-displayed' as const,outputPath:'/paid',sourceProof:proof}],checkpoints:[],annotations:[],recordingRefs:[]};
+  await service.updateDraft('project',draft.draftId,0,content,'human');
+  const old=await service.publish('project',draft.draftId,1,'human'), before=materialContentHash(old.content);
+  const next=await service.createDraft('project','human',old.revisionId);
+  const studio={projects:[{id:'project',scriptDirectory:root}],materials:{service,edit:async(projectId:string,draftId:string,rev:number,patches:any[])=>service.updateDraft(projectId,draftId,rev,{...next.content,fields:patches.map(p=>p.item)},'human')}} as unknown as Studio;
+  const proposal={materialContentHash:before,fields:[{fieldId:'f',outputPath:'/paid',sourceProof:proof}]};
+  await writeFile(path.join(root,'implementation.json'),JSON.stringify(proposal));
+  const preview=await implementationMapping(studio,{projectId:'project',draftId:next.draftId}) as any;
+  expect(preview.compatible).toBe(false);expect(preview.issues[0]).toMatch(/配置不相容/);
+  await expect(implementationMapping(studio,{projectId:'project',draftId:next.draftId,proposalHash:preview.proposalHash,expectedDraftRevision:preview.draftRevision},true)).rejects.toThrow(/配置不相容/);
+  await writeFile(path.join(root,'implementation.json'),JSON.stringify({...proposal,fields:[{...proposal.fields[0],sourceProof:{...proof,valueInterpretation:{kind:'plain-decimal',version:1}}}]}));
+  const compatible=await implementationMapping(studio,{projectId:'project',draftId:next.draftId}) as any;
+  expect(compatible.compatible).toBe(true);expect(compatible.fields[0].verification).toMatch(/纯十进制 v1/);
+  expect(await implementationMapping(studio,{projectId:'project',draftId:next.draftId,proposalHash:compatible.proposalHash,expectedDraftRevision:compatible.draftRevision},true)).toMatchObject({status:'saved'});
+  const saved=await service.getDraft('project',next.draftId);expect(materialContentHash(saved.content)).not.toBe(before);
+  expect(materialContentHash((await service.revision('project',old.revisionId)).content)).toBe(before);
+  expect(old.content.fields[0].sourceProof).not.toHaveProperty('valueInterpretation');
+});

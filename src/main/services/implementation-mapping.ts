@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { safeFile } from '@/evidence/files';
 import { materialContentHash } from '@/materials';
 import { parseFieldSourceProof, parseJsonPointer } from '@/contracts/workflow';
+import { sourceProofCompatibility, DECIMAL_V1_DESCRIPTION } from '@/contracts/value-interpretation';
 import { ensure } from '@/shared/errors';
 import type { Studio } from './studio';
 
@@ -24,8 +25,10 @@ export async function implementationMapping(studio:Studio,body:any,confirm=false
     ensure(field&&!ids.has(field.id),'Mapping must reference each existing field at most once',422);ids.add(field.id);
     return {...field,outputPath:parseJsonPointer(mapping.outputPath),...(mapping.sourceProof?{sourceProof:parseFieldSourceProof(mapping.sourceProof)}:{})};
   });
-  const summary={proposalHash,draftRevision:draft.draftRevision,fields:fields.map((field:any)=>({name:field.name,description:field.description,dataset:field.dataset,sourcePolicy:field.sourcePolicy,outputPath:field.outputPath,verification:field.sourceProof?`${field.sourceProof.kind} · ${field.sourceProof.sourceUrl} · 实体 ${field.sourceProof.outputEntityPath}`:'未提供独立检查；结果将保持未核验'}))};
+  const issues=fields.flatMap((field:any)=>{const issue=sourceProofCompatibility(field);return issue?[`${field.name}：${issue}`]:[];});
+  const summary={proposalHash,draftRevision:draft.draftRevision,compatible:issues.length===0,issues,fields:fields.map((field:any)=>({name:field.name,description:field.description,dataset:field.dataset,valueType:field.valueType,sourcePolicy:field.sourcePolicy,outputPath:field.outputPath,example:draft.content.checkpoints.find(card=>card.id===field.checkpointId)?.title ?? '未绑定保存点例证',compatibility:sourceProofCompatibility(field),verification:field.sourceProof?`${field.valueType ?? '未指定类型'} 输出 · ${field.sourceProof.kind==='dom-text'?(field.sourceProof.valueInterpretation?DECIMAL_V1_DESCRIPTION:'精确文本；保留币种、空白与小数尾零，不作转换。'):'原始 JSON 值'} · ${field.sourceProof.sourceUrl} · 实体 ${field.sourceProof.outputEntityPath}`:'未提供独立检查；结果将保持未核验'}))};
   if(!confirm)return summary;
+  ensure(summary.compatible,issues.join('\n'),422);
   ensure(body.proposalHash===proposalHash&&body.expectedDraftRevision===draft.draftRevision,'映射或草稿已变化，请重新阅读确认。',409);
   return studio.materials.edit(body.projectId,body.draftId,draft.draftRevision,fields.map((item:any)=>({operation:'upsert',collection:'fields',item})),'ui');
 }

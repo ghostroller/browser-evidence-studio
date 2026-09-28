@@ -74,6 +74,8 @@ export class ValidatorService {
     for (const requirement of revision.content.requirements) {
       const dataset = requirement.dataset ? datasets.get(requirement.dataset) : undefined;
       const checks: Check[] = [], sourceChecks: Check[] = [], evidence: EvidenceAssessment[] = [];
+      const fieldDiagnostics: NonNullable<ValidatedRequirement['fieldDiagnostics']> = [];
+      let diagnosticsTruncated = false;
       const documents = new Map<string, SourceDocument>();
       if (dataset) for (const ref of new Set([...dataset.refs.values()].flat())) {
         const source = await this.readSource(ref, dataset.identity, cache, consumed);
@@ -113,6 +115,11 @@ export class ValidatorService {
         for (const row of dataset.rows) {
           const docs = (dataset.refs.get(row.batchId) ?? []).flatMap(ref => documents.has(ref) ? [documents.get(ref)!] : []);
           const proof = fieldProof(materialField, row.value, docs, sourceEntityIndex);
+          if (proof.diagnostic) {
+            const detail = { ...proof.diagnostic, identity: dataset.identity, batchId: row.batchId, recordIndex: row.recordIndex, verdict: proof.verdict, reason: proof.reason };
+            if (fieldDiagnostics.length < 20 && size(detail) <= 8192) fieldDiagnostics.push(detail);
+            else diagnosticsTruncated = true;
+          }
           verdicts.push(proof.verdict); explanations.add(proof.reason);
         }
         const verdict = combine(verdicts);
@@ -123,7 +130,7 @@ export class ValidatorService {
       if (!fields.length && !evidence.some(e => e.status === 'content-verified')) sourceChecks.push(check('source', 'inconclusive', 'No frozen field content constraints are available; schema checks alone do not establish business acceptance'));
       const schemaVerdict = combine(checks.filter(c => c.name !== 'pagination-complete' && c.name !== 'dataset-coverage').map(c => c.verdict)), sourceVerdict = sourceChecks.length ? combine(sourceChecks.map(c => c.verdict)) : evidence.some(e => e.status === 'content-verified') ? 'pass' : 'inconclusive';
       requirements.push({ requirementId: requirement.id, verdict: combine([...checks.map(c => c.verdict), sourceVerdict, version.verdict]), coverage: dataset?.complete && checks.filter(c => c.name === 'pagination-complete').every(c => c.verdict === 'pass') ? 'complete' : dataset?.rows.length ? 'partial' : 'missing',
-        evidence, checks: [...checks, ...sourceChecks], schemaVerdict, sourceVerdict, scriptAssertions,
+        evidence, checks: [...checks, ...sourceChecks], schemaVerdict, sourceVerdict, scriptAssertions, fieldDiagnostics, diagnosticsTruncated,
         humanReviews: humanReviews.filter(r => r.requirementId === requirement.id) });
     }
     const report: ValidationReport = { schemaVersion: 1, binding, attemptId: request.attemptId, materialStatus: 'candidate',

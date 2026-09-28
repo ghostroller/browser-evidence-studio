@@ -90,10 +90,12 @@ if (result.status !== 'succeeded') {
 }
 ```
 
-- 以上键均必填；唯一可选键是 `pageParameter`，为允许变化的 URL 查询参数名。
+- 以上键均必填；可选 `pageParameter` 为允许变化的 URL 查询参数名；可选 `valueInterpretation` 见下文。
 - `nodeAttribute` 用源元素上的确切属性名/值识别字段含义；它不是 CSS selector。`entityAttribute` 指源元素或最近祖先上的实体属性名，祖先查找不能跨 frame/shadow root。`outputEntityPath` 指每条输出记录中与该属性对应的实体键。
 - 属性必须有真实来源，敏感属性名不接受。执行中的 `reporter.checkpoint` 才产生这次 attempt 的 DOM 显示采样；历史示范节点、定位器和旧 sourceRefs 不能当成本次执行证明。
-- 当前 DOM 显示证明要求业务值和实体键都输出**字符串**，与可见采样/实体属性精确相等；不隐式转换数字、单位、空白或遮罩。例如显示 `"7.50"` 与数字 `7.5` 不等价。若固定资料的值类型与该证明能力冲突，报告矛盾，不偷偷改固定资料或声称数字转换已经核验。
+- 未声明 `valueInterpretation` 的旧 DOM 显示证明要求业务值和实体键均为**字符串**，逐字相等；旧资料/报告/hash 不回填新规则。number 字段配旧精确文本 proof 会在映射预览中显示不相容，确认被拒绝；旧固定版仍可读，正式核验会报告配置不相容而不是业务值错误。
+- 明确的 number 字段可以提出 `"valueInterpretation":{"kind":"plain-decimal","version":1}`，经用户阅读摘要并确认、发布新版本后使用。宿主从本次原始 display sample 独立解释，不信任脚本自报 normalizedValue。v1 语法为 `-?(0|[1-9][0-9]*)(\.[0-9]{1,18})?`，总长至多 64 字符；不接受首尾空白、正号、前导零、指数、币种、百分号、千分位、小数逗号、单位或括号负数。绝对值至多 `Number.MAX_SAFE_INTEGER`；number 最短十进制表示往返必须与原文数值完全一致（忽略尾零和负零），否则未核验。不用 epsilon。`45.00→45`、`12.30→12.3` 合法；`0.10000000000000001` 不合法。只解释业务值，实体键始终是精确字符串，`0012` 与 `12` 不同。
+- 显式数值映射下，正确值为 pass，真实值差异为 fail，合规数字但真实 sourceRefs 为空为 inconclusive；输出类型错误仍为 fail。遮罩/不支持语法不猜期望值。报告保留规则版本及有界的原文、期望/实际值和来源身份。
 
 ```json
 {

@@ -5,6 +5,7 @@ import { fieldProof } from '@/validator/proofs';
 import { parseFieldSourceProof } from '@/contracts/workflow';
 import { validateContent } from '@/materials/validate';
 import { materialContentHash } from '@/materials/service';
+import { interpretPlainDecimal, sourceProofCompatibility } from '@/contracts/value-interpretation';
 
 const field: MaterialField = { id: 'amount', dataset: 'orders', name: 'Paid', description: 'Exactly displayed paid text', outputPath: '/paid', sourcePolicy: 'page-displayed',
   sourceProof: { kind: 'dom-text', sourceUrl: 'https://fixture.invalid/orders', nodeAttribute: { name: 'data-field', value: 'paid' }, entityAttribute: 'data-order-id', outputEntityPath: '/id' } };
@@ -19,6 +20,36 @@ function doc(): SourceDocument {
       ancestors: [{ ref: { ...ref, nodeId: 6 }, attributes: { 'data-order-id': { status: 'present', value: 'order-1' } } }] } };
 }
 describe('fixed displayed-source proof', () => {
+  const numeric = (): MaterialField => ({ ...field, valueType: 'number', sourceProof: { ...field.sourceProof!, kind: 'dom-text', ...(field.sourceProof as any), valueInterpretation: { kind: 'plain-decimal', version: 1 } } });
+  const decimalDoc = (text = '45.00', entity = 'order-1') => {
+    const source = doc(); source.content = { status: 'present', value: text };
+    if (source.dom!.node.presentation?.status === 'present') source.dom!.node.presentation.value.text = text;
+    source.dom!.ancestors[0].attributes['data-order-id'] = { status: 'present', value: entity }; return source;
+  };
+  it('C01-C05: explicit numeric semantics distinguish value mismatch, missing source and output type', () => {
+    expect(sourceProofCompatibility({ ...field, valueType: 'number' })).toMatch(/配置不相容/);
+    expect(fieldProof({ ...field, valueType: 'number' }, { id: 'order-1', paid: 45 }, [decimalDoc()])).toMatchObject({ verdict: 'inconclusive', diagnostic: { code: 'mapping-incompatible' } });
+    expect(fieldProof(numeric(), { id: 'order-1', paid: 45 }, [decimalDoc()])).toMatchObject({ verdict: 'pass', diagnostic: { rawText: '45.00', expected: 45, actual: 45, interpretation: 'plain-decimal-v1' } });
+    expect(fieldProof(numeric(), { id: 'order-1', paid: 46 }, [decimalDoc()])).toMatchObject({ verdict: 'fail', diagnostic: { code: 'value-mismatch', expected: 45, actual: 46 } });
+    expect(fieldProof(numeric(), { id: 'order-1', paid: 45 }, [])).toMatchObject({ verdict: 'inconclusive', diagnostic: { code: 'source-insufficient' } });
+    expect(fieldProof(numeric(), { id: 'order-1', paid: '45' }, [])).toMatchObject({ verdict: 'fail', diagnostic: { code: 'output-type' } });
+    expect(sourceProofCompatibility({ ...numeric(), valueType: 'string' })).toBeTruthy();
+  });
+  it('C07: freezes strict decimal grammar, range and observable round-trip precision', () => {
+    for (const [raw, value] of [['45.00',45],['12.30',12.3],['-12.30',-12.3],['-0.00',0],['0.000000000000000001',1e-18],['9007199254740991',Number.MAX_SAFE_INTEGER]] as const) expect(interpretPlainDecimal(raw)).toEqual({ ok:true,value });
+    for (const raw of ['', ' ', ' 45', '45 ', '+45', '01', '.5', '5.', '1e2', '￥45', '45%', '1,000', '12,30', '1万', '(45)', '--', '***', 'NaN', 'Infinity', '9007199254740992', '9007199254740991.1', '0.10000000000000001', '0.0000000000000000001', '1'.repeat(65)]) {
+      expect(interpretPlainDecimal(raw), raw).toMatchObject({ok:false});
+      expect(fieldProof(numeric(), {id:'order-1',paid:45}, [decimalDoc(raw)]).verdict, raw).toBe('inconclusive');
+    }
+    expect(() => parseFieldSourceProof({ ...numeric().sourceProof, valueInterpretation: {kind:'plain-decimal',version:2} })).toThrow();
+    expect(() => parseFieldSourceProof({ ...numeric().sourceProof, valueInterpretation: {kind:'plain-decimal',version:1,trim:true} })).toThrow();
+  });
+  it('C08: never normalizes entity identity and never accepts a normalizedValue claim', () => {
+    expect(fieldProof(numeric(),{id:'12',paid:45},[decimalDoc('45.00','0012')]).verdict).toBe('inconclusive');
+    expect(fieldProof(numeric(),{id:'0012',paid:45},[decimalDoc('45.00','0012')]).verdict).toBe('pass');
+    const source = decimalDoc('46.00'); (source as any).normalizedValue = 45;
+    expect(fieldProof(numeric(),{id:'order-1',paid:45},[source]).verdict).toBe('fail');
+  });
   it('pins meaning in material hashes and rejects executable/credential constraints', () => {
     expect(parseFieldSourceProof(field.sourceProof)).toEqual(field.sourceProof);
     const material = { requirements: [{ id: 'req', description: 'paid', fieldIds: ['amount'], dataset: 'orders', rules: [] }], fields: [field], checkpoints: [], annotations: [], recordingRefs: [] };
