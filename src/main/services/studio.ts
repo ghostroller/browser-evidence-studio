@@ -561,6 +561,28 @@ export class Studio {
     }
     return undefined;
   }
+  async authoringRecovery(body:any){
+    await this.materials.service.getDraft(body.projectId,body.draftId);
+    let files:string[];try{files=(await readdir(path.join(this.root,'authoring'))).filter(file=>/^[a-zA-Z0-9-]{1,128}\.json$/.test(file)).sort();}catch(error:any){if(error.code==='ENOENT')return {items:[],outputTruncated:false};throw error;}
+    const items:any[]=[],warnings:string[]=[];let bytes=0,scanned=0,truncated=false;
+    for(const file of files.slice(0,500)){
+      scanned++;
+      try{
+        const location=path.join(this.root,'authoring',file);ensure((await stat(location)).size<=32768,'Operation journal exceeds recovery budget',413);
+        const operation=JSON.parse(await readFile(location,'utf8'));
+        if(operation.projectId!==body.projectId||operation.draftId!==body.draftId||['associated','interrupted','source-expired'].includes(operation.stage))continue;
+        ensure(operation.operationId+'.json'===file,'Operation journal identity mismatch',409);
+        // The persisted fingerprint contains the original request identity even
+        // when Chromium's editor cache did not survive an abrupt process exit.
+        const [projectId,draftId,purpose,fieldId,selection,selectionId,pageId,generation,leaseEpoch,derivedFrom,title,notes]=JSON.parse(operation.fingerprint);
+        const request={projectId,draftId,operationId:operation.operationId,purpose,fieldId,selection,selectionId,pageId,generation,leaseEpoch,derivedFrom,title,notes};
+        ensure(this.authoringIdentity(request)===operation.fingerprint,'Operation request cannot be reconstructed',409);
+        const state=await this.authoringOperation(request),item={...request,stage:state.stage,paused:true,reason:'reason' in state?state.reason:undefined};
+        const size=Buffer.byteLength(JSON.stringify(item));if(items.length===20||bytes+size>24576){truncated=true;break;}items.push(item);bytes+=size;
+      }catch(error){if(warnings.length<5)warnings.push(file+': '+String(error).slice(0,300));}
+    }
+    return {items,warnings,outputTruncated:truncated||scanned<files.length};
+  }
   async authoringOperation(body:any){
     const operation=await this.readAuthoring(body);
     if(!operation){

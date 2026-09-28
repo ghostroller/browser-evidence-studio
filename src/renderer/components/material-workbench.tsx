@@ -60,6 +60,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   const liveRequest=useRef(0);
   const retryCapture=useRef<any>(null);
   const [retryVersion,setRetryVersion]=useState(0);
+  const [recoveryOperations,setRecoveryOperations]=useState<any[]>([]);
   const setRetryCapture=(value:any)=>{retryCapture.current=value;setRetryVersion(version=>version+1);};
   const consumedSample=useRef('');
   const dirty=useRef(new Set<EditorPart>());
@@ -98,7 +99,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   const selectedDraft = (scope: string, token: number, id: string, revision?: number) => scopeRef.current === scope &&
     selectionRequest.current === token && draftRef.current?.draftId === id && (revision === undefined || draftRef.current.draftRevision === revision);
   const resetEditor = () => {
-    pendingSelection.current = null;liveRequest.current++;dirty.current.clear();cacheConflict.current=null;setRetryCapture(null);consumedSample.current='';setLiveIntent(null);setMapping(null);setBindingAction('keep');setTechnicalDirty(false);setConfirmClear(false);
+    pendingSelection.current = null;liveRequest.current++;dirty.current.clear();cacheConflict.current=null;setRetryCapture(null);setRecoveryOperations([]);consumedSample.current='';setLiveIntent(null);setMapping(null);setBindingAction('keep');setTechnicalDirty(false);setConfirmClear(false);
     setCardId(''); setTitle(''); setNotes(''); setKind('observation'); setCardRequirementIds([]);setNewCardRequirement('');
     setRequirementId(''); setRequirementDescription(''); setRulesJson('[]');
     setFieldId(''); setFieldName(''); setFieldDescription(''); setFieldDataset(''); setFieldPath('');
@@ -132,6 +133,14 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
       if(!preserve){try{const raw=localStorage.getItem(`bes.editor.${projectId}.${id}`);if(raw){const saved=JSON.parse(raw);setCardId(saved.cardId);setTitle(saved.title);setNotes(saved.notes);setKind(saved.kind);setCardRequirementIds(saved.cardRequirementIds);setNewCardRequirement(saved.newCardRequirement);setRequirementId(saved.requirementId);setRequirementDescription(saved.requirementDescription);setRulesJson(saved.rulesJson);setFieldId(saved.fieldId);setFieldName(saved.fieldName);setFieldDescription(saved.fieldDescription);setFieldDataset(saved.fieldDataset);setFieldPath(saved.fieldPath);setFieldPolicy(saved.fieldPolicy);setFieldValueType(saved.fieldValueType);setSourceProofJson(saved.sourceProofJson);setTechnicalDirty(saved.technicalDirty??false);setFieldTarget(saved.fieldTarget);setFieldCheckpointId(saved.fieldCheckpointId??'');setFieldAnnotationId(saved.fieldAnnotationId);setAnnotationId(saved.annotationId);setAnnotationTarget(saved.annotationTarget);setAnnotationText(saved.annotationText);setInterpretation(saved.interpretation);setBindingAction(saved.bindingAction);if(saved.draftRevision!==selected.draftRevision||!Array.isArray(saved.dirty)){cacheConflict.current=saved.draftRevision??-1;setConflict(selected);setNotice('已恢复本机输入，但版本或缓存格式不同；请先读取当前修订并核对，再保存或发布。');}dirty.current=new Set(saved.dirty??[...(saved.cardId?['card']:[]),...(saved.requirementId?['requirement']:[]),...(saved.fieldName?['field']:[]),...(saved.annotationText?['annotation']:[])]);setRetryCapture(saved.retryCapture?.projectId===projectId&&saved.retryCapture?.draftId===id?saved.retryCapture:null);}}catch{setNotice('本机编辑恢复记录不可读；已保留原记录，当前显示服务端草稿。');}}
       draftRef.current = selected; setDraft(selected);if(preserve){cacheConflict.current=null;setConflict(null);}else if(cacheConflict.current===null)setConflict(null);
       await Promise.all(COLLECTIONS.map(collection => loadCollection(selected, collection, token)));
+      if(!preserve){
+        const write=writeRequest.current;
+        const recovery=await call('authoringRecovery',{draftId:id});
+        if(token!==selectionRequest.current||write!==writeRequest.current||!ownsSession())return;
+        if(!retryCapture.current&&recovery.items?.length){setRetryCapture(recovery.items[0]);setRecoveryOperations(recovery.items.slice(1));}
+        else setRecoveryOperations((recovery.items??[]).filter((item:any)=>item.operationId!==retryCapture.current?.operationId));
+        if(recovery.outputTruncated||recovery.warnings?.length)setError('采集恢复日志未完整读取；已保留原记录。'+(recovery.warnings??[]).join(' '));
+      }
     } catch (failure) { if (token === selectionRequest.current && ownsSession()) setError(String(failure)); }
   }, [call, loadCollection, editorSessionId]);
   useEffect(() => { ++listRequest.current; ++selectionRequest.current; ++writeRequest.current; pendingRef.current = false;
@@ -439,6 +448,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
     <p className="hint">保存点与字段在这里统一编辑。实时选择会保存点击时刻的新例证；历史选择保留原时间。</p>
     <Button disabled={(!live&&!retryCapture.current)||!!pending} onClick={()=>{if(retryCapture.current&&endedCapture(retryCapture.current)){setRetryCapture(null);setNotice('旧操作已保留；下一次记录使用新的来源身份。');setError('');}else void recordCurrent();}}>{retryCapture.current?.stage==='receipt-saved'?'重试关联已保存原件':retryCapture.current?(endedCapture(retryCapture.current)?'原来源失效：重新选择':'查询采集操作状态'):'记录当前结果'}</Button>
     {liveIntent&&<p role="status">点击实时页面中需要的字段。<Button onClick={()=>{setLiveIntent(null);void onCancelLive?.();}}>取消选择</Button></p>}
+    {recoveryOperations.filter(item=>item.operationId!==retryCapture.current?.operationId).map(item=><Button key={item.operationId} disabled={!!pending} onClick={()=>{setRetryCapture(item);setRecoveryOperations(values=>values.filter(value=>value.operationId!==item.operationId));}}>恢复已保存操作 {item.operationId}</Button>)}
     {retryCapture.current&&!endedCapture(retryCapture.current)&&!pending&&<p className="notice">采集操作 {retryCapture.current.operationId} 已保留。
       {!retryCapture.current.paused&&<Button onClick={()=>{setRetryCapture({...retryCapture.current,paused:true});setNotice('已暂存采集恢复；可以继续编辑，查询结果不会替换当前输入。');}}>暂存恢复并继续编辑</Button>}
       {retryCapture.current.paused&&retryCapture.current.recovered?.target&&<Button onClick={()=>{const recovered=retryCapture.current.recovered;markDirty('field');setFieldTarget(recovered.target);setFieldCheckpointId(recovered.card.id);setBindingAction('set');setFieldAnnotationId('');setRetryCapture(null);setNotice('已将保存的样例选给当前字段；填写完整后保存字段。');}}>使用已保存样例绑定当前字段</Button>}

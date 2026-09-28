@@ -32,6 +32,7 @@ async function fixture(){
     if(method==='publishMaterialDraft'){const result=await materials.service.publish('project',body.draftId,body.expectedDraftRevision,'human');fixed.push(result);return materialSummary(result);}
     if(method==='historicalNode')return {tagName:'span',text:{status:'present',value:'12.00'}};
     if(method==='historicalLocators')return {items:[]};
+    if(method==='authoringRecovery')return {items:[]};
     throw new Error(method);
   });window.studio={call,bounds:vi.fn()};
   return {materials,draft,call,fixed,fail:()=>{failEdit=true;}};
@@ -136,6 +137,15 @@ test('lost successful capture response is queried and restored without another a
  const f=await fixture();const original=f.call.getMockImplementation()!;let saved:any;let acquisitions=0;
  f.call.mockImplementation(async(method,body)=>{if(method==='captureAndAuthor'){acquisitions++;saved={status:'saved',stage:'associated',...(await f.materials.authorReceipt('project',{...body,receiptId:'receipt',position,title:'Saved before disconnect',notes:''}))};throw new Error('response lost');}if(method==='authoringOperation')return saved;return original(method,body);});
  render(<MaterialWorkbench {...props} live/>);await screen.findByRole('button',{name:/^Example/});fireEvent.click(screen.getByRole('button',{name:'记录当前结果'}));const retry=await screen.findByRole('button',{name:'查询采集操作状态'});await waitFor(()=>expect((retry as HTMLButtonElement).disabled).toBe(false));fireEvent.click(retry);await screen.findByText('已保存原始材料并关联同一张可编辑保存点。');expect(acquisitions).toBe(1);expect((await f.materials.service.getDraft('project',f.draft.draftId)).content.checkpoints.filter(card=>card.sourceReceiptRef==='receipt')).toHaveLength(1);
+});
+
+test('discovers an interrupted host journal with no local editor cache and unlocks ordinary editing',async()=>{
+ const f=await fixture(),original=f.call.getMockImplementation()!;
+ f.call.mockImplementation(async(method,body)=>method==='authoringRecovery'?{items:[{projectId:'project',draftId:f.draft.draftId,operationId:'orphan',stage:'interrupted',paused:true}]}:original(method,body));
+ render(<MaterialWorkbench {...props}/>);fireEvent.click(await screen.findByRole('button',{name:'原来源失效：重新选择'}));
+ fireEvent.click(screen.getByRole('button',{name:/^Example/}));fireEvent.change(screen.getByLabelText('说明'),{target:{value:'Edited after abrupt exit'}});fireEvent.click(screen.getByRole('button',{name:'保存卡片草稿'}));
+ await waitFor(async()=>expect((await f.materials.service.getDraft('project',f.draft.draftId)).content.checkpoints[0].notes).toBe('Edited after abrupt exit'));
+ expect(f.call.mock.calls.some(([method])=>method==='captureAndAuthor')).toBe(false);expect(screen.queryByText(/恢复已保存操作/)).toBeNull();
 });
 
 test('receipt operation survives editor remount and only retries association with the same identity',async()=>{

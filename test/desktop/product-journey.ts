@@ -58,6 +58,8 @@ export async function runProductJourney(studio:Studio,reopen=false){
       if(text.includes('查询采集操作状态'))await click('查询采集操作状态');
       await wait(()=>read<string>('document.body.innerText'),value=>value.includes('原来源失效：重新选择'),'orphan operation recovered to terminal');
       await click('原来源失效：重新选择');
+      if((await read<string>('document.body.innerText')).includes('并处理冲突'))await clickExpression("[...document.querySelectorAll('button')].find(el=>el.textContent.includes('并处理冲突'))");
+      await clickExpression("document.querySelector('.material-card-list button')");
       await fill('说明','进程中断后仍可编辑，旧操作和原件保留');await click('保存卡片草稿');
       assert.equal((await draft()).content.checkpoints[0].notes,'进程中断后仍可编辑，旧操作和原件保留');
       report.interruptedRecovery={visible:true,oldOperationRetained:true,unrelatedEditSaved:true};report.passed=true;

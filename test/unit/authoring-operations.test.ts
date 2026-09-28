@@ -33,6 +33,14 @@ it('orphan acquiring without receipt becomes interrupted after app restart and p
  expect(await f.studio.authoringOperation(f.body)).toMatchObject({stage:'interrupted',operationId:'operation'});expect(JSON.parse(await readFile(file,'utf8')).stage).toBe('interrupted');expect(await readFile(path.join(f.root,'partial-artifact.bin'),'utf8')).toBe('retained artifact');expect((await f.studio.captureAndAuthor(f.body)).stage).toBe('interrupted');expect(f.studio.checkpoint).toHaveBeenCalledTimes(1);expect((await f.studio.captureAndAuthor({...f.body,operationId:'fresh'})).stage).toBe('associated');
 });
 
+it('discovers orphan journals without an editor cache and keeps request identity and draft boundaries',async()=>{
+ const f=await fixture();f.studio.checkpoint.mockRejectedValueOnce(new Error('cut'));await expect(f.studio.captureAndAuthor(f.body)).rejects.toThrow();
+ const file=path.join(f.root,'authoring','operation.json'),operation=JSON.parse(await readFile(file,'utf8'));operation.stage='acquiring';await writeFile(file,JSON.stringify(operation));f.studio.instanceId='new-app';
+ const other=await f.materials.service.createDraft('project','human');expect((await f.studio.authoringRecovery({projectId:'project',draftId:other.draftId})).items).toEqual([]);
+ const result=await f.studio.authoringRecovery({projectId:'project',draftId:f.draft.draftId});expect(result).toMatchObject({items:[{...f.body,stage:'interrupted',paused:true}],outputTruncated:false});
+ expect((await f.studio.authoringOperation(result.items[0])).stage).toBe('interrupted');expect(f.studio.checkpoint).toHaveBeenCalledTimes(1);expect((await f.studio.authoringRecovery({projectId:'project',draftId:f.draft.draftId})).items).toEqual([]);
+});
+
 it('receipt read failure stays unknown and cannot trigger another acquisition',async()=>{
  const f=await fixture();f.studio.checkpoint.mockRejectedValueOnce(new Error('stop after intent'));await expect(f.studio.captureAndAuthor(f.body)).rejects.toThrow();const file=path.join(f.root,'authoring','operation.json'),operation=JSON.parse(await readFile(file,'utf8'));operation.stage='acquiring';await writeFile(file,JSON.stringify(operation));f.studio.instanceId='new-app';f.studio.reader=()=>({checkpoints:async()=>{throw new Error('source disk unreadable');}});
  expect(await f.studio.authoringOperation(f.body)).toMatchObject({stage:'unknown',reason:expect.stringContaining('source disk unreadable')});expect((await f.studio.captureAndAuthor(f.body)).stage).toBe('unknown');expect(f.studio.checkpoint).toHaveBeenCalledTimes(1);expect(JSON.parse(await readFile(file,'utf8')).stage).not.toBe('not-captured');
