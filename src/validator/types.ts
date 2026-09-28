@@ -1,5 +1,6 @@
 import type { DatasetIdentity, ExecutionBinding, RequirementResult } from '@/contracts/execution';
 import type { HistoricalElementRef, ReadBudget, SourceNode, SourceValue } from '@/contracts/recording';
+import type { CheckpointCard, MaterialField } from '@/contracts/materials';
 import type { JsonValue, ReportedAssertion, Verdict } from '@/contracts/workflow';
 import type { PersistentDatasetService } from '@/runner/datasets';
 
@@ -56,6 +57,8 @@ export interface ValidatedRequirement extends RequirementResult {
   /** Bounded row diagnostics; values are only from host-verified, privacy-filtered sources. */
   fieldDiagnostics?: Array<FieldDiagnostic & { identity: DatasetIdentity; batchId: string; recordIndex: number; verdict: Verdict; reason: string }>;
   diagnosticsTruncated?: boolean;
+  materialContext?: { description: string; fields: Array<Pick<MaterialField, 'id' | 'name' | 'target'> & { example?: Pick<CheckpointCard, 'id' | 'title' | 'notes' | 'anchor'> }> };
+  businessCoverage?: 'source-proven' | 'configured-count-and-uniqueness' | 'unproven';
 }
 export interface ValidationReport {
   schemaVersion: 1; binding: ExecutionBinding; attemptId: string;

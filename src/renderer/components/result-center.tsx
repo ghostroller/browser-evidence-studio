@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { DatasetIdentity } from '@/contracts/execution';
 import type { ValidatedRequirement } from '@/validator/types';
+import { sameReplayPosition, type HistoricalTarget, type ReplayPosition } from '@/contracts/recording';
 import { Button } from './ui/button';
 import { NativeSelect } from './ui/native-select';
 import { Input } from './ui/input';
@@ -15,9 +16,12 @@ type Step = { identity: { stepId: string; attemptId: string; entityKey?: string 
 type Assessment = { reportId: string; overall?: string; coverage?: string; reasons?: string[] };
 type SavedReport = Assessment & { contentHash?: string };
 const empty = <T,>(): Page<T> => ({ items: [] });
+export interface ResultSourceLocation { position: ReplayPosition; target?: HistoricalTarget; label: string; detail: string }
+const valueText = (value: unknown) => value === undefined ? '未取得' : JSON.stringify(value);
+const coverageText = (value: ValidatedRequirement['businessCoverage']) => value === 'source-proven' ? '来源分页与输出实体集合已核对' : value === 'configured-count-and-uniqueness' ? '配置的条数与去重检查通过；自然语言业务全量仍需范围依据' : '业务范围尚缺证明；批次完整不代表全部业务数据';
 
 /** Reads C's actual attempts and F's fixed report through E's bounded facade. */
-export function ResultCenter({ projectId, executionId }: { projectId: string; executionId: string }) {
+export function ResultCenter({ projectId, executionId, onOpenSource }: { projectId: string; executionId: string; onOpenSource?(location: ResultSourceLocation): void }) {
   const [execution, setExecution] = useState<any>(null);
   const [steps, setSteps] = useState<Page<Step>>(empty);
   const [datasets, setDatasets] = useState<Page<Dataset>>(empty);
@@ -187,6 +191,17 @@ export function ResultCenter({ projectId, executionId }: { projectId: string; ex
       else setReportDatasets(previous => previous.nextCursor === cursor ? { ...page, items: [...previous.items, ...page.items] } : previous);
     } catch (failure) { if (current(scope) && token === reportRequest.current && reportRef.current === reportId) setError(String(failure)); }
   };
+  const openSource = async (location: ResultSourceLocation) => {
+    const id = reportRef.current;
+    try {
+      if (location.target?.kind === 'dom-node') {
+        const node = await call('historicalNode', { target: location.target, maxBytes: 16384, limit: 1 });
+        if (!current(scope) || reportRef.current !== id) return;
+        if (!node?.ref || node.ref.nodeId !== location.target.nodeId || node.ref.frameId !== location.target.frameId || node.ref.mirrorScopeId !== location.target.mirrorScopeId || !sameReplayPosition(node.ref.position, location.target.position)) throw new Error('历史节点身份不一致；未跳转。');
+      }
+      if (current(scope) && reportRef.current === id) onOpenSource?.(location);
+    } catch (failure) { if (current(scope) && reportRef.current === id) setError(`来源定位失败：${String(failure)}。原报告仍保留，可检查存档或重新准备来源。`); }
+  };
   if (loadedScope !== scope) return <div className="result-center" role="status">正在读取执行身份与已保存结果…</div>;
   return <div className="result-center">
     <div className="detail-title"><h3>执行结果中心</h3><code>{executionId}</code></div>
@@ -211,14 +226,22 @@ export function ResultCenter({ projectId, executionId }: { projectId: string; ex
           {batch && <><JsonView value={records.items} />{records.nextCursor && <Button onClick={() => void moreRecords(records.nextCursor!)}>后续记录</Button>}</>}
         </div>}
       </section><section><div className="detail-title"><h3>固定资料验收</h3><Button disabled={!!pending || !execution.workflowAttemptId} onClick={() => void assess()}>{pending || '按所选 attempt 验收'}</Button></div>
-        <p className="hint">机器判断区分格式、来源内容、脚本声明、人工判定和版本。候选资料版本不表示人已批准。</p>
+        <p className="hint">机器总评只汇总已配置检查。格式、来源内容、脚本声明、人工判定和版本分别记录；批次提交完整不能证明自然语言“全部订单”。候选资料版本不表示人已批准。</p>
         <div className="result-data"><h4>已保存报告</h4>{savedReports.items.map(item => <Button key={item.reportId} className={reportRef.current === item.reportId ? 'selected' : ''} onClick={() => void openSavedReport(item.reportId)}>{item.reportId.slice(0, 16)} · {item.overall || '待读取'}</Button>)}
           {savedReports.nextCursor && <Button onClick={() => void moreSavedReports(savedReports.nextCursor!)}>后续报告</Button>}</div>
         {assessment && <p>报告 <code>{assessment.reportId}</code></p>}
-        {report && <><div className="result-summary"><div><span>机器总评</span><StatusBadge value={report.overall} /></div><div><span>覆盖</span><StatusBadge value={report.coverage} /></div><div><span>资料</span>{report.materialStatus || 'candidate'}</div><div><span>版本</span><StatusBadge value={report.version?.verdict || 'inconclusive'} /></div></div>
+        {report && <><div className="result-summary"><div><span>已配置检查总评</span><StatusBadge value={report.overall} /></div><div><span>批次与分页检查</span><StatusBadge value={report.coverage} /></div><div><span>资料</span>{report.materialStatus || 'candidate'}</div><div><span>版本</span><StatusBadge value={report.version?.verdict || 'inconclusive'} /></div></div>
           {report.reasons?.map((reason: string, index: number) => <p key={index} className="notice">{reason}</p>)}
-          <div className="result-requirements">{requirements.items.map(item => <article key={item.requirementId} className="requirement-report"><div className="detail-title"><h3>{item.requirementId}</h3><StatusBadge value={item.verdict} /></div>
-            <div className="result-summary"><div><span>覆盖</span>{item.coverage}</div><div><span>格式</span><StatusBadge value={item.schemaVerdict} /></div><div><span>来源</span><StatusBadge value={item.sourceVerdict} /></div><div><span>人工</span>{item.humanReviews?.length || 0} 条</div></div>
+          <div className="result-requirements">{requirements.items.map(item => <article key={item.requirementId} className="requirement-report"><div className="detail-title"><h3>{item.materialContext?.description || item.requirementId}</h3><StatusBadge value={item.verdict} /></div>
+            <p className="hint">固定需求 {item.requirementId} · {coverageText(item.businessCoverage)}</p>
+            {!item.materialContext&&<p className="hint">旧报告未保存需求定位摘要；按本次固定执行重新验收可追加新报告，旧报告保持不变。</p>}
+            <div className="result-summary"><div><span>批次与分页检查</span>{item.coverage}</div><div><span>格式</span><StatusBadge value={item.schemaVerdict} /></div><div><span>来源</span><StatusBadge value={item.sourceVerdict} /></div><div><span>人工</span>{item.humanReviews?.length || 0} 条</div></div>
+            {item.materialContext?.fields.map(field => <div key={field.id}><strong>{field.name}</strong>{field.example ? <Button disabled={!onOpenSource} onClick={() => void openSource({ position:field.example!.anchor,...(field.target?{target:field.target}:{}),label:`需求示例 · ${field.name} · ${field.example!.title}`,detail:`固定版本 ${report.binding?.materialRevisionId || execution.binding?.materialRevisionId}；${field.example!.notes}。此例证说明含义，不是每次运行的预期常量。` })}>需求示例：{field.example.title}</Button> : <span> · 固定资料未绑定保存点示例</span>}</div>)}
+            {item.fieldDiagnostics?.map((detail,index) => <div className="result-check" key={index}><strong>{item.materialContext?.fields.find(field=>field.id===detail.fieldId)?.name || detail.fieldId}</strong> · 实体 {valueText(detail.entity)}<br/>
+              {detail.code==='value-mismatch'||detail.code==='value-match' ? <>原文 {valueText(detail.rawText)} → 按 {detail.interpretation==='plain-decimal-v1'?'纯十进制 v1':'精确文本'} 应得 {valueText(detail.expected)}；实际 {valueText(detail.actual)}。</> : <>{detail.reason} 实际 {valueText(detail.actual)}；{detail.code==='source-insufficient'?'请补齐本次来源后重新执行，当前没有可确认的期望值。':'请检查实现映射与输出类型。'}</>}
+              {detail.target&&detail.sourceRef&&<Button disabled={!onOpenSource} onClick={()=>void openSource({position:detail.target!.position,target:detail.target,label:`本次验证来源 · ${detail.entity} · ${detail.sourceRef}`,detail:`${detail.interpretation}：原文 ${valueText(detail.rawText)}，应得 ${valueText(detail.expected)}，实际 ${valueText(detail.actual)}；${detail.identity.datasetId} / ${detail.identity.attemptId} / ${detail.batchId} / 记录 ${detail.recordIndex} / ${detail.outputPath}`})}>本次验证来源</Button>}
+              <details><summary>诊断身份与规则</summary><JsonView value={detail}/></details></div>)}
+            {item.diagnosticsTruncated&&<p className="notice">行诊断达到显示预算；判定仍检查所有已读取记录。请按数据集和批次读取后续记录。</p>}
             {item.checks?.map((check, index) => <p key={index} className="result-check"><StatusBadge value={check.verdict} /> {check.name}：{check.reason}</p>)}
             <details><summary>来源与脚本声明</summary><JsonView value={{ evidence: item.evidence, scriptAssertions: item.scriptAssertions, humanReviews: item.humanReviews }} /></details>
           </article>)}{requirements.nextCursor && <Button onClick={() => void moreReport('requirements', requirements.nextCursor!)}>后续需求</Button>}</div>

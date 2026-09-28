@@ -53,10 +53,10 @@ async function fixture(content = material()) {
 describe('fixed material validation using real B/C stores', () => {
   it('C02-C05: same fixed numeric material gives pass / value fail / source inconclusive / type fail', async () => {
     const content = material();
-    content.requirements[0].rules = [{ type:'min-rows',count:2 },{type:'unique',field:'id'}];
+    content.requirements[0].rules = [{ type:'row-count',count:2 },{type:'unique',field:'id'}];
     content.fields[0] = { ...content.fields[0], valueType:'number', sourcePolicy:'page-displayed', sourceProof: {kind:'dom-text',sourceUrl:'https://fixture.test/orders',nodeAttribute:{name:'data-field',value:'paid'},entityAttribute:'data-order',outputEntityPath:'/id',valueInterpretation:{kind:'plain-decimal',version:1}} };
     const f = await fixture(content), reports = [];
-    for (const variant of ['correct','wrong','missing','type'] as const) {
+    for (const variant of ['correct','wrong','missing','type','omitted','duplicate'] as const) {
       const identity = {...f.identity,attemptId:variant}, refs: string[] = [];
       for (const [i, value] of [12,45].entries()) {
         const sourceRef=`${variant}-${i}`, position={recordingId:'recording-f',pageId:'page',documentId:'doc',streamEpoch:'epoch',sourceTimeMs:1,eventSeq:1};
@@ -65,13 +65,16 @@ describe('fixed material validation using real B/C stores', () => {
         refs.push(sourceRef);
       }
       await f.data.begin(identity);
-      await f.data.append({...identity,batchId:'batch',records:[{id:'o-1',amount:12},{id:'o-2',amount:variant==='wrong'?46:variant==='type'?'45':45}],provenance:{origin:'browser',sourceRefs:variant==='missing'||variant==='type'?[]:refs}});
-      await f.data.finish({...identity,status:'complete',committedBatches:1,committedRecords:2});
+      const records: JsonValue[] = variant==='omitted'?[{id:'o-1',amount:12}]:variant==='duplicate'?[{id:'o-1',amount:12},{id:'o-1',amount:12}]:[{id:'o-1',amount:12},{id:'o-2',amount:variant==='wrong'?46:variant==='type'?'45':45}];
+      await f.data.append({...identity,batchId:'batch',records,provenance:{origin:'browser',sourceRefs:variant==='missing'||variant==='type'?[]:refs}});
+      await f.data.finish({...identity,status:'complete',committedBatches:1,committedRecords:records.length});
       const report=await f.validator().validate({...f.request,attemptId:variant}); reports.push(report);
       expect(report.binding.materialContentHash).toBe(f.revision.contentHash);
     }
-    expect(reports.map(r=>r.overall)).toEqual(['pass','fail','inconclusive','fail']);
-    expect(reports.map(r=>r.requirements[0].schemaVerdict)).toEqual(['pass','pass','pass','fail']);
+    expect(reports.map(r=>r.overall)).toEqual(['pass','fail','inconclusive','fail','fail','fail']);
+    expect(reports.map(r=>r.requirements[0].schemaVerdict)).toEqual(['pass','pass','pass','fail','fail','fail']);
+    expect(reports[0].requirements[0].businessCoverage).toBe('configured-count-and-uniqueness');
+    expect(reports.slice(4).map(r=>r.requirements[0].businessCoverage)).toEqual(['unproven','unproven']);
     expect(reports[1].requirements[0].fieldDiagnostics?.[1]).toMatchObject({code:'value-mismatch',rawText:'45.00',expected:45,actual:46,identity:{attemptId:'wrong'},batchId:'batch',recordIndex:1});
     expect(reports[2].requirements[0].fieldDiagnostics?.every(d=>d.expected===undefined)).toBe(true);
     expect((await f.materials.revision(f.binding.projectId,f.revision.revisionId)).contentHash).toBe(f.revision.contentHash);

@@ -22,6 +22,7 @@
     "test:watch": "vitest",
     "test:integration": "npm run build && node test/desktop/launch.js",
     "test:journey": "npm run build && node test/desktop/launch.js --product-journey",
+    "test:journey:numeric": "npm run build && node test/desktop/launch.js --product-journey --numeric",
     "test:desktop": "npm run test:integration",
     "test:startup": "node test/desktop/launch.js --startup-only --dev",
     "test:soak": "npm run build && node test/desktop/launch.js --soak=30",

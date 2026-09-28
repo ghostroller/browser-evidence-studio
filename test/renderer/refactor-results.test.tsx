@@ -5,6 +5,31 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { ResultCenter } from '@/renderer/components/result-center';
 
 afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
+
+test('C19: fixed requirement examples and actual verification sources navigate to distinct identities',async()=>{
+  const position={recordingId:'example-run',pageId:'p',documentId:'d',streamEpoch:'e',sourceTimeMs:10,eventSeq:3};
+  const example={kind:'dom-node' as const,position,frameId:'f',mirrorScopeId:'m',nodeId:7};
+  const actual={...example,position:{...position,recordingId:'execution-run',eventSeq:18},nodeId:25};
+  const open=vi.fn();
+  const call=vi.fn(async(method:string,body:any)=>{
+    if(method==='execution')return {status:'completed',workflowAttemptId:'a',binding:{materialRevisionId:'fixed-v3'}};
+    if(method==='executionItems')return {items:[]};
+    if(method==='executionReports')return {items:[{reportId:'r',overall:'fail'}]};
+    if(method==='executionReport')return {reportId:'r',overall:'fail',binding:{materialRevisionId:'fixed-v3'}};
+    if(method==='executionReportItems')return {items:body.collection==='requirements'?[{requirementId:'req',verdict:'fail',schemaVerdict:'pass',sourceVerdict:'fail',checks:[],materialContext:{description:'逐条核对到账元',fields:[{id:'f',name:'到账元',target:example,example:{id:'card',title:'第二行例证',notes:'固定的说明',anchor:position}}]},fieldDiagnostics:[{fieldId:'f',outputPath:'/paid',entity:'order-two',actual:46,expected:45,rawText:'45.00',interpretation:'plain-decimal-v1',code:'value-mismatch',sourceRef:'dom-current',target:actual,identity:{executionId:'x',attemptId:'a',datasetId:'records'},batchId:'b',recordIndex:1,verdict:'fail',reason:'值不一致'}]}]:[]};
+    if(method==='historicalNode')return {ref:body.target};
+    throw new Error(method);
+  });
+  window.studio={call,bounds:vi.fn()};render(<ResultCenter projectId="project" executionId="x" onOpenSource={open}/>);
+  fireEvent.click(await screen.findByRole('button',{name:'r · fail'}));
+  expect(await screen.findByText('逐条核对到账元')).toBeTruthy();
+  expect(screen.getByText(/业务范围尚缺证明/)).toBeTruthy();
+  fireEvent.click(screen.getByRole('button',{name:'需求示例：第二行例证'}));
+  await waitFor(()=>expect(open).toHaveBeenCalledWith(expect.objectContaining({position,target:example,label:expect.stringContaining('需求示例')})));
+  fireEvent.click(screen.getByRole('button',{name:'本次验证来源'}));
+  await waitFor(()=>expect(open).toHaveBeenLastCalledWith(expect.objectContaining({position:actual.position,target:actual,label:expect.stringContaining('本次验证来源'),detail:expect.stringContaining('45.00')})));
+  expect(call).not.toHaveBeenCalledWith('materialDraft',expect.anything());
+});
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(complete => { resolve = complete; }); return { promise, resolve }; }
 
 test('an interrupted corrupt dataset stays diagnosed while committed sibling batches remain accessible', async () => {

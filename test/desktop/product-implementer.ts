@@ -10,14 +10,16 @@ export async function implementProductTask(directory:string,revision:TaskMateria
   const requirements=revision.content.requirements.filter(item=>item.fieldIds.includes(field.id));
   if(requirements.length!==1||requirements[0].dataset!==field.dataset)throw new Error('UI-created dataset relationship is invalid');
   const requirement=requirements[0];await mkdir(directory,{recursive:true});
-  await writeFile(path.join(directory,'implementation.json'),JSON.stringify({materialContentHash:revision.contentHash,fields:[{fieldId:field.id,outputPath:'/amount',sourceProof:{kind:'dom-text',sourceUrl,nodeAttribute:{name:'data-field',value:'amount'},entityAttribute:'data-entity',outputEntityPath:'/id'}}]},null,2));
+  const numeric=field.valueType==='number';
+  await writeFile(path.join(directory,'implementation.json'),JSON.stringify({materialContentHash:revision.contentHash,fields:[{fieldId:field.id,outputPath:'/amount',sourceProof:{kind:'dom-text',sourceUrl,nodeAttribute:{name:'data-field',value:'amount'},entityAttribute:'data-entity',outputEntityPath:'/id',...(numeric?{valueInterpretation:{kind:'plain-decimal',version:1}}:{})}}]},null,2));
   await writeFile(path.join(directory,'package-lock.json'),'{"lockfileVersion":3}');
   await writeFile(path.join(directory,'workflow.json'),JSON.stringify({schemaVersion:1,workflowId:'ui-authored-orders',driver:'puppeteer',entry:'./run.mjs',exportName:'run',requirements:[{id:requirement.id,checkpointKey:'orders',description:requirement.description,dataset:requirement.dataset}]},null,2));
   await writeFile(path.join(directory,'run.mjs'),`export async function run({page,input,reporter,steps}) {
     return steps.run({stepId:'orders',run:async ctx=>{
       await page.waitForSelector('[data-field=amount]');
       const records=await page.$$eval('[data-entity]',nodes=>nodes.map(node=>({id:node.getAttribute('data-entity'),amount:node.querySelector('[data-field=amount]').innerText})));
-      if(input.variant==='wrong')records[0].amount='999.00';
+      ${numeric?"for(const record of records)record.amount=Number(record.amount);":""}
+      if(input.variant==='wrong')records[0].amount=${numeric?'999':"'999.00'"};
       const checkpoint=await reporter.checkpoint('orders',{requirementIds:[${JSON.stringify(requirement.id)}],stepAttemptId:ctx.identity.attemptId});
       return {records,sourceRefs:input.variant==='unverified'?[]:checkpoint.sourceRefs};
     },commit:async(value,ctx)=>{

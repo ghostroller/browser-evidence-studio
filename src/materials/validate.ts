@@ -79,7 +79,7 @@ function rule(value: unknown): DataRule {
       break;
     case 'unique':
       keys(item, ['type', 'field'], 'unique rule'); string(item.field, 'rule.field', 256); break;
-    case 'min-rows':
+    case 'row-count': case 'min-rows':
       keys(item, ['type', 'count'], 'min-rows rule');
       if (!Number.isSafeInteger(item.count) || Number(item.count) < 0) fail('Invalid min-rows count');
       break;

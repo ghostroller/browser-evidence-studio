@@ -14,6 +14,7 @@ import { implementExportedProductTask } from './product-implementer';
  * Test diagnostics only read service state. The named implementer writes code,
  * never task data, and its proposal is confirmed through the normal editor. */
 export async function runProductJourney(studio:Studio,reopen=false){
+  const numeric=process.env.BES_TEST_NUMERIC==='1';
   if(!reopen){assert.equal(studio.projects.length,0);assert.equal(studio.runs.length,0);}
   studio.window.window.show();studio.window.window.focus();
   const site=await startProductSite(),ui=studio.window.window.webContents;
@@ -67,10 +68,24 @@ export async function runProductJourney(studio:Studio,reopen=false){
     await wait(async()=>studio.projects.length,n=>n===1,'UI-created project');
     await click('添加环境');await fill('环境名称','合成账户环境');await fill('登录入口',site.url+'/orders');await fill('登录说明','点击登录合成账户一');await fill('登录完成标记（可选 CSS）','#logged-in');await click('添加');
     await click('打开环境');await wait(async()=>studio.state().session,Boolean,'environment page');assert.equal(studio.runs.length,0);assert.equal(studio.active,undefined);await wait(()=>read<boolean>("!document.querySelector('.statusbar').textContent.includes('正在处理')"),Boolean,'environment navigation ready');
+    if(numeric){
+      await clickExpression("[...document.querySelectorAll('button')].find(el=>el.textContent==='尝试错误的合成凭据')",studio.current().view.webContents);
+      await click('检查登录状态');assert.notEqual(studio.profiles[0].loginStatus,'verified');
+      await clickExpression("document.querySelector('a')",studio.current().view.webContents);
+    }
     await clickExpression("[...document.querySelectorAll('button')].find(el=>el.textContent==='登录合成账户一')",studio.current().view.webContents);
     await wait(()=>read<boolean>("!!document.querySelector('#logged-in')",studio.current().view.webContents),Boolean,'logged in');
     await click('检查登录状态');assert.equal(studio.profiles[0].loginStatus,'verified');await click('保留环境');await click('关闭浏览器会话');await click('打开环境');
     await wait(()=>read<boolean>("!!document.querySelector('#logged-in')",studio.current().view.webContents),Boolean,'persistent login');await click('检查登录状态');assert.equal(studio.runs.length,0);
+    if(numeric){
+      const storageRef=studio.profiles[0].storageRef;
+      await clickExpression("[...document.querySelectorAll('button')].find(el=>el.textContent==='模拟登录过期')",studio.current().view.webContents);
+      await wait(()=>read<boolean>("!document.querySelector('#logged-in')",studio.current().view.webContents),Boolean,'expired login');
+      await click('检查登录状态');assert.notEqual(studio.profiles[0].loginStatus,'verified');
+      await clickExpression("[...document.querySelectorAll('button')].find(el=>el.textContent==='登录合成账户一')",studio.current().view.webContents);
+      await click('检查登录状态');assert.equal(studio.profiles[0].loginStatus,'verified');assert.equal(studio.profiles[0].storageRef,storageRef);
+      report.loginNegative={failedCredentials:true,expired:true,reprepared:true,partitionUnchanged:true};
+    }
     await popupCycle('未录制环境');assert.equal(studio.runs.length,0);
     report.journeys.U01={passed:true,storageRef:studio.profiles[0].storageRef,recordingsBeforeDemonstration:0};
     await click('开始录制');await wait(async()=>studio.active?.capture,value=>value==='recording','recording ready');
@@ -80,11 +95,21 @@ export async function runProductJourney(studio:Studio,reopen=false){
     const first=(await draft()).content.checkpoints[0];assert(first.sourceReceiptRef);report.journeys.U02={passed:true,cardId:first.id,receiptId:first.sourceReceiptRef};
     await fill('新需求含义','两条订单的实付金额');await click('新建并关联需求');
     await click('添加所需字段（实时页面）');await click('取消实时选择（Esc）');
+    if(numeric)await fill('说明','采集前未保存的旧卡片说明必须保留');
     await click('添加所需字段（实时页面）');await wait(async()=>studio.current().capture?.inspecting,Boolean,'live selection');
     await clickExpression("document.querySelector('[data-field=amount]')",studio.current().view.webContents);
     await wait(async()=>(await draft()).content.checkpoints.length,n=>n===2,'durable live example');
+    if(numeric){assert.equal((await draft()).content.checkpoints[0].notes,'采集前未保存的旧卡片说明必须保留');report.dirtyBeforeCapture=true;await choose('值类型','number');}
     await fill('数据集','orders');await fill('字段名','实付金额');await choose('来源要求','必须按页面显示值');await fill('明确含义','订单实际支付的金额，单位元，保持页面显示。');await click('保存字段');
     await wait(async()=>(await draft()).content.fields.length,n=>n===1,'UI field persisted');
+    if(numeric){
+      await fill('期望记录数（可选）','2');await fill('不重复的输出标识字段（可选）','id');await click('保存需求');
+      const before=await read<any>("(()=>{const el=document.querySelector('.material-workbench'),r=el.getBoundingClientRect();return{scrollTop:el.scrollTop,scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()");
+      assert(before.scrollHeight>before.clientHeight,'Long form must have a bounded scrolling container');
+      ui.sendInputEvent({type:'mouseWheel',x:before.x,y:before.y,deltaY:before.scrollTop>50?400:-400,deltaX:0,canScroll:true});
+      const after=await wait(()=>read<number>("document.querySelector('.material-workbench').scrollTop"),value=>value!==before.scrollTop,'mouse wheel scrolls long editor');
+      report.longFormScroll={before,after,mouseWheel:true};
+    }
     let content=(await draft()).content;assert.equal(content.requirements[0].dataset,'orders');assert(content.fields[0].target);assert.equal(content.fields[0].annotationId,undefined);assert.equal(content.checkpoints[0].anchor.eventSeq,first.anchor.eventSeq);
     assert.equal(await read("document.querySelector('[data-field=amount]').getAttribute('style')",studio.current().view.webContents),'outline:1px dotted red');
     report.journeys.U03={passed:true,fieldId:content.fields[0].id,target:content.fields[0].target};
@@ -184,7 +209,20 @@ export async function runProductJourney(studio:Studio,reopen=false){
       const saved=reports.items[0] as any;assert(saved);
       const expected=variant==='good'?'pass':variant==='wrong'?'fail':'inconclusive';assert.equal(saved.overall,expected);
       results.push({variant,executionId:execution.id,materialRevisionId:boundId,reportId:saved.reportId,overall:saved.overall});
+      if(numeric&&variant==='wrong'){
+        const details:any=await studio.executions.reportItems(studio.projects[0].id,execution.id,saved.reportId,'requirements',{limit:10,maxBytes:24576});
+        const req=details.items[0],diagnostic=req.fieldDiagnostics.find((item:any)=>item.code==='value-mismatch');assert(diagnostic);assert.equal(diagnostic.interpretation,'plain-decimal-v1');
+        await clickExpression("[...document.querySelectorAll('.result-center button')].find(el=>el.textContent.startsWith('需求示例：'))");
+        await wait(()=>read<string>("document.querySelector('.result-source-location')?.textContent||''"),value=>value.includes('需求示例'),'requirement example navigation');
+        await click('返回执行结果');await clickExpression(`[...document.querySelectorAll('.result-center button')].find(el=>el.textContent.startsWith(${JSON.stringify(saved.reportId.slice(0,16))}))`);
+        await click('本次验证来源');
+        await wait(()=>read<string>("document.querySelector('.result-source-location')?.textContent||''"),value=>value.includes('本次验证来源'),'actual source navigation');
+        await wait(async()=>(studio.replayHost as any).active?.state?.position,value=>value?.recordingId===execution.runId&&value?.eventSeq===diagnostic.target.position.eventSeq,'actual source exact boundary');
+        report.resultNavigation={exampleRecording:req.materialContext.fields[0].example.anchor.recordingId,actualSource:diagnostic};
+        await click('返回执行结果');
+      }
       await click('返回工作台');
+      if(numeric&&variant==='wrong')await click('返回实时页面');
     }
     report.journeys.U06={passed:true,results,authorizedExecutionWithoutActiveRecording:job.result.id,exportedFixedVersion:boundId};report.passed=true;
     await writeFile(path.join(studio.root,'journey-state.json'),JSON.stringify({processId:process.pid,draftId:knownDraftId,target:(await draft()).content.fields[0].target,revisionId:fixed.revisionId,contentHash:fixed.contentHash},null,2));

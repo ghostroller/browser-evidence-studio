@@ -44,6 +44,7 @@ function applyRule(rule: DataRule, dataset: Dataset, datasets: Dataset[]): RuleR
   const name = rule.type + ('field' in rule ? `:${rule.field}` : '');
   const result = (passes: boolean, message: string): RuleResult => ({ name, verdict: passes ? 'pass' : 'fail', message });
   if (rule.type === 'min-rows') return result(dataset.records.length >= rule.count, `${dataset.records.length} rows; require at least ${rule.count}`);
+  if (rule.type === 'row-count') return result(dataset.records.length === rule.count, `${dataset.records.length} rows; require exactly ${rule.count}`);
   if (rule.type === 'pagination-complete') {
     const pagination = dataset.pagination;
     if (!pagination) return { name, verdict: 'inconclusive', message: 'No pagination termination evidence reported' };

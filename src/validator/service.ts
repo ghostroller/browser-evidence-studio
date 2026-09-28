@@ -117,7 +117,7 @@ export class ValidatorService {
           const proof = fieldProof(materialField, row.value, docs, sourceEntityIndex);
           if (proof.diagnostic) {
             const detail = { ...proof.diagnostic, identity: dataset.identity, batchId: row.batchId, recordIndex: row.recordIndex, verdict: proof.verdict, reason: proof.reason };
-            if (fieldDiagnostics.length < 20 && size(detail) <= 8192) fieldDiagnostics.push(detail);
+            if (fieldDiagnostics.length < 20 && size([...fieldDiagnostics,detail]) <= 12288) fieldDiagnostics.push(detail);
             else diagnosticsTruncated = true;
           }
           verdicts.push(proof.verdict); explanations.add(proof.reason);
@@ -131,6 +131,12 @@ export class ValidatorService {
       const schemaVerdict = combine(checks.filter(c => c.name !== 'pagination-complete' && c.name !== 'dataset-coverage').map(c => c.verdict)), sourceVerdict = sourceChecks.length ? combine(sourceChecks.map(c => c.verdict)) : evidence.some(e => e.status === 'content-verified') ? 'pass' : 'inconclusive';
       requirements.push({ requirementId: requirement.id, verdict: combine([...checks.map(c => c.verdict), sourceVerdict, version.verdict]), coverage: dataset?.complete && checks.filter(c => c.name === 'pagination-complete').every(c => c.verdict === 'pass') ? 'complete' : dataset?.rows.length ? 'partial' : 'missing',
         evidence, checks: [...checks, ...sourceChecks], schemaVerdict, sourceVerdict, scriptAssertions, fieldDiagnostics, diagnosticsTruncated,
+        materialContext: { description: requirement.description, fields: fields.map(field => {
+          const card = revision.content.checkpoints.find(card => card.id === field.checkpointId);
+          return { id:field.id,name:field.name,...(field.target?{target:field.target}:{}),...(card?{example:{id:card.id,title:card.title,notes:card.notes,anchor:card.anchor}}:{}) };
+        }) },
+        businessCoverage: dataset?.complete && checks.some(c=>c.name==='pagination-complete'&&c.verdict==='pass') ? 'source-proven'
+          : dataset?.complete && checks.some(c=>c.name==='row-count'&&c.verdict==='pass') && checks.some(c=>c.name.startsWith('unique:')&&c.verdict==='pass') ? 'configured-count-and-uniqueness' : 'unproven',
         humanReviews: humanReviews.filter(r => r.requirementId === requirement.id) });
     }
     const report: ValidationReport = { schemaVersion: 1, binding, attemptId: request.attemptId, materialStatus: 'candidate',

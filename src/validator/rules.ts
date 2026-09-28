@@ -38,6 +38,7 @@ export function ruleCheck(rule: Exclude<DataRule, { type: 'pagination-complete' 
   const name = rule.type + ('field' in rule ? `:${rule.field}` : '');
   const answer = (ok: boolean, reason: string): Check => ({ name, verdict: ok ? complete ? 'pass' : 'inconclusive' : 'fail', reason });
   if (rule.type === 'min-rows') return { name, verdict: rows.length >= rule.count ? 'pass' : complete ? 'fail' : 'inconclusive', reason: `${rows.length} inspected rows; minimum ${rule.count}` };
+  if (rule.type === 'row-count') return { name, verdict: rows.length > rule.count ? 'fail' : !complete ? 'inconclusive' : rows.length === rule.count ? 'pass' : 'fail', reason: `已检查 ${rows.length} 条；固定需求要求恰好 ${rule.count} 条。${complete ? '' : '批次尚未完整提交。'}` };
   if (!rows.length) return { name, verdict: 'inconclusive', reason: 'No records on which to evaluate this rule' };
   const values = rows.map(row => field(row, rule.field));
   if (rule.type === 'required') return answer(values.every(x => x.exists && (rule.allowNull || x.value !== null)), 'Missing properties and explicit null are evaluated separately');

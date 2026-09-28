@@ -7,6 +7,7 @@ import electron from 'electron';
 const root = path.resolve('output/desktop-' + Date.now());
 fs.mkdirSync(root, { recursive: true });
 const baseEnv = { ...process.env, BES_TEST: '1', BES_DATA: root };
+if(process.argv.includes('--numeric'))baseEnv.BES_TEST_NUMERIC='1';
 delete baseEnv.ELECTRON_RUN_AS_NODE;
 const soakArgument = process.argv.findLast(argument => argument.startsWith('--soak='));
 if (soakArgument) {

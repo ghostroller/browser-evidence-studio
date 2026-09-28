@@ -44,6 +44,7 @@ export type DataRule =
   | { type: 'field-type'; field: string; valueType: 'string' | 'number' | 'boolean' | 'object' | 'array' | 'null' }
   | { type: 'unique'; field: string }
   | { type: 'min-rows'; count: number }
+  | { type: 'row-count'; count: number }
   | { type: 'pagination-complete'; minPages?: number; proof?: NumberedPaginationProof }
   | { type: 'same-entity'; field: string; equalsField: string }
   | { type: 'reference'; field: string; dataset: string; targetField: string };
@@ -160,7 +161,7 @@ export function parseWorkflowManifest(value: unknown): WorkflowManifest {
 function validateDataRule(value: unknown): void {
   if (!object(value)) throw new Error('Invalid data rule');
   switch (value.type) {
-    case 'min-rows':
+    case 'row-count': case 'min-rows':
       if (!Number.isSafeInteger(value.count) || (value.count as number) < 0) throw new Error('Invalid min-rows count');
       return;
     case 'pagination-complete':
