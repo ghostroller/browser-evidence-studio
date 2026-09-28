@@ -163,7 +163,7 @@ export async function runProductJourney(studio:Studio,reopen=false){
     await choose('类型','需求');await clickExpression("[...document.querySelectorAll('.material-editor label')].find(el=>el.textContent.trim()==='两条订单的实付金额')?.querySelector('input[type=checkbox]')");
     await fill('注释','发布时统一保存的历史注释');await fill('需求说明','两条订单实付金额，保留页面元单位');await fill('明确含义','订单实际支付金额，单位元；直接发布也应保存本次说明。');
     mark('E01：未分别保存卡片类型/关联、普通注释、需求与字段说明，直接发布');await click('发布候选版本');
-    let revisions=await studio.materials.service.listRevisions(studio.projects[0].id,{limit:100,maxBytes:28672});assert.equal(revisions.items.length,1);
+    let revisions=await wait(()=>studio.materials.service.listRevisions(studio.projects[0].id,{limit:100,maxBytes:28672}),value=>value.items.length===1,'first published revision');assert.equal(revisions.items.length,1);
     const revision=await studio.materials.service.revision(studio.projects[0].id,revisions.items[0].revisionId);
     assert.equal(revision.content.fields[0].description,'订单实际支付金额，单位元；直接发布也应保存本次说明。');assert.deepEqual(revision.content.fields[0].target,report.journeys.U03.target);assert.deepEqual(revision.content.requirements[0].fieldIds,[revision.content.fields[0].id]);assert.equal(revision.content.requirements[0].dataset,'orders');assert.equal(revision.content.checkpoints[2].kind,'requirement');assert.deepEqual(revision.content.checkpoints[2].requirementIds,[revision.content.requirements[0].id]);assert(revision.content.annotations.some(item=>item.text==='发布时统一保存的历史注释'));
     report.regressions={E01:{visible:true,batchedDirectPublish:true,kind:true,association:true,ordinaryAnnotation:true,fieldAndRequirement:true},session:{visible:true,noRecordingPopupAndSwitch:true,sealedPopupAndSwitch:true,auditFailure:'module-only'},E02:{visible:'live cancellation and fresh selection',partialAndStaleFaults:'renderer/service injection only'},E03:{lateResponses:'renderer/service injection only'}};
@@ -175,7 +175,7 @@ export async function runProductJourney(studio:Studio,reopen=false){
     assert.equal((await studio.materials.service.revision(studio.projects[0].id,revision.revisionId)).contentHash,revision.contentHash);
     assert.equal(copy.title,'订单列表副本');assert.equal((await studio.materials.service.revision(studio.projects[0].id,revision.revisionId)).content.checkpoints.length,3);
     assert.deepEqual(await originalHashes(),beforeOriginals);
-    const second=await draft();const implementationRevision=await studio.materials.service.revision(studio.projects[0].id,second.baseRevisionId!);
+    const second=await wait(draft,value=>!!value.baseRevisionId&&value.baseRevisionId!==revision.revisionId,'second published revision');const implementationRevision=await studio.materials.service.revision(studio.projects[0].id,second.baseRevisionId!);
     report.journeys.U05={...report.journeys.U05,copyId:copy.id,derivedFrom:copy.derivedFrom,secondRevisionId:implementationRevision.revisionId,firstUnchanged:true,originalFilesUnchanged:Object.keys(beforeOriginals).length};
     for(const index of [1,0]){await clickExpression(`[...document.querySelectorAll('.material-revision button')][${index}]`);await wait(()=>read<string>("document.querySelector('.material-editor > section')?.innerText||''"),value=>value.includes(index===1?revision.revisionId:implementationRevision.revisionId),'fixed version view');const text=await read<string>("document.querySelector('.material-editor > section').innerText");assert.equal(text.includes('订单列表副本'),index===0);}
     const implementation=path.join(studio.root,'implementation');
@@ -186,7 +186,7 @@ export async function runProductJourney(studio:Studio,reopen=false){
     const consumed=await implementExportedProductTask(path.dirname(taskFile),implementation,site.url+'/orders');assert.equal(consumed.revisionId,implementationRevision.revisionId);
     await click('撤销此授权');await click('返回工作台');
     await click('执行');await fill('脚本目录',implementation);await click('登记脚本目录');await click('保存点与字段');await click('读取实现器映射');await click('确认映射并保存草稿');await click('发布候选版本');
-    revisions=await studio.materials.service.listRevisions(studio.projects[0].id,{limit:100,maxBytes:28672});assert.equal(revisions.items.length,3);
+    revisions=await wait(()=>studio.materials.service.listRevisions(studio.projects[0].id,{limit:100,maxBytes:28672}),value=>value.items.length===3,'mapped published revision');assert.equal(revisions.items.length,3);
     const fixedId=await read<string>("document.querySelector('select[aria-label=\"固定任务资料版本\"]')?.value||''");
     await click('返回实时页面');await click('执行');await choose('运行方式','当前页面试跑');
     const boundId=await read<string>("document.querySelector('select[aria-label=\"固定任务资料版本\"]').value");assert(boundId);
