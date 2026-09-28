@@ -60,7 +60,7 @@ export class ProjectMaterials {
   async authorReceipt(projectId:string,input:{operationId:string;receiptId:string;position:ReplayPosition;title:string;notes:string;draftId?:string;derivedFrom?:string}){
     const draft=input.draftId?await this.service.getDraft(projectId,input.draftId):await this.workingDraft(projectId);
     const existing=draft.content.checkpoints.find(card=>card.operationId===input.operationId);
-    if(existing)return {draft:materialSummary(draft),card:existing};
+    if(existing){ensure(existing.sourceReceiptRef===input.receiptId&&sameReplayPosition(existing.anchor,input.position),'Operation card has a different original receipt or source position',409);return {draft:materialSummary(draft),card:existing};}
     const parent=draft.content.checkpoints.find(card=>card.id===input.derivedFrom);
     const card={id:randomUUID(),kind:'observation' as const,anchor:input.position,capturedAt:new Date(input.position.sourceTimeMs).toISOString(),createdAt:new Date().toISOString(),sourceReceiptRef:input.receiptId,operationId:input.operationId,title:input.title,notes:input.notes,requirementIds:parent?.requirementIds??[],annotationIds:[],...(parent?{derivedFrom:parent.id}:{})};
     const content=structuredClone(draft.content);content.checkpoints.push(card);

@@ -1,6 +1,7 @@
 import { WebContentsView, session, app, type Session, type DownloadItem, type WebContents } from 'electron';
 import { mkdir, readFile, readdir, stat, open } from 'node:fs/promises';
 import path from 'node:path';
+import { sameReplayPosition } from '@/contracts/recording';
 import { randomUUID } from 'node:crypto';
 import puppeteer, { type Browser, type Page, type Dialog } from 'puppeteer-core';
 import { StudioWindow } from '../window';
@@ -63,6 +64,7 @@ export interface SessionRuntime {
 export interface ActiveRun extends SessionRuntime { id:string; store:EvidenceStore; }
 export class Studio {
   readonly instanceId=randomUUID();
+  private readonly authoringTasks=new Map<string,{appInstanceId:string;sessionId:string|undefined;fingerprint:string;promise:Promise<any>}>();
   private browser?:BrowserSessionLifecycle<SessionRuntime>;
   get browserSessionId(){return this.browser?.id;}
   projects:Project[]=[]; profiles:Profile[]=[]; runs:any[]=[]; active?:ActiveRun;
@@ -539,32 +541,66 @@ export class Studio {
   private async recoverAuthoringReceipt(operation:any){
     if(operation.receiptId)return;
     let cursor:string|undefined;
-    do{const checkpoints=await this.reader(operation.recordingId).checkpoints({limit:100,maxBytes:32768,cursor});
-      const found=checkpoints.items.find((item:any)=>item.metadata?.authoring?.operationId===operation.operationId) as any;
-      if(found){operation.receiptId=found.id;operation.stage='receipt-saved';if(operation.fingerprint&&(found.captureConsistency!=='consistent'||found.pageId!==operation.source?.pageId||found.navigationGeneration!==operation.source?.generation))operation.sourceExpired=true;return;}cursor=checkpoints.nextCursor;
+    do{const checkpoints=await this.reader(operation.recordingId).checkpoints({limit:100,maxBytes:32768,cursor,fields:['pageId','navigationGeneration','captureConsistency','/metadata/authoring']});
+      ensure(!checkpoints.items.some((item:any)=>item.readStatus),'原始收据超出读取预算，保存状态仍未知',409);
+      const found=checkpoints.items.find((item:any)=>(item['/metadata/authoring']??item.metadata?.authoring)?.operationId===operation.operationId) as any;
+      if(found){
+        const author=found['/metadata/authoring']??found.metadata.authoring;
+        ensure(author.projectId===operation.projectId&&author.draftId===operation.draftId&&author.recordingId===operation.recordingId&&author.fingerprint===operation.fingerprint&&author.appInstanceId===operation.appInstanceId&&JSON.stringify(author.source)===JSON.stringify(operation.source),'原始收据的操作身份不一致，保存状态仍未知',409);
+        operation.receiptId=found.id;operation.stage='receipt-saved';if(operation.fingerprint&&(found.captureConsistency!=='consistent'||found.pageId!==operation.source?.pageId||found.navigationGeneration!==operation.source?.generation))operation.sourceExpired=true;return;
+      }cursor=checkpoints.nextCursor;
     }while(cursor);
   }
+  private async reconcileAuthoring(operation:any){
+    try{await this.recoverAuthoringReceipt(operation);delete operation.recoveryError;}
+    catch(error){operation.recoveryError=String(error);return {stage:'unknown',status:'partial',operationId:operation.operationId,reason:'原件读取失败，无法确认是否已采集：'+String(error)};}
+    const task=this.authoringTasks.get(operation.operationId);
+    if(task&&task.appInstanceId===this.instanceId&&task.fingerprint===operation.fingerprint&&task.sessionId===operation.source?.sessionId)return {stage:'acquiring',status:'partial',operationId:operation.operationId,receiptId:operation.receiptId,reason:'当前实例仍在完成这次采集；查询不会启动第二次采集。'};
+    if(!operation.receiptId&&(operation.stage==='acquiring'||operation.stage==='unknown'||operation.appInstanceId&&operation.appInstanceId!==this.instanceId)){
+      operation.stage='interrupted';operation.reason='原采集执行者已结束，未查得原始收据；已保留操作和部分附件，请重新选择。';await atomicJson(this.authoringFile(operation),operation);
+    }
+    return undefined;
+  }
   async authoringOperation(body:any){
-    const operation=await this.readAuthoring(body);if(!operation)return {stage:'not-captured',operationId:body.operationId};
-    await this.recoverAuthoringReceipt(operation);
+    const operation=await this.readAuthoring(body);
+    if(!operation){
+      const task=this.authoringTasks.get(body.operationId);
+      if(task){ensure(task.fingerprint===this.authoringIdentity(body),'Operation request identity changed',409);return {stage:'acquiring',status:'partial',operationId:body.operationId,reason:'当前实例仍在准备采集；尚未写入意图不表示任务已结束。'};}
+      return {stage:'not-captured',operationId:body.operationId};
+    }
+    const pending=await this.reconcileAuthoring(operation);if(pending)return pending;
     const common={operationId:operation.operationId,receiptId:operation.receiptId,purpose:operation.purpose??(operation.target?'field':'observation'),fieldId:operation.fieldId,target:operation.target};
     if(operation.sourceExpired)return {...common,stage:'source-expired',status:'partial'};
-    if(operation.receiptId){const draft=await this.materials.service.getDraft(operation.projectId,operation.draftId);const card=draft.content.checkpoints.find(item=>item.operationId===operation.operationId);if(card)return {...common,stage:'associated',status:'saved',card,draft:materialSummary(draft)};}
-    return {...common,stage:operation.receiptId?'receipt-saved':operation.stage??'not-captured',status:'partial'};
+    if(operation.receiptId){const draft=await this.materials.service.getDraft(operation.projectId,operation.draftId);const card=draft.content.checkpoints.find(item=>item.operationId===operation.operationId);if(card){ensure(card.sourceReceiptRef===operation.receiptId&&sameReplayPosition(card.anchor,operation.position),'Operation card has a different original receipt or source position',409);return {...common,stage:'associated',status:'saved',card,draft:materialSummary(draft)};}}
+    return {...common,stage:operation.receiptId?'receipt-saved':operation.stage??'not-captured',status:'partial',reason:operation.reason};
   }
   async captureAndAuthor(body:any){
+    const operationId=body.operationId;this.authoringFile(body);
+    const fingerprint=this.authoringIdentity(body),existing=this.authoringTasks.get(operationId);
+    if(existing){ensure(existing.fingerprint===fingerprint,'Operation request identity changed',409);return existing.promise;}
+    // Register before the first await. A journal stage alone is not a live task.
+    const task={appInstanceId:this.instanceId,sessionId:this.browserSessionId,fingerprint,promise:undefined as unknown as Promise<any>};
+    this.authoringTasks.set(operationId,task);
+    task.promise=this.performCaptureAndAuthor(body).finally(()=>{if(this.authoringTasks.get(operationId)===task)this.authoringTasks.delete(operationId);});
+    return task.promise;
+  }
+  private async performCaptureAndAuthor(body:any){
     const run=this.active;ensure(!run||run.controller==='human','Authoring requires human ownership',409);
     const file=this.authoringFile(body);await mkdir(path.dirname(file),{recursive:true});let operation=await this.readAuthoring(body);
+    if(operation){
+      try{await this.recoverAuthoringReceipt(operation);}catch(error){return {stage:'unknown',status:'partial',operationId:body.operationId,reason:'原件读取失败，无法确认是否已采集：'+String(error)};}
+      if(!operation.receiptId&&(operation.stage==='acquiring'||operation.stage==='unknown'||operation.appInstanceId&&operation.appInstanceId!==this.instanceId)){operation.stage='interrupted';operation.reason='原采集执行者已结束，未查得原始收据；请重新选择。';await atomicJson(file,operation);}
+      if(operation.stage==='interrupted')return {stage:'interrupted',status:'partial',operationId:body.operationId,reason:operation.reason};
+    }
     if(!operation){
       ensure(run&&run.projectId===body.projectId,'Start recording in this project before creating a live savepoint',409);const page=this.current();
       const selected=(run.selection as any)?.sample?.ref;
       if(body.selection)ensure(page.capture?.inspecting&&page.capture.selectionId===body.selectionId&&selected&&(run.selection as any).selectionId===body.selectionId&&typeof body.selectionId==='string'&&(run.selection as any).generation===page.navigationGeneration&&body.generation===page.navigationGeneration&&body.pageId===page.pageId&&body.leaseEpoch===run.leaseEpoch&&selected.position.recordingId===run.id&&selected.position.pageId===page.pageId,'Live selection has no current durable source',409);
       const source={sessionId:this.browserSessionId,pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration,leaseEpoch:run.leaseEpoch};
       const position=body.selection?selected.position:await page.capture!.snapshotPosition();
-      operation={projectId:run.projectId,recordingId:run.id,operationId:body.operationId,position,title:body.title||'当前结果',notes:body.notes||'',draftId:body.draftId,derivedFrom:body.derivedFrom,purpose:body.purpose??(body.selection?'field':'observation'),fieldId:body.fieldId,source,fingerprint:this.authoringIdentity(body),stage:'not-captured',...(body.selection?{target:selected}:{})};
+      operation={appInstanceId:this.instanceId,projectId:run.projectId,recordingId:run.id,operationId:body.operationId,position,title:body.title||'当前结果',notes:body.notes||'',draftId:body.draftId,derivedFrom:body.derivedFrom,purpose:body.purpose??(body.selection?'field':'observation'),fieldId:body.fieldId,source,fingerprint:this.authoringIdentity(body),stage:'not-captured',...(body.selection?{target:selected}:{})};
       await atomicJson(file,operation);
     }
-    await this.recoverAuthoringReceipt(operation);
     if(operation.sourceExpired)return {status:'partial',stage:'source-expired',receiptId:operation.receiptId,reason:'采集期间来源变化；原件保留，请重新选择。'};
     if(!operation.receiptId){
       const source=operation.source,page=run?.pages.get(source?.pageId);
@@ -573,7 +609,7 @@ export class Studio {
       operation.stage='acquiring';await atomicJson(file,operation);
       // Recheck after the durable intent write, immediately before acquisition.
       if(!current()){operation.stage='source-expired';await atomicJson(file,operation);return {stage:'source-expired',status:'partial',operationId:operation.operationId,reason:'原页面身份已过期；请重新选择。'};}
-      let receipt:any;try{receipt=await this.checkpoint({title:operation.title,description:operation.notes,generation:source.generation},{pageId:source.pageId,authoring:operation});}catch(error){await this.recoverAuthoringReceipt(operation);if(!operation.receiptId)operation.stage='not-captured';await atomicJson(file,operation);throw error;}
+      let receipt:any;try{receipt=await this.checkpoint({title:operation.title,description:operation.notes,generation:source.generation},{pageId:source.pageId,authoring:operation});}catch(error){try{await this.recoverAuthoringReceipt(operation);if(!operation.receiptId)operation.stage='not-captured';}catch(readError){operation.stage='unknown';operation.recoveryError=String(readError);}await atomicJson(file,operation);throw error;}
       operation.receiptId=receipt.id;operation.stage='receipt-saved';await run!.store.flush();
       if(!current()||receipt.captureConsistency!=='consistent'||receipt.pageId!==source.pageId||receipt.navigationGeneration!==source.generation){operation.sourceExpired=true;operation.stage='source-expired';await atomicJson(file,operation);return {status:'partial',stage:'source-expired',receiptId:operation.receiptId,reason:'采集期间来源变化；原件保留，请重新选择。'};}
     }
