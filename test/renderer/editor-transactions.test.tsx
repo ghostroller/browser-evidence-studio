@@ -59,8 +59,9 @@ test('keeps a bound field and fixed hash while saving requirement and field desc
   const f=await fixture();const original=await f.materials.service.getDraft('project',f.draft.draftId);
   original.content.fields=[{id:'amount',name:'Amount',description:'Old meaning',dataset:'orders',sourcePolicy:'page-displayed',target,checkpointId:'card',annotationId:'note',bindingStatus:'bound'}];original.content.requirements[0].fieldIds=['amount'];original.content.requirements[0].dataset='orders';
   await f.materials.service.updateDraft('project',original.draftId,original.draftRevision,original.content,'human');const current=await f.materials.service.getDraft('project',original.draftId);const old=await f.materials.service.publish('project',current.draftId,current.draftRevision,'human');
-  render(<MaterialWorkbench {...props}/>);await screen.findByRole('button',{name:/^Example/});await screen.findByRole('option',{name:'orders.Amount'});
+  render(<MaterialWorkbench {...props}/>);fireEvent.click(await screen.findByRole('button',{name:/^Example/}));await screen.findByText(/Original note/);await screen.findByRole('option',{name:'orders.Amount'});await screen.findByRole('option',{name:'Amounts'});
   fireEvent.change(screen.getByLabelText('需求'),{target:{value:'requirement'}});fireEvent.change(screen.getByLabelText('字段'),{target:{value:'amount'}});
+  expect((screen.getByLabelText('需求') as HTMLSelectElement).value).toBe('requirement');expect((screen.getByLabelText('明确含义') as HTMLTextAreaElement).value).toBe('Old meaning');
   fireEvent.change(screen.getByLabelText('需求说明'),{target:{value:'New requirement meaning'}});fireEvent.change(screen.getByLabelText('明确含义'),{target:{value:'New field meaning'}});fireEvent.click(screen.getByRole('button',{name:'发布候选版本'}));
   await waitFor(()=>expect(f.fixed).toHaveLength(1));expect(f.fixed[0].content.fields[0]).toMatchObject({target,annotationId:'note',description:'New field meaning'});expect(f.fixed[0].content.requirements[0]).toMatchObject({fieldIds:['amount'],dataset:'orders',description:'New requirement meaning'});
   expect((await f.materials.service.revision('project',old.revisionId)).contentHash).toBe(old.contentHash);
@@ -210,6 +211,30 @@ test('parked field recovery never replaces unrelated field buffers and binds onl
 
 test('late capture receipt cannot replace another project editor',async()=>{
  const f=await fixture(),original=f.call.getMockImplementation()!,capture=deferred<any>();f.call.mockImplementation(async(method,body)=>method==='captureAndAuthor'?capture.promise:original(method,body));const view=render(<MaterialWorkbench {...props} live/>);await screen.findByRole('button',{name:/^Example/});fireEvent.click(screen.getByRole('button',{name:'记录当前结果'}));await waitFor(()=>expect(f.call.mock.calls.some(([method])=>method==='captureAndAuthor')).toBe(true));view.rerender(<MaterialWorkbench {...props} projectId="another-project" live/>);await screen.findByRole('button',{name:/^Example/});const request=f.call.mock.calls.find(([method])=>method==='captureAndAuthor')![1];await act(async()=>capture.resolve({status:'saved',stage:'associated',...(await f.materials.authorReceipt('project',{...request,receiptId:'late-receipt',position,title:'Late old project',notes:''}))}));expect((screen.getByLabelText('标题') as HTMLInputElement).value).not.toBe('Late old project');expect(screen.queryByText('已保存原始材料并关联同一张可编辑保存点。')).toBeNull();
+});
+
+test('existing field opens its unique requirement and dirty unassigned field can choose that requirement without losing a clear binding',async()=>{
+ const f=await fixture(),original=await f.materials.service.getDraft('project',f.draft.draftId);
+ original.content.fields=[{id:'amount',name:'Amount',description:'Original meaning',dataset:'orders',valueType:'number',sourcePolicy:'page-displayed',target,checkpointId:'card',bindingStatus:'bound'}];original.content.requirements[0].fieldIds=['amount'];original.content.requirements[0].dataset='orders';
+ await f.materials.service.updateDraft('project',original.draftId,original.draftRevision,original.content,'human');const current=await f.materials.service.getDraft('project',original.draftId),old=await f.materials.service.publish('project',current.draftId,current.draftRevision,'human');
+ const view=render(<MaterialWorkbench {...props}/>);await screen.findByRole('option',{name:'orders.Amount'});await screen.findByRole('option',{name:'Amounts'});fireEvent.change(screen.getByLabelText('字段'),{target:{value:'amount'}});
+ expect((screen.getByLabelText('需求') as HTMLSelectElement).value).toBe('requirement');
+ // Also recover the already-persisted editor state from the previous build:
+ // no selected requirement, with a dirty existing field and an explicit clear.
+ const key=`bes.editor.project.${f.draft.draftId}`;await waitFor(()=>expect(JSON.parse(localStorage.getItem(key)!).requirementId).toBe('requirement'));const cached=JSON.parse(localStorage.getItem(key)!);view.unmount();localStorage.setItem(key,JSON.stringify({...cached,requirementId:'',requirementDescription:'',rulesJson:'[]'}));render(<MaterialWorkbench {...props}/>);await waitFor(()=>expect((screen.getByLabelText('字段') as HTMLSelectElement).value).toBe('amount'));await screen.findByRole('option',{name:'Amounts'});fireEvent.change(screen.getByLabelText('明确含义'),{target:{value:'Edited before choosing requirement'}});
+ fireEvent.click(screen.getByRole('button',{name:'解除绑定'}));fireEvent.click(screen.getByRole('button',{name:'确认解除绑定'}));fireEvent.change(screen.getByLabelText('需求'),{target:{value:'requirement'}});
+ await waitFor(()=>expect((screen.getByLabelText('需求') as HTMLSelectElement).value).toBe('requirement'));expect((screen.getByLabelText('明确含义') as HTMLInputElement).value).toBe('Edited before choosing requirement');
+ fireEvent.click(screen.getByRole('button',{name:'保存字段'}));await waitFor(async()=>{const field=(await f.materials.service.getDraft('project',f.draft.draftId)).content.fields[0];expect(field.description).toBe('Edited before choosing requirement');expect(field.target).toBeUndefined();});
+ expect((await f.materials.service.revision('project',old.revisionId)).contentHash).toBe(old.contentHash);expect(old.content.fields[0].target).toEqual(target);
+});
+
+test('a shared existing field keeps its buffer until an explicit requirement is chosen',async()=>{
+ const f=await fixture(),draft=await f.materials.service.getDraft('project',f.draft.draftId);
+ draft.content.fields=[{id:'shared',name:'Shared',description:'Before',dataset:'records',sourcePolicy:'any-evidenced'}];for(const requirement of draft.content.requirements){requirement.fieldIds=['shared'];requirement.dataset='records';}
+ await f.materials.service.updateDraft('project',draft.draftId,draft.draftRevision,draft.content,'human');render(<MaterialWorkbench {...props}/>);await screen.findByRole('option',{name:'records.Shared'});await screen.findByRole('option',{name:'Other requirement'});
+ fireEvent.change(screen.getByLabelText('字段'),{target:{value:'shared'}});expect((screen.getByLabelText('需求') as HTMLSelectElement).value).toBe('');fireEvent.change(screen.getByLabelText('明确含义'),{target:{value:'After explicit selection'}});fireEvent.change(screen.getByLabelText('需求'),{target:{value:'other'}});
+ await waitFor(()=>expect((screen.getByLabelText('需求') as HTMLSelectElement).value).toBe('other'));expect((screen.getByLabelText('字段') as HTMLSelectElement).value).toBe('shared');fireEvent.click(screen.getByRole('button',{name:'发布候选版本'}));await waitFor(()=>expect(f.fixed).toHaveLength(1));
+ expect(f.fixed[0].content.fields[0].description).toBe('After explicit selection');expect(f.fixed[0].content.requirements.map(item=>item.fieldIds)).toEqual([['shared'],['shared']]);
 });
 
 test('ordinary requirement controls persist explicit count and unique output key',async()=>{
