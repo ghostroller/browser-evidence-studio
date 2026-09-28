@@ -469,6 +469,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
       {confirmClear&&<p role="alert">解除该字段的绑定，保留说明？<Button onClick={()=>{markDirty('field');setBindingAction('clear');setFieldTarget(null);setFieldAnnotationId('');setConfirmClear(false);}}>确认解除绑定</Button><Button onClick={()=>setConfirmClear(false)}>保留绑定</Button></p>}
       {fieldTarget && <SourceTargetPreview projectId={projectId} target={fieldTarget}/>}
       {fieldTarget && <Label>关联元素注释（可选）<NativeSelect value={fieldAnnotationId} onChange={event => {markDirty('field');setFieldAnnotationId(event.target.value);}}><option value="">无注释</option>{(pages.annotations.items as MaterialAnnotation[]).filter(item => JSON.stringify(item.target) === JSON.stringify(fieldTarget)).map(item => <option key={item.id} value={item.id}>{item.text.slice(0, 70)}</option>)}</NativeSelect></Label>}
+      {!selectedRequirement&&<p className="hint">请先在“需求”中选择这个字段所属的需求；卡片的新关联不会自动改变字段归属。</p>}
       <Button disabled={!selectedRequirement || !!pending} onClick={() => void saveField()}>保存字段</Button>{pages.fields.nextCursor && <Button onClick={() => void moreCollection(draft, 'fields', pages.fields.nextCursor!)}>更多字段</Button>}
       </section></>}</div></div>
   </div>;

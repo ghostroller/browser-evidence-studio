@@ -26,7 +26,15 @@ export async function implementationMapping(studio:Studio,body:any,confirm=false
     return {...field,outputPath:parseJsonPointer(mapping.outputPath),...(mapping.sourceProof?{sourceProof:parseFieldSourceProof(mapping.sourceProof)}:{})};
   });
   const issues=fields.flatMap((field:any)=>{const issue=sourceProofCompatibility(field);return issue?[`${field.name}：${issue}`]:[];});
-  const summary={proposalHash,draftRevision:draft.draftRevision,compatible:issues.length===0,issues,fields:fields.map((field:any)=>({name:field.name,description:field.description,dataset:field.dataset,valueType:field.valueType,sourcePolicy:field.sourcePolicy,outputPath:field.outputPath,example:draft.content.checkpoints.find(card=>card.id===field.checkpointId)?.title ?? '未绑定保存点例证',compatibility:sourceProofCompatibility(field),verification:field.sourceProof?`${field.valueType ?? '未指定类型'} 输出 · ${field.sourceProof.kind==='dom-text'?(field.sourceProof.valueInterpretation?DECIMAL_V1_DESCRIPTION:'精确文本；保留币种、空白与小数尾零，不作转换。'):'原始 JSON 值'} · ${field.sourceProof.sourceUrl} · 实体 ${field.sourceProof.outputEntityPath}`:'未提供独立检查；结果将保持未核验'}))};
+  const examples=new Map<string,string>();
+  // Bounded, original-only example reads; unavailable samples never become inferred values.
+  for(const field of fields.slice(0,20)){
+    if(field.target?.kind!=='dom-node')continue;
+    try{const replay=await studio.materials.replay(field.target.position.recordingId,body.projectId),node=await replay.node(field.target,{maxBytes:16384,limit:1});
+      examples.set(field.id,node.presentation?.status==='present'?`例证原文 ${JSON.stringify(node.presentation.value.text.slice(0,128))}（展示至多128字符；例证不是每次运行的常量）`:`例证显示值 ${node.presentation?.status??'未采样'}`);
+    }catch{examples.set(field.id,'例证原件暂不可读；未推断示例值');}
+  }
+  const summary={proposalHash,draftRevision:draft.draftRevision,compatible:issues.length===0,issues,fields:fields.map((field:any)=>({name:field.name,description:field.description,dataset:field.dataset,valueType:field.valueType,sourcePolicy:field.sourcePolicy,outputPath:field.outputPath,example:draft.content.checkpoints.find(card=>card.id===field.checkpointId)?.title ?? '未绑定保存点例证',compatibility:sourceProofCompatibility(field),verification:field.sourceProof?`${examples.get(field.id)??'例证正文未载入'} · ${field.valueType ?? '未指定类型'} 输出 · ${field.sourceProof.kind==='dom-text'?(field.sourceProof.valueInterpretation?DECIMAL_V1_DESCRIPTION:'精确文本；保留币种、空白与小数尾零，不作转换。'):'原始 JSON 值'} · ${field.sourceProof.sourceUrl} · 实体 ${field.sourceProof.outputEntityPath}`:'未提供独立检查；结果将保持未核验'}))};
   if(!confirm)return summary;
   ensure(summary.compatible,issues.join('\n'),422);
   ensure(body.proposalHash===proposalHash&&body.expectedDraftRevision===draft.draftRevision,'映射或草稿已变化，请重新阅读确认。',409);
