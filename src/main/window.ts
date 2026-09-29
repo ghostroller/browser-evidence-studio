@@ -5,6 +5,7 @@ import { StudioError } from '@/shared/errors';
 import { UiPreferencesStore, type UiTheme } from './ui-preferences';
 declare const MAIN_WINDOW_VITE_DEV_SERVER_URL: string | undefined;
 export class StudioWindow {
+  onBrowserShortcut: (action:string)=>void = ()=>{};
   readonly uiUrl = typeof MAIN_WINDOW_VITE_DEV_SERVER_URL!=='undefined'&&MAIN_WINDOW_VITE_DEV_SERVER_URL ? new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL).href : pathToFileURL(path.join(import.meta.dirname,'../renderer/main_window/index.html')).href;
   readonly window: BrowserWindow;
   readonly mask: WebContentsView;
@@ -39,6 +40,7 @@ export class StudioWindow {
     // Keep the underlying compositor surface visible while this native view owns input.
     // An opaque covering view can stop IntersectionObserver updates used by Puppeteer.
     this.mask.setBackgroundColor('#00000000');
+    this.mask.webContents.on('before-input-event',(event,input)=>{if(input.type==='keyDown'&&input.key==='Escape'){event.preventDefault();this.onBrowserShortcut('cancel');}});
     this.maskReady = this.mask.webContents.loadURL('data:text/html;charset=utf-8,'+encodeURIComponent(`<!doctype html><html data-theme="${theme}"><head><style>:root{color-scheme:light;--fg:#262626;--bg:#fffffff2;--line:#d4d4d4;--tint:#73737312}:root[data-theme=dark]{color-scheme:dark;--fg:#e5e5e5;--bg:#262626f2;--line:#525252;--tint:#00000012}body{margin:0;background:var(--tint);color:var(--fg);display:flex;justify-content:center;align-items:flex-start;height:100vh;font:12px system-ui}div{margin:8px;padding:6px 10px;background:var(--bg);border:1px solid var(--line);border-radius:4px;text-align:center}</style></head><body><div><b>操作已锁定</b><span> · 采集与网页后台活动继续进行</span></div></body></html>`));
     // Only this transparent input view receives the UI theme, never the business page.
     void this.maskReady.catch(() => undefined);
@@ -96,11 +98,12 @@ export class StudioWindow {
     });
   }
   add(view: WebContentsView, activate = true) {
-    this.views.push(view); this.window.contentView.addChildView(view);
-    this.window.contentView.removeChildView(this.mask); this.window.contentView.addChildView(this.mask);
-    if (activate) this.show(view);
-    else this.layout();
+    try{this.views.push(view); this.window.contentView.addChildView(view);
+      this.window.contentView.removeChildView(this.mask); this.window.contentView.addChildView(this.mask);
+      if (activate) this.show(view);else this.layout();
+    }catch(error){this.views=this.views.filter(candidate=>candidate!==view);if(this.window.contentView.children.includes(view))this.window.contentView.removeChildView(view);throw error;}
   }
+  focusUi(){if(!this.window.isDestroyed()&&this.window.isFocused())this.window.webContents.focus();}
   private contents(view:WebContentsView) {try{const contents=view.webContents;return contents&&!contents.isDestroyed()?contents:undefined;}catch{return undefined;}}
   show(view?: WebContentsView) { this.active = view&&this.views.includes(view)&&this.contents(view)?view:undefined; this.layout(); }
   assertInputReady(view: WebContentsView) {
