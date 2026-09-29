@@ -39,6 +39,32 @@ const state = {
   runs: [runA, runB].map(id => ({ id, projectId: 'project-1', kind: 'demonstrate', status: 'sealed' })),
 };
 
+/** Only the new workspace bootstrap is stubbed; archive reads below retain each
+ * test's deferred, run-scoped responses and original stale-result assertions. */
+function emptyWorkspace(method: string) {
+  const draft = { draftId: 'empty-working-copy', draftRevision: 0, name: '当前工作副本', status: 'available' };
+  if (method === 'workingMaterialDraft' || method === 'materialDraft') return draft;
+  if (method === 'materialDrafts') return { items: [draft], outputTruncated: false };
+  if (['materialRevisions', 'materialCollection', 'authoringRecovery'].includes(method)) return { items: [], outputTruncated: false };
+  if (method === 'materialCatalog') return { schemaVersion: 1, catalogRevision: 0, workingDraftId: draft.draftId, drafts: { [draft.draftId]: { name: draft.name, hidden: false } }, revisions: {}, recordings: {} };
+  throw new Error(`Unexpected studio method: ${method}`);
+}
+
+async function showRecordingArchive() {
+  fireEvent.mouseDown(screen.getByRole('tab', { name: '存档' }), { button: 0, ctrlKey: false });
+  fireEvent.click(await screen.findByRole('button', { name: '原始录制' }));
+  await screen.findByRole('region', { name: '原始录制存档' });
+  await screen.findByRole('heading', { level: 4, name: new RegExp(runA) });
+}
+
+function recordingDiagnostics(runId: string) {
+  const heading = screen.getByRole('heading', { level: 4, name: new RegExp(runId) });
+  const recording = within(heading.closest('section')!);
+  const summary = recording.getByText('录制管理与诊断');
+  if (!(summary.parentElement as HTMLDetailsElement).open) fireEvent.click(summary);
+  return recording;
+}
+
 test('urgent stop remains available during an unrelated pending request and targets the active run', async () => {
   stubLayout();
   const pendingSave = deferred<unknown>();
@@ -49,16 +75,17 @@ test('urgent stop remains available during an unrelated pending request and targ
     if (method === 'presentation') return undefined;
     if (method === 'saveProfile') return pendingSave.promise;
     if (method === 'stopRunner') return { stopped: true };
-    throw new Error(`Unexpected method ${method}`);
+    return emptyWorkspace(method);
   });
   window.studio = { call, bounds: vi.fn() };
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
-  fireEvent.mouseDown(screen.getByRole('tab', { name: '执行' }), { button: 0, ctrlKey: false });
+  fireEvent.mouseDown(screen.getByRole('tab', { name: '实现与结果' }), { button: 0, ctrlKey: false });
   await waitFor(() => expect((screen.getByRole('button', { name: '保存当前登录环境' }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(screen.getByRole('button', { name: '保存当前登录环境' }));
   await waitFor(() => expect(call).toHaveBeenCalledWith('saveProfile', {}));
   const stop = screen.getByRole('button', { name: '停止并接管' }) as HTMLButtonElement;
   expect(stop.disabled).toBe(false);
+  expect((screen.getByRole('button', { name: '全局停止自动化' }) as HTMLButtonElement).disabled).toBe(false);
   fireEvent.click(stop);
   await waitFor(() => expect(call).toHaveBeenCalledWith('stopRunner', { runId: runA, validationId: undefined }));
   await act(async () => pendingSave.resolve({}));
@@ -67,6 +94,7 @@ test('urgent stop remains available during an unrelated pending request and targ
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  localStorage.clear();
   delete (window as Partial<Window>).studio;
 });
 
@@ -81,13 +109,13 @@ test('a readable sealed run offers explicit trusted index repair with its inspec
       indexDiagnostics: { replay: { state: 'missing', reason: 'index-lost' }, resources: { state: 'published', reason: 'generation-manifest-present' } },
     };
     if (method === 'recoverRunIndexes') return { runId: runA, replay: {}, resources: {} };
-    throw new Error(`Unexpected studio method: ${method}`);
+    return emptyWorkspace(method);
   });
   window.studio = { call, bounds: vi.fn() };
 
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
-  fireEvent.mouseDown(screen.getByRole('tab', { name: '存档' }), { button: 0, ctrlKey: false });
-  fireEvent.click(await screen.findAllByRole('button', { name: '检查/重建索引' }).then(buttons => buttons[0]));
+  await showRecordingArchive();
+  fireEvent.click(recordingDiagnostics(runA).getByRole('button', { name: '检查/重建索引' }));
   const dialog = await screen.findByRole('dialog');
   await waitFor(() => expect(within(dialog).getByText(/回放索引：missing/)).toBeTruthy());
   fireEvent.click(within(dialog).getByRole('button', { name: '检查并重建回放/资源索引' }));
@@ -105,15 +133,15 @@ test('a late history response cannot replace the selected archive or redirect ar
     if (method === 'presentation') return undefined;
     if (method === 'history') return (body as { runId: string }).runId === runA ? requestA.promise : requestB.promise;
     if (method === 'artifact') return { id: (body as { id: string }).id, value: 'B material' };
-    throw new Error(`Unexpected studio method: ${method}`);
+    return emptyWorkspace(method);
   });
   window.studio = { call, bounds: vi.fn() };
 
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
-  fireEvent.mouseDown(screen.getByRole('tab', { name: '存档' }), { button: 0, ctrlKey: false });
-  await waitFor(() => expect(screen.getByRole('button', { name: new RegExp(runA) })).toBeTruthy());
-  fireEvent.click(screen.getByRole('button', { name: new RegExp(runA) }));
-  fireEvent.click(screen.getByRole('button', { name: new RegExp(runB) }));
+  await showRecordingArchive();
+  await waitFor(() => expect(screen.getByRole('heading', { level: 4, name: new RegExp(runA) })).toBeTruthy());
+  fireEvent.click(recordingDiagnostics(runA).getByRole('button', { name: '原件诊断' }));
+  fireEvent.click(recordingDiagnostics(runB).getByRole('button', { name: '原件诊断' }));
   expect(call).toHaveBeenCalledWith('history', { runId: runA });
   expect(call).toHaveBeenCalledWith('history', { runId: runB });
 
@@ -147,13 +175,13 @@ test('an old artifact response cannot appear in a newly opened archive', async (
       const { id } = body as { id: string };
       return id === 'artifact-A' ? oldArtifact.promise : { id, value: 'B material' };
     }
-    throw new Error(`Unexpected studio method: ${method}`);
+    return emptyWorkspace(method);
   });
   window.studio = { call, bounds: vi.fn() };
 
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
-  fireEvent.mouseDown(screen.getByRole('tab', { name: '存档' }), { button: 0, ctrlKey: false });
-  fireEvent.click(await screen.findByRole('button', { name: new RegExp(runA) }));
+  await showRecordingArchive();
+  fireEvent.click(recordingDiagnostics(runA).getByRole('button', { name: '原件诊断' }));
   let dialog = await screen.findByRole('dialog');
   fireEvent.click(within(dialog).getByRole('button', { name: /A 保存点/ }));
   fireEvent.click(within(dialog).getByRole('button', { name: 'DOM A' }));
@@ -161,7 +189,7 @@ test('an old artifact response cannot appear in a newly opened archive', async (
 
   fireEvent.click(within(dialog).getByRole('button', { name: '返回工作台' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-  fireEvent.click(screen.getByRole('button', { name: new RegExp(runB) }));
+  fireEvent.click(recordingDiagnostics(runB).getByRole('button', { name: '原件诊断' }));
   dialog = await screen.findByRole('dialog');
   expect(within(dialog).getByText(runB)).toBeTruthy();
   fireEvent.click(within(dialog).getByRole('button', { name: /B 保存点/ }));
@@ -187,13 +215,13 @@ test('a delayed artifact from checkpoint A cannot appear under checkpoint B in t
       const { id } = body as { id: string };
       return id === 'artifact-A' ? oldArtifact.promise : { id, value: 'B material' };
     }
-    throw new Error(`Unexpected studio method: ${method}`);
+    return emptyWorkspace(method);
   });
   window.studio = { call, bounds: vi.fn() };
 
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
-  fireEvent.mouseDown(screen.getByRole('tab', { name: '存档' }), { button: 0, ctrlKey: false });
-  fireEvent.click(await screen.findByRole('button', { name: new RegExp(runA) }));
+  await showRecordingArchive();
+  fireEvent.click(recordingDiagnostics(runA).getByRole('button', { name: '原件诊断' }));
   const dialog = await screen.findByRole('dialog');
   fireEvent.click(within(dialog).getByRole('button', { name: /A 保存点/ }));
   fireEvent.click(within(dialog).getByRole('button', { name: 'DOM A' }));
@@ -226,13 +254,13 @@ test('changing a timeline range clears its cursor and discards a pending old-ran
       ++eventCalls;
       return eventCalls === 1 ? oldEvents.promise : { items: [{ id: 'fresh', type: 'fresh-event', source: 'test', data: {} }] };
     }
-    throw new Error(`Unexpected studio method: ${method}`);
+    return emptyWorkspace(method);
   });
   window.studio = { call, bounds: vi.fn() };
 
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
-  fireEvent.mouseDown(screen.getByRole('tab', { name: '存档' }), { button: 0, ctrlKey: false });
-  fireEvent.click(await screen.findByRole('button', { name: new RegExp(runA) }));
+  await showRecordingArchive();
+  fireEvent.click(recordingDiagnostics(runA).getByRole('button', { name: '原件诊断' }));
   const dialog = await screen.findByRole('dialog');
   fireEvent.mouseDown(within(dialog).getByRole('tab', { name: '时间线' }), { button: 0, ctrlKey: false });
   expect(within(dialog).getByText('initial-event')).toBeTruthy();
