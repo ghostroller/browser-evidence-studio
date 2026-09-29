@@ -22,6 +22,8 @@ test('a queued old-document cache probe is cancelled while the new loader retain
     if(method==='Page.createIsolatedWorld')return{executionContextId:context};
     if(method==='Page.getResourceTree'){const captured=loader;if(++treeReads===1){entered();await oldTree;}return{frameTree:tree(captured)};}
     if(method==='Page.getResourceContent')return{content:'a{color:rgb(1,2,3)}',base64Encoded:false};
+    if(method==='CSS.enable')cdp.emit('CSS.styleSheetAdded',{header:{styleSheetId:'sheet-'+loader,frameId:'main',sourceURL:'https://source.invalid/main.css',isInline:false}});
+    if(method==='CSS.getStyleSheetText')return{text:'a{color:rgb(1,2,3)}'};
     return{result:{}};
   };
   const identity={pageId:'page',targetId:'target',webContentsId:1,navigationGeneration:0};
@@ -30,6 +32,7 @@ test('a queued old-document cache probe is cancelled while the new loader retain
   try{
     await capture.start();snapshot('old-document');await pendingTree;
     loader='new';context=2;cdp.emit('Runtime.executionContextsCleared');cdp.emit('Page.frameNavigated',{frame:{id:'main',loaderId:loader,url:'https://source.invalid/'}});
+    cdp.emit('CSS.styleSheetAdded',{header:{styleSheetId:'sheet-new',frameId:'main',sourceURL:'https://source.invalid/main.css',isInline:false}});
     cdp.emit('Runtime.executionContextCreated',{context:{id:context,name:world,auxData:{frameId:'main'}}});snapshot('new-document');
     // Puppeteer's independent counter is deliberately delayed; it must not cancel this CDP loader.
     identity.navigationGeneration+=20;release();await capture.flush();

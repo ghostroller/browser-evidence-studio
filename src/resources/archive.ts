@@ -28,7 +28,9 @@ export interface ArchivedResource extends ResourceReference {
   /** CDP requestWillBeSent callback time for this exact request hop. */
   requestStartedAt?: string;
   bytes: number;
-  source: { fromCache?: boolean; fromServiceWorker?: boolean; encodedDataLength?: number; redirectUrl?: string; requestUrl?: string; cdpFrameId?: string; byteRepresentation: 'decoded-response' };
+  source: { fromCache?: boolean; fromServiceWorker?: boolean; encodedDataLength?: number; redirectUrl?: string; requestUrl?: string; cdpFrameId?: string;
+    cacheProbeId?:string;cacheProbeLoaderId?:string;styleSheetId?:string;textEncoding?:'utf-8';textSource?:'renderer-stylesheet';observedMediaType?:string;
+    byteRepresentation: 'decoded-response'|'renderer-stylesheet-utf8' };
   /** Derived recovery state; source metadata remains the confirmed event's values. */
   recovery?: { status:'observed-unavailable';reason:string;observedStatus:ResourceReference['status'];observedReason?:string };
 }
@@ -85,7 +87,7 @@ export class ResourceCapture {
       const captured = status === 'captured' || status === 'late-fetched';
       const reference: ArchivedResource = { id: randomUUID(), position: { ...input.position }, frameId: input.frameId, ...(input.requestId ? { requestId: input.requestId } : {}), ...(input.availableObservedAt ? { availableObservedAt: input.availableObservedAt } : {}), ...(input.requestStartedAt ? { requestStartedAt: input.requestStartedAt } : {}), originalUrl,
         mediaType: input.mediaType, status, ...(reason ? { reason } : {}), ...(captured ? { blobHash: hashBytes(data!) } : {}), capturedAt: new Date().toISOString(), bytes: captured ? data!.length : 0,
-        source: { ...input.source, ...(privateRequestUrl ? { requestUrl: '[redacted]' } : {}), ...(input.source?.redirectUrl && privateResourceUrl(input.source.redirectUrl) ? { redirectUrl: '[redacted]' } : {}), byteRepresentation: 'decoded-response' } };
+        source: { ...input.source, ...(privateRequestUrl ? { requestUrl: '[redacted]' } : {}), ...(input.source?.redirectUrl && privateResourceUrl(input.source.redirectUrl) ? { redirectUrl: '[redacted]' } : {}), byteRepresentation: input.source?.textSource==='renderer-stylesheet'?'renderer-stylesheet-utf8':'decoded-response' } };
       if (captured) {
         const directory = await ensureLocalDirectory(this.dataRoot, 'blobs');
         const filename = path.join(directory, reference.blobHash!);
