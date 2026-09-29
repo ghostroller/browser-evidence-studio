@@ -14,6 +14,8 @@ import { implementExportedProductTask } from './product-implementer';
  * Test diagnostics only read service state. The named implementer writes code,
  * never task data, and its proposal is confirmed through the normal editor. */
 export async function runProductJourney(studio:Studio,reopen=false){
+  assert.equal(process.env.BES_TEST,'1','Native journey input requires this task’s synthetic process');
+  assert.equal(path.resolve(studio.root),path.resolve(process.env.BES_DATA??''),'Journey must own the launched synthetic data root');
   const numeric=process.env.BES_TEST_NUMERIC==='1';
   const authoringFault=process.env.BES_TEST_AUTHORING_CUT==='1';
   if(!reopen){assert.equal(studio.projects.length,0);assert.equal(studio.runs.length,0);}
@@ -31,14 +33,19 @@ export async function runProductJourney(studio:Studio,reopen=false){
   async function click(name:string,scope='document'){mark('点击 '+name);await clickExpression(`[...${scope}.querySelectorAll('button')].find(el=>(el.textContent.trim()===${JSON.stringify(name)}||el.getAttribute('aria-label')===${JSON.stringify(name)})&&${visible})`);}
   async function fill(label:string,value:string,scope='document'){mark('填写 '+label);const expression=`[...${scope}.querySelectorAll('label')].find(el=>el.firstChild?.textContent.trim()===${JSON.stringify(label)}&&${visible})?.querySelector('input,textarea')`;await clickExpression(expression);ui.sendInputEvent({type:'keyDown',keyCode:'A',modifiers:['control']});ui.sendInputEvent({type:'keyUp',keyCode:'A',modifiers:['control']});await delay(120);await ui.insertText(value);await delay(220);if(await read<string>(`(${expression}).value`)!==value){ui.sendInputEvent({type:'keyDown',keyCode:'A',modifiers:['control']});ui.sendInputEvent({type:'keyUp',keyCode:'A',modifiers:['control']});await delay(120);await ui.insertText(value);await delay(220);}assert.equal(await read<string>(`(${expression}).value`),value,'Visible input committed: '+label);}
   async function choose(label:string,text:string){mark('选择 '+label+' / '+text);const expression=`(document.querySelector('select[aria-label=${JSON.stringify(label)}]')||[...document.querySelectorAll('label')].find(el=>el.firstChild?.textContent.trim()===${JSON.stringify(label)})?.querySelector('select'))`;await clickExpression(expression);const index=await read<number>(`[...(${expression}).options].findIndex(el=>el.textContent.includes(${JSON.stringify(text)}))`);assert(index>=0);ui.sendInputEvent({type:'keyDown',keyCode:'HOME'});for(let i=0;i<index;i++)ui.sendInputEvent({type:'keyDown',keyCode:'DOWN'});ui.sendInputEvent({type:'keyDown',keyCode:'ENTER'});await delay(250);}
+  async function disclose(name:string){const expression=`[...document.querySelectorAll('summary')].find(el=>el.textContent.trim()===${JSON.stringify(name)}&&${visible})`;await wait(()=>read<boolean>(`!!(${expression})`),Boolean,'disclosure '+name);if(!await read<boolean>(`(${expression}).parentElement.open`))await clickExpression(expression);}
+  const selectCard=(name:string)=>clickExpression(`[...document.querySelector('.material-card-list').querySelectorAll('button')].find(el=>el.textContent.startsWith(${JSON.stringify(name)}))`);
+  const openField=()=>clickExpression("[...document.querySelector('[aria-label=保存点摘要]').querySelectorAll('button')].find(el=>el.textContent.startsWith('实付金额 ·'))");
+  async function manageRequirement(){await disclose('任务目标与共享需求');await click('管理共享需求');await choose('需求','两条订单');}
+  async function archiveVersion(){await click('存档');await click('资料版本');await click('保存存档版本');await wait(()=>read<boolean>("!!document.querySelector('[aria-label=确认存档范围]')"),Boolean,'reviewable archive scope');await click('确认保存存档版本');}
   async function popupCycle(stage:string){
     if(await read<boolean>("!!document.querySelector('.replay-timeline')"))await click('返回实时页面');
     await wait(async()=>studio.current().view.getVisible(),Boolean,'visible live view before popup input');
     mark(stage+'：打开弹窗、切回父页、切回弹窗并关闭');const parent=studio.current().pageId;
     await clickExpression("document.querySelector('#details')",studio.current().view.webContents);
     await wait(async()=>studio.state().session?.pages.length,n=>n===2,'managed popup');await delay(1000);
-    await clickExpression("[...document.querySelectorAll('.browser-tabs button')].find(el=>el.textContent.includes('合成订单后台'))");assert.equal(studio.current().pageId,parent);
-    await clickExpression("[...document.querySelectorAll('.browser-tabs button')].find(el=>el.textContent.includes('合成订单详情'))");await click('关闭当前页');
+    await clickExpression("[...document.querySelectorAll('[data-browser-toolbar] [role=tab]')].find(el=>el.textContent.includes('合成订单后台'))");assert.equal(studio.current().pageId,parent);
+    await clickExpression("[...document.querySelectorAll('[data-browser-toolbar] [role=tab]')].find(el=>el.textContent.includes('合成订单详情'))");await clickExpression("[...document.querySelectorAll('[data-browser-toolbar] button')].find(el=>el.getAttribute('aria-label')?.startsWith('关闭标签')&&el.parentElement.querySelector('[aria-selected=true]'))");
     await wait(async()=>studio.state().session?.pages.length,n=>n===1,'popup closed');assert.equal(studio.current().pageId,parent);assert(studio.current().view.getVisible());assert.equal(studio.active,undefined);
   }
   let knownDraftId='';
@@ -56,11 +63,11 @@ export async function runProductJourney(studio:Studio,reopen=false){
       await wait(()=>read<boolean>("!!document.querySelector('.material-card-list button')"),Boolean,'restored interrupted editor');
       const text=await read<string>('document.body.innerText');
       if(text.includes('查询采集操作状态'))await click('查询采集操作状态');
-      await wait(()=>read<string>('document.body.innerText'),value=>value.includes('原来源失效：重新选择'),'orphan operation recovered to terminal');
-      await click('原来源失效：重新选择');
+      await wait(()=>read<string>('document.body.innerText'),value=>/采集状态：(source-expired|interrupted)/.test(value),'orphan operation recovered to terminal');
+      await click('保留记录并继续编辑');
       if((await read<string>('document.body.innerText')).includes('并处理冲突'))await clickExpression("[...document.querySelectorAll('button')].find(el=>el.textContent.includes('并处理冲突'))");
-      await clickExpression("document.querySelector('.material-card-list button')");
-      await fill('说明','进程中断后仍可编辑，旧操作和原件保留');await click('保存卡片草稿');
+      await clickExpression("document.querySelector('.material-card-list button')");await click('编辑保存点');
+      await fill('说明','进程中断后仍可编辑，旧操作和原件保留');await click('完成保存点编辑');
       assert.equal((await draft()).content.checkpoints[0].notes,'进程中断后仍可编辑，旧操作和原件保留');
       report.interruptedRecovery={visible:true,oldOperationRetained:true,unrelatedEditSaved:true};report.passed=true;
       await wait(async()=>frames.length,n=>n>12,'recovery visible evidence');
@@ -68,10 +75,9 @@ export async function runProductJourney(studio:Studio,reopen=false){
       const saved=JSON.parse(await readFile(path.join(studio.root,'journey-state.json'),'utf8'));
       assert.notEqual(saved.processId,process.pid);knownDraftId=saved.draftId;
       await wait(()=>read<boolean>("!!document.querySelector('.material-card-list button')"),Boolean,'restored working draft');
-      await choose('字段','实付金额');
-      await clickExpression("[...document.querySelector('.material-card-list').querySelectorAll('button')].find(el=>el.textContent.startsWith('字段现场示例'))");
+      await selectCard('字段现场示例');await openField();await disclose('查看绑定来源');
       await click('查看来源');await wait(()=>read<boolean>("!!document.querySelector('.replay-timeline')"),Boolean,'reopened source');
-      await wait(()=>read<string>("document.querySelector('.material-editor')?.innerText||''"),value=>value.includes('12.00'),'historical node details');
+      await wait(()=>read<string>("document.querySelector('[aria-label=编辑字段] .source-target')?.innerText||''"),value=>value.includes('12.00'),'historical node details');
       const content=(await draft()).content;assert.deepEqual(content.fields[0].target,saved.target);
       assert.equal((await studio.materials.service.revision(studio.projects[0].id,saved.revisionId)).contentHash,saved.contentHash);
       report.journeys.U03={passed:true,restartedProcess:true,restoredBinding:content.fields[0].target};report.passed=true;
@@ -102,9 +108,9 @@ export async function runProductJourney(studio:Studio,reopen=false){
     await popupCycle('未录制环境');assert.equal(studio.runs.length,0);
     report.journeys.U01={passed:true,storageRef:studio.profiles[0].storageRef,recordingsBeforeDemonstration:0};
     await click('开始录制');await wait(async()=>studio.active?.capture,value=>value==='recording','recording ready');
-    await click('记录当前结果');await wait(async()=>(await draft()).content.checkpoints.length,n=>n===1,'unified savepoint');
-    await fill('标题','订单列表');await fill('说明','这两条订单的实付金额需要保留元单位。');await click('存档');await click('保存点与字段');
-    assert.equal(await read(`document.querySelector('.material-editor textarea')?.value`),'这两条订单的实付金额需要保留元单位。');await click('保存卡片草稿');
+    await click('新增保存点');await wait(async()=>(await draft()).content.checkpoints.length,n=>n===1,'unified savepoint');await click('编辑保存点');
+    await fill('标题','订单列表');await fill('说明','这两条订单的实付金额需要保留元单位。');await click('存档');await click('保存点工作区');
+    assert.equal(await read(`document.querySelector('[aria-label=编辑保存点] textarea')?.value`),'这两条订单的实付金额需要保留元单位。');await click('保存修改');
     const first=(await draft()).content.checkpoints[0];assert(first.sourceReceiptRef);report.journeys.U02={passed:true,cardId:first.id,receiptId:first.sourceReceiptRef};
     if(authoringFault){
       // Fault injection only: UI still creates the request and durable acquiring journal.
@@ -112,45 +118,48 @@ export async function runProductJourney(studio:Studio,reopen=false){
         await writeFile(path.join(studio.root,'recovery-cut.json'),JSON.stringify({processId:process.pid,stage:'authoring-acquiring',firstCardId:first.id,draftId:knownDraftId}));
         console.log('BES_RECOVERY_READY');return new Promise(()=>{});
       };
-      await click('记录当前结果');await new Promise(()=>{});
+      await click('新增保存点');await new Promise(()=>{});
     }
-    await fill('新需求含义','两条订单的实付金额');await click('新建并关联需求');
-    await choose('需求','两条订单的实付金额');
-    await click('添加所需字段（实时页面）');await click('取消实时选择（Esc）');
-    if(numeric)await fill('说明','采集前未保存的旧卡片说明必须保留');
+    await disclose('类型与共享需求');await fill('新需求含义','两条订单的实付金额');await click('完成保存点编辑');
+    await click('添加字段');await choose('所属需求','两条订单的实付金额');
+    await click('新增实时例证');await click('取消实时选择（Esc）');
+    if(numeric){await click('编辑保存点');await fill('说明','采集前未保存的旧卡片说明必须保留');await click('添加字段');}
     let associationFailures=0;
     const authorReceipt=studio.materials.authorReceipt.bind(studio.materials);
     if(numeric)studio.materials.authorReceipt=async(...args)=>{if(associationFailures++===0)throw new Error('Synthetic one-shot material association failure');return authorReceipt(...args);};
-    await click('添加所需字段（实时页面）');await wait(async()=>studio.current().capture?.inspecting,Boolean,'live selection');
+    await click('新增实时例证');await wait(async()=>studio.current().capture?.inspecting,Boolean,'live selection');
     await clickExpression("document.querySelector('[data-field=amount]')",studio.current().view.webContents);
     if(numeric){await click('重试关联已保存原件');studio.materials.authorReceipt=authorReceipt;report.partialAssociation={visibleRetry:true,associationFailures:1};}
     await wait(async()=>(await draft()).content.checkpoints.length,n=>n===2,'durable live example');
-    if(numeric){assert.equal((await draft()).content.checkpoints[0].notes,'采集前未保存的旧卡片说明必须保留');report.dirtyBeforeCapture=true;await choose('值类型','number');}
-    await fill('数据集','orders');await fill('字段名','实付金额');await choose('来源要求','必须按页面显示值');await fill('明确含义','订单实际支付的金额，单位元，保持页面显示。');await click('保存字段');
+    if(numeric){assert.equal((await draft()).content.checkpoints[0].notes,'采集前未保存的旧卡片说明必须保留');report.dirtyBeforeCapture={preserved:true,savedWhenLeavingCardEditor:true};await choose('值类型','number');}
+    await disclose('高级实现信息');await fill('数据集','orders');await fill('字段名','实付金额');await choose('来源要求','必须按页面显示值');await fill('明确含义','订单实际支付的金额，单位元，保持页面显示。');await click('保存字段');
     await wait(async()=>(await draft()).content.fields.length,n=>n===1,'UI field persisted');
     if(numeric){
-      await fill('期望记录数（可选）','2');await fill('不重复的输出标识字段（可选）','id');await click('保存需求');
+      await manageRequirement();await fill('期望记录数（可选）','2');await fill('不重复的输出标识字段（可选）','id');await click('保存需求');
+      // The focused editor replaces the old always-expanded forms. Expand its
+      // real source and advanced detail before testing the same bounded wheel path.
+      await openField();await disclose('查看绑定来源');await disclose('高级实现信息');
       const before=await read<any>("(()=>{const el=document.querySelector('.material-workbench'),r=el.getBoundingClientRect();return{scrollTop:el.scrollTop,scrollHeight:el.scrollHeight,clientHeight:el.clientHeight,x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()");
       assert(before.scrollHeight>before.clientHeight,'Long form must have a bounded scrolling container');
       ui.sendInputEvent({type:'mouseWheel',x:before.x,y:before.y,deltaY:before.scrollTop>50?400:-400,deltaX:0,canScroll:true});
       const after=await wait(()=>read<number>("document.querySelector('.material-workbench').scrollTop"),value=>value!==before.scrollTop,'mouse wheel scrolls long editor');
       report.longFormScroll={before,after,mouseWheel:true};
-    }
+    }else await openField();
     let content=(await draft()).content;assert.equal(content.requirements[0].dataset,'orders');assert(content.fields[0].target);assert.equal(content.fields[0].annotationId,undefined);assert.equal(content.checkpoints[0].anchor.eventSeq,first.anchor.eventSeq);
     assert.equal(await read("document.querySelector('[data-field=amount]').getAttribute('style')",studio.current().view.webContents),'outline:1px dotted red');
     report.journeys.U03={passed:true,fieldId:content.fields[0].id,target:content.fields[0].target};
-    await fill('明确含义','订单实际支付金额，单位元；保留两位小数。');await click('存档');await click('保存点与字段');
-    await clickExpression("[...document.querySelector('.material-card-list').querySelectorAll('button')].find(el=>el.textContent.startsWith('订单列表'))");await click('保存字段');
+    await fill('明确含义','订单实际支付金额，单位元；保留两位小数。');await click('存档');await click('保存点工作区');
+    await selectCard('订单列表');await openField();await click('保存字段');
     content=(await draft()).content;assert.deepEqual(content.fields[0].target,report.journeys.U03.target);
-    await click('新增注释');await click('在历史页选择元素');await pickHistory('[data-entity="order-two"] [data-field="amount"]');
+    await click('添加注释');await click('选择历史元素（可选）');await pickHistory('[data-entity="order-two"] [data-field="amount"]');
     await fill('注释','另一条订单的金额示例');await click('保存注释');
     await wait(async()=>(await draft()).content.annotations.length,n=>n===1,'ordinary annotation');
-    await click('从历史页绑定元素');await click('取消选择（Esc）');await click('保存字段');
+    await openField();await click('选择当前保存点的元素');await click('取消选择（Esc）');await click('保存字段');
     assert.deepEqual((await draft()).content.fields[0].target,report.journeys.U03.target);
-    await click('解除绑定');await click('确认解除绑定');await click('保存字段');
+    await openField();await click('解除绑定');await click('确认解除绑定');await click('保存字段');
     await wait(async()=>(await draft()).content.fields[0].target,value=>value===undefined,'explicit clear');
-    await clickExpression("[...document.querySelector('.material-card-list').querySelectorAll('button')].find(el=>el.textContent.startsWith('字段现场示例'))");
-    await click('从历史页绑定元素');await pickHistory('[data-entity="order-one"] [data-field="amount"]');await click('保存字段');
+    await selectCard('字段现场示例');await openField();
+    await click('选择当前保存点的元素');await pickHistory('[data-entity="order-one"] [data-field="amount"]');await click('保存字段');
     await wait(async()=>(await draft()).content.fields[0].target,Boolean,'explicit rebind');
     report.journeys.U04={passed:true,retainedBindingAfterCardAndTabSwitch:true,ordinaryAnnotation:true,cancelledSelectionPreserved:true,explicitClear:true};
     await click('结束并封存');assert(studio.state().session);
@@ -158,26 +167,35 @@ export async function runProductJourney(studio:Studio,reopen=false){
     async function originalHashes(){const result:Record<string,string>={};async function walk(relative:string){for(const entry of await readdir(path.join(recordingRoot,relative),{withFileTypes:true})){const child=path.join(relative,entry.name);if(entry.isDirectory())await walk(child);else result[child]=createHash('sha256').update(await readFile(path.join(recordingRoot,child))).digest('hex');}}await walk('raw');await walk('blobs');for(const file of ['checkpoints.jsonl','artifacts.jsonl'])result[file]=createHash('sha256').update(await readFile(path.join(recordingRoot,file))).digest('hex');return result;}
     const beforeOriginals=await originalHashes();await popupCycle('已封存会话');assert.deepEqual(await originalHashes(),beforeOriginals);await click('查看来源');
     await wait(()=>read<boolean>("!!document.querySelector('.replay-timeline')"),Boolean,'historical workspace');
-    await fill('说明','历史补充：金额为订单实付，不含退款。');await click('保存卡片草稿');await click('新建卡片');await fill('标题','历史补充保存点');await fill('说明','从停止录制后的可靠历史位置补充，金额仍按页面显示。');await click('保存卡片草稿');
-    await click('新增注释');await click('在历史页选择元素');await pickHistory('[data-entity="order-two"] [data-field="amount"]');
-    await choose('类型','需求');await clickExpression("[...document.querySelectorAll('.material-editor label')].find(el=>el.textContent.trim()==='两条订单的实付金额')?.querySelector('input[type=checkbox]')");
-    await fill('注释','发布时统一保存的历史注释');await fill('需求说明','两条订单实付金额，保留页面元单位');await fill('明确含义','订单实际支付金额，单位元；直接发布也应保存本次说明。');
-    mark('E01：未分别保存卡片类型/关联、普通注释、需求与字段说明，直接发布');await click('发布候选版本');
+    await click('编辑保存点');await fill('说明','历史补充：金额为订单实付，不含退款。');await click('完成保存点编辑');await click('新增保存点');await fill('标题','历史补充保存点');await fill('说明','从停止录制后的可靠历史位置补充，金额仍按页面显示。');await click('保存修改');
+    // E01 now follows the single-editor contract: leave each dirty editor via
+    // its visible transition, then archive while the final field remains dirty.
+    await disclose('类型与共享需求');await choose('类型','需求');await clickExpression("[...document.querySelectorAll('[aria-label=编辑保存点] label')].find(el=>el.textContent.trim()==='两条订单的实付金额')?.querySelector('input[type=checkbox]')");
+    await click('添加注释');await click('选择历史元素（可选）');await pickHistory('[data-entity="order-two"] [data-field="amount"]');await fill('注释','发布时统一保存的历史注释');
+    await manageRequirement();await fill('需求说明','两条订单实付金额，保留页面元单位');await openField();await fill('明确含义','订单实际支付金额，单位元；直接发布也应保存本次说明。');
+    mark('E01：单编辑器切换保存卡片关联、普通注释、需求；最后字段 dirty 进入存档');await archiveVersion();
     let revisions=await wait(()=>studio.materials.service.listRevisions(studio.projects[0].id,{limit:100,maxBytes:28672}),value=>value.items.length===1,'first published revision');assert.equal(revisions.items.length,1);
     const revision=await studio.materials.service.revision(studio.projects[0].id,revisions.items[0].revisionId);
     assert.equal(revision.content.fields[0].description,'订单实际支付金额，单位元；直接发布也应保存本次说明。');assert.deepEqual(revision.content.fields[0].target,report.journeys.U03.target);assert.deepEqual(revision.content.requirements[0].fieldIds,[revision.content.fields[0].id]);assert.equal(revision.content.requirements[0].dataset,'orders');assert.equal(revision.content.checkpoints[2].kind,'requirement');assert.deepEqual(revision.content.checkpoints[2].requirementIds,[revision.content.requirements[0].id]);assert(revision.content.annotations.some(item=>item.text==='发布时统一保存的历史注释'));
-    report.regressions={E01:{visible:true,batchedDirectPublish:true,kind:true,association:true,ordinaryAnnotation:true,fieldAndRequirement:true},session:{visible:true,noRecordingPopupAndSwitch:true,sealedPopupAndSwitch:true,auditFailure:'module-only'},E02:{visible:'live cancellation and fresh selection',partialAndStaleFaults:'renderer/service injection only'},E03:{lateResponses:'renderer/service injection only'}};
+    report.regressions={E01:{visible:true,focusedEditorTransitions:true,archiveFlushesDirtyField:true,kind:true,association:true,ordinaryAnnotation:true,fieldAndRequirement:true},session:{visible:true,noRecordingPopupAndSwitch:true,sealedPopupAndSwitch:true,auditFailure:'module-only'},E02:{visible:'live cancellation and fresh selection',partialAndStaleFaults:'renderer/service injection only'},E03:{lateResponses:'renderer/service injection only'}};
     report.journeys.U05={passed:true,revisionId:revision.revisionId,contentHash:revision.contentHash};
-    await click('复制');
+    await click('保存点工作区');await disclose('更多操作');await click('复制保存点');
     await wait(async()=>(await draft()).content.checkpoints.length,n=>n===4,'copied card');
-    await clickExpression("[...document.querySelector('.material-card-list').querySelectorAll('button')].at(-1)");await fill('标题','订单列表副本');await click('保存卡片草稿');
-    const copy=(await draft()).content.checkpoints.at(-1)!;assert(copy.derivedFrom);await click('发布候选版本');
+    // Copy must already own focus; don't repair a broken focus receipt by picking it.
+    await wait(()=>read<string>("document.querySelector('[aria-label=编辑保存点] input')?.value||''"),value=>value.includes('副本'),'copy automatically focused');await fill('标题','订单列表副本');await click('完成保存点编辑');
+    const copy=(await draft()).content.checkpoints.at(-1)!;assert(copy.derivedFrom);await archiveVersion();
     assert.equal((await studio.materials.service.revision(studio.projects[0].id,revision.revisionId)).contentHash,revision.contentHash);
     assert.equal(copy.title,'订单列表副本');assert.equal((await studio.materials.service.revision(studio.projects[0].id,revision.revisionId)).content.checkpoints.length,3);
     assert.deepEqual(await originalHashes(),beforeOriginals);
     const second=await wait(draft,value=>!!value.baseRevisionId&&value.baseRevisionId!==revision.revisionId,'second published revision');const implementationRevision=await studio.materials.service.revision(studio.projects[0].id,second.baseRevisionId!);
     report.journeys.U05={...report.journeys.U05,copyId:copy.id,derivedFrom:copy.derivedFrom,secondRevisionId:implementationRevision.revisionId,firstUnchanged:true,originalFilesUnchanged:Object.keys(beforeOriginals).length};
-    for(const index of [1,0]){await clickExpression(`[...document.querySelectorAll('.material-revision button')][${index}]`);await wait(()=>read<string>("document.querySelector('.material-editor > section')?.innerText||''"),value=>value.includes(index===1?revision.revisionId:implementationRevision.revisionId),'fixed version view');const text=await read<string>("document.querySelector('.material-editor > section').innerText");assert.equal(text.includes('订单列表副本'),index===0);}
+    for(const fixed of [revision,implementationRevision]){
+      await clickExpression(`[...document.querySelectorAll('.material-revision')].find(el=>el.textContent.includes(${JSON.stringify(fixed.revisionId)}))?.querySelector('button')`);
+      await wait(()=>read<string>("document.querySelector('[aria-label=固定版本只读]')?.innerText||''"),value=>value.includes(fixed.contentHash),'fixed version view');
+      const text=await read<string>("document.querySelector('[aria-label=固定版本只读]').innerText");assert.equal(text.includes('订单列表副本'),fixed.revisionId===implementationRevision.revisionId);
+      assert.equal(await read<boolean>("!!document.querySelector('[aria-label=编辑保存点],[aria-label=编辑字段],[aria-label=编辑注释]')"),false,'Fixed archive must not expose another working editor');
+    }
+    await click('返回当前工作副本');
     const implementation=path.join(studio.root,'implementation');
     await click('任务授权');await clickExpression("[...document.querySelectorAll('.task-capabilities label')].find(el=>el.textContent.trim()==='导出交接包')?.querySelector('input')");
     await fill('有效分钟数','10');await fill('最多操作数','100');await click('授予这次任务');await choose('交接资料版本',implementationRevision.revisionId.slice(0,16));await click('准备交给 Agent');
@@ -185,10 +203,9 @@ export async function runProductJourney(studio:Studio,reopen=false){
     const taskFile=handoffNotice.split('固定交接已保存：')[1].split('。将 task.md')[0];
     const consumed=await implementExportedProductTask(path.dirname(taskFile),implementation,site.url+'/orders');assert.equal(consumed.revisionId,implementationRevision.revisionId);
     await click('撤销此授权');await click('返回工作台');
-    await click('执行');await fill('脚本目录',implementation);await click('登记脚本目录');await click('保存点与字段');await click('读取实现器映射');await click('确认映射并保存草稿');await click('发布候选版本');
+    await click('实现与结果');await fill('脚本目录',implementation);await click('登记脚本目录');await click('读取实现器映射');await click('确认映射并保存工作副本');await archiveVersion();
     revisions=await wait(()=>studio.materials.service.listRevisions(studio.projects[0].id,{limit:100,maxBytes:28672}),value=>value.items.length===3,'mapped published revision');assert.equal(revisions.items.length,3);
-    const fixedId=await read<string>("document.querySelector('select[aria-label=\"固定任务资料版本\"]')?.value||''");
-    await click('返回实时页面');await click('执行');await choose('运行方式','当前页面试跑');
+    await click('返回实时页面');await click('实现与结果');await choose('运行方式','当前页面试跑');
     const boundId=await read<string>("document.querySelector('select[aria-label=\"固定任务资料版本\"]').value");assert(boundId);
     const fixed=await studio.materials.service.revision(studio.projects[0].id,boundId);
     assert.equal(studio.active,undefined);
