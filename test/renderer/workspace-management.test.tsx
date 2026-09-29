@@ -7,6 +7,7 @@ import path from 'node:path';
 import { atomicJson } from '@/evidence/files';
 import { WorkspaceManagement, type WorkspaceManagementHost } from '@/main/services/workspace-management';
 import { WorkspaceManagementPanel } from '@/renderer/components/workspace-management';
+import { FileMaterialService } from '@/materials/service';
 
 afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
 async function fixture() {
@@ -18,6 +19,7 @@ async function fixture() {
   const a = await service.createProject({ name: 'Oders', objective: 'Read order amounts' });
   const b = await service.createProject({ name: 'Invoices', objective: 'Other project' });
   const profile = await service.createProfile({ projectId: a.id, name: 'Orders account', entryUrl: 'https://example.com', checkSelector: '#account' });
+  const materials = new FileMaterialService(root);
   const onSelect = vi.fn(), onError = vi.fn();
   const call = vi.fn(async (method: string, body: any): Promise<any> => {
     if (method === 'state') return { projects: host.projects, profiles: host.profiles, session };
@@ -28,7 +30,7 @@ async function fixture() {
   function Harness() {
     const [snapshot, setSnapshot] = useState({ projects: host.projects, profiles: host.profiles, session });
     const [projectId, setProjectId] = useState(a.id);
-    return <WorkspaceManagementPanel state={snapshot} projectId={projectId} onSelectProject={id => { onSelect(id); setProjectId(id); }} onRefresh={() => setSnapshot({ projects: host.projects, profiles: host.profiles, session })} onError={onError} />;
+    return <WorkspaceManagementPanel state={snapshot} projectId={projectId} onSelectProject={async id => { await materials.workingDraft(id); onSelect(id); setProjectId(id); }} onRefresh={() => setSnapshot({ projects: host.projects, profiles: host.profiles, session })} onError={onError} />;
   }
   return { root, host, service, a, b, profile, call, onSelect, onError, Harness, fail: (value: boolean) => { failWrite = value; }, open: () => { session = { sessionId: 'synthetic-session', projectId: a.id, profileId: profile.id }; } };
 }
@@ -101,11 +103,29 @@ test('IA14: creating another project starts blank, focuses its persisted identit
   expect((screen.getByLabelText('项目名称') as HTMLInputElement).value).toBe('');
   fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: 'New task typo' } });
   fireEvent.click(screen.getByRole('button', { name: '创建项目' }));
-  await screen.findByText('项目名称和简介已保存。');
-  const created = f.host.projects.find(item => item.name === 'New task typo')!; expect(created).toBeTruthy(); expect(f.onSelect).toHaveBeenCalledWith(created.id);
+  await screen.findByText('项目已创建，可继续修改资料或设为当前浏览项目。');
+  const created = f.host.projects.find(item => item.name === 'New task typo')!; expect(created).toBeTruthy(); expect(f.onSelect).not.toHaveBeenCalled();
   fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: 'New task' } });
   fireEvent.click(screen.getByRole('button', { name: '保存项目修改' }));
   await waitFor(() => expect(f.host.projects.find(item => item.id === created.id)?.name).toBe('New task'));
+  fireEvent.click(screen.getByRole('button', { name: '设为当前浏览项目' }));
+  await waitFor(() => expect(f.onSelect).toHaveBeenCalledWith(created.id));
+  expect((await f.service.managementDependencies({ projectId: created.id })).canDelete).toBe(false);
+});
+test('IA14: a newly registered project can be genuinely deleted before entering its workspace', async () => {
+  const f = await fixture(); render(<f.Harness />);
+  fireEvent.click(screen.getByRole('button', { name: '新建项目' }));
+  fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: 'Unused project' } });
+  fireEvent.click(screen.getByRole('button', { name: '创建项目' }));
+  await screen.findByText('项目已创建，可继续修改资料或设为当前浏览项目。');
+  const created = f.host.projects.find(item => item.name === 'Unused project')!;
+  expect((await f.service.managementDependencies({ projectId: created.id })).canDelete).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: '检查并删除空项目' }));
+  fireEvent.click(await screen.findByRole('button', { name: '确认删除空对象' }));
+  await screen.findByText('管理状态已保存；历史资料保持可读。');
+  expect(f.host.projects.some(item => item.id === created.id)).toBe(false);
+  expect(JSON.parse(await readFile(path.join(f.root, 'workspace.json'), 'utf8')).projects.some((item: any) => item.id === created.id)).toBe(false);
+  expect(f.onSelect).not.toHaveBeenCalled();
 });
 test('IA17: changing management rows does not discard unsubmitted fields', async () => {
   const f = await fixture(); render(<f.Harness />);

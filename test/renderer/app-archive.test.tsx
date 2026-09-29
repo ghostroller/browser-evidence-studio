@@ -5,6 +5,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, expect, test, vi } from 'vitest';
 import { App } from '@/renderer/app';
 import { ThemeProvider } from '@/renderer/components/theme-provider';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { WorkspaceManagement } from '@/main/services/workspace-management';
+import { FileMaterialService } from '@/materials/service';
 
 const runA = 'run-a-000001';
 const runB = 'run-b-000002';
@@ -115,6 +119,41 @@ test('quick project creation retries the same operation after a lost response',a
   expect((screen.getByLabelText('项目名称') as HTMLInputElement).value).toBe('Synthetic retry');
   fireEvent.click(screen.getByRole('button',{name:'创建项目'}));await waitFor(()=>expect(screen.queryByLabelText('项目名称')).toBeNull());
   const attempts=call.mock.calls.filter(([method])=>method==='createProject');expect(attempts).toHaveLength(2);expect(attempts[0][1].operationId).toBeTruthy();expect(attempts[1][1].operationId).toBe(attempts[0][1].operationId);expect(receipts.size).toBe(1);
+});
+
+test('first management project stays unused across modal close; explicit selection prepares one real workspace',async()=>{
+  stubLayout();await mkdir('output/app-management',{recursive:true});const root=await mkdtemp(path.resolve('output/app-management/case-'));
+  const host={root,projects:[] as any[],profiles:[] as any[],state:()=>({})},management=new WorkspaceManagement(host),materials=new FileMaterialService(root);
+  const call=vi.fn(async(method:string,body:any={})=>{
+    if(method==='state')return {projects:host.projects,profiles:host.profiles,runs:[]};
+    if(method==='presentation')return undefined;
+    if(['createProject','updateProject','managementDependencies','manageProject'].includes(method))return (management as any)[method](body);
+    if(method==='workingMaterialDraft')return materials.workingDraft(body.projectId);
+    if(method==='materialDraft')return materials.getDraft(body.projectId,body.draftId);
+    if(method==='materialDrafts')return materials.listDrafts(body.projectId,body);
+    if(method==='materialRevisions')return materials.listRevisions(body.projectId,body);
+    return emptyWorkspace(method);
+  });window.studio={call,bounds:vi.fn()};
+  render(<ThemeProvider initial={{theme:'light',layout:{}}}><App/></ThemeProvider>);
+  await waitFor(()=>expect(call).toHaveBeenCalledWith('state'));
+  fireEvent.click(screen.getByRole('button',{name:'项目与环境管理'}));
+  const dialog=within(await screen.findByRole('dialog'));
+  fireEvent.click(dialog.getByRole('button',{name:'新建项目'}));fireEvent.change(dialog.getByLabelText('项目名称'),{target:{value:'Unused first project'}});
+  fireEvent.click(dialog.getByRole('button',{name:'创建项目'}));await dialog.findByText('项目已创建，可继续修改资料或设为当前浏览项目。');
+  const first=host.projects[0];expect((await management.managementDependencies({projectId:first.id})).canDelete).toBe(true);
+  fireEvent.click(dialog.getByRole('button',{name:'返回工作台'}));
+  await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());expect((screen.getByLabelText('项目') as HTMLSelectElement).value).toBe('');
+  expect(call.mock.calls.some(([method])=>method==='workingMaterialDraft')).toBe(false);
+  fireEvent.click(screen.getByRole('button',{name:'项目与环境管理'}));const reopened=within(await screen.findByRole('dialog'));
+  fireEvent.click(reopened.getByRole('button',{name:'Unused first project'}));fireEvent.click(reopened.getByRole('button',{name:'检查并删除空项目'}));
+  fireEvent.click(await reopened.findByRole('button',{name:'确认删除空对象'}));await reopened.findByText('管理状态已保存；历史资料保持可读。');
+  expect(host.projects).toHaveLength(0);expect(JSON.parse(await readFile(path.join(root,'workspace.json'),'utf8')).projects).toHaveLength(0);
+  fireEvent.click(reopened.getByRole('button',{name:'新建项目'}));fireEvent.change(reopened.getByLabelText('项目名称'),{target:{value:'Ready project'}});
+  fireEvent.click(reopened.getByRole('button',{name:'创建项目'}));await reopened.findByText('项目已创建，可继续修改资料或设为当前浏览项目。');
+  fireEvent.click(reopened.getByRole('button',{name:'设为当前浏览项目'}));
+  await waitFor(()=>expect(call.mock.calls.some(([method,body])=>method==='workingMaterialDraft'&&body.projectId===host.projects[0].id)).toBe(true));
+  await waitFor(async()=>expect((await materials.listDrafts(host.projects[0].id,{limit:50,maxBytes:24576})).items).toHaveLength(1));
+  expect((await management.managementDependencies({projectId:host.projects[0].id})).canDelete).toBe(false);
 });
 
 test('a readable sealed run offers explicit trusted index repair with its inspected writer fingerprint', async () => {

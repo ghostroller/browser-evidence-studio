@@ -77,9 +77,10 @@ export function WorkspaceManagementPanel({ state, projectId, onSelectProject, on
     {!visibleProjects.length && <p className="hint">当前筛选没有项目。</p>}
     {(project || newProject) && <form className="form-stack" onSubmit={event => { event.preventDefault(); void perform(async () => {
       const result = await call(newProject ? 'createProject' : 'updateProject', { ...(newProject ? {} : { projectId: project!.id, expectedRevision: projectBaseline.current?.revision ?? 0 }), name: projectName, objective });
-      loadProject(result); setSelected(result.id); setNewProject(false); await refreshed('项目名称和简介已保存。'); if (newProject) await onSelectProject(result.id);
+      loadProject(result); setSelected(result.id); setNewProject(false); await refreshed(newProject ? '项目已创建，可继续修改资料或设为当前浏览项目。' : '项目名称和简介已保存。');
     }); }}>
       <h3>{newProject ? '创建项目' : '项目资料'}</h3>
+      {newProject && <p className="hint">创建后先整理项目资料；设为当前浏览项目后开始整理保存点。</p>}
       <Label>项目名称<Input aria-label="项目名称" value={projectName} onChange={event => setProjectName(event.target.value)} maxLength={200} disabled={busy} /></Label>
       <Label>目录简介<Textarea aria-label="目录简介" value={objective} onChange={event => setObjective(event.target.value)} maxLength={4000} disabled={busy} /></Label>
       <Button type="submit" disabled={busy || !projectName.trim()}>{newProject ? '创建项目' : '保存项目修改'}</Button>
