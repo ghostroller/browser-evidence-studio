@@ -492,10 +492,10 @@
 .session-controls .environment-controls { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .session-controls .environment-controls small { color: var(--muted-foreground); }
 .session-controls .run-controls { margin-left: auto; }
-.material-workbench[data-view="checkpoints"] { padding: 12px; }
+.material-workbench[data-view="checkpoints"] { padding: 0 12px 12px; }
 .material-toolbar { gap: 4px 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .material-toolbar strong { font-size: 14px; }
-.material-workbench[data-view="checkpoints"] > .material-toolbar { position: sticky; top: 0; z-index: 2; padding-top: 8px; background: var(--background); }
+.material-workbench[data-view="checkpoints"] > .material-toolbar { position: sticky; top: 0; z-index: 2; margin-top: 0; padding-top: 12px; background: var(--background); }
 .material-feedback { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0; padding: 6px 8px; border-radius: 4px; background: var(--muted); color: var(--muted-foreground); }
 .material-feedback span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .material-feedback [data-slot="button"] { height: 22px; min-height: 22px; padding: 0 4px; }
