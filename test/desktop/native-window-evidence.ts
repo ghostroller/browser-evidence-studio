@@ -9,7 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
  * its WebContentsViews. No display capture or same-title fallback is permitted. */
 export async function recordNativeWindow(window:BrowserWindow,directory:string){
   await mkdir(directory,{recursive:true});
-  const sourceFiles=['src/main/app.ts','src/main/services/studio.ts','src/main/services/dispatch.ts','src/main/api/server.ts','src/renderer/components/material-workbench.tsx','test/desktop/product-journey.ts','test/desktop/native-window-evidence.ts'];
+  const sourceFiles=['src/main/app.ts','src/main/services/studio.ts','src/main/services/dispatch.ts','src/main/api/server.ts','src/materials/service.ts','src/main/services/workspace-management.ts','src/main/browser/browser-controls.ts','src/renderer/app.tsx','src/renderer/style.css','src/renderer/components/material-workbench.tsx','test/desktop/product-journey.ts','test/desktop/native-window-evidence.ts'];
   const candidate={sha:execFileSync('git',['-c','safe.directory='+process.cwd().replaceAll('\\','/'),'rev-parse','HEAD'],{encoding:'utf8'}).trim(),sourceHashes:Object.fromEntries(await Promise.all(sourceFiles.map(async file=>[file,createHash('sha256').update(await readFile(file)).digest('hex')])))};
   const expectedSourceId=window.getMediaSourceId();
   const frames:Array<{file:string;at:number}>=[],operations:Array<{at:number;action:string}>=[],captureErrors:Array<unknown>=[];let recording=true,missingFrames=0;
