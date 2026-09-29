@@ -163,6 +163,8 @@ rrweb 使用固定稳定版本，跨导航重新注入，保存完整快照和�
 
 样式资源的回放表示使用 `CSS.getStyleSheetText` 读取渲染器已经解码的文本，按 frame、loader、stylesheet ID 和变更计数绑定；随后保存为 UTF-8，并显式返回 `text/css; charset=utf-8`。资源来源记为 `byteRepresentation: renderer-stylesheet-utf8`，保留 `styleSheetId/textSource/textEncoding`；它是当时观察到的渲染器样式表示，不冒充 HTTP 原始字节。网络正文的独立原始观察记录照常保留。样式不存在、同 URL 版本不唯一、读取期间导航或样式变化时记录不可用，不猜测反解乱码。
 
+初始 frame/loader 和 CSS domain 必须先于 Network 采集及 recorder 安装完成，避免安装命令尚未返回时的首个快照读到未初始化服务。网络 CSS 完成后，渲染器发布 stylesheet header 最多等待五秒；导航、断连或结束录制提前终止等待。超过边界仍明确记不可用，不换用未经证明的文本解码或补发请求。
+
 初始缓存探测记录 `cacheProbeId/cacheProbeLoaderId/cdpFrameId`。只有同一批次、frame、loader 和录制位置的 CSS 与依赖才可建立缓存资源关联；探测期间新资源请求或样式变更中止该批次的后续读取。普通网络响应继续按观察到的请求时间区间和完成时间绑定，不用“URL 最新版本”替代。旧原件没有这些来源字段时不推断批次，也不改写旧 blob/hash。
 
 CDP 标为 `Font` 的响应即使 MIME 为 `application/octet-stream`，也在有界读取后检查 TTF/OTF/WOFF/WOFF2/字体集签名；验证通过才规范化字体 MIME，并记录 `observedMediaType`。仅凭文件扩展名不接纳二进制。预加载字体可能已被 Chromium 释放原始缓存字节：即使资源树仍列出该字体，`Page.getResourceContent` 也可能空值或报不可用；此时保留明确的 missing/failed 资源记录，不联网补抓。旧 CSS 已乱码且字体原字节未归档的录制不能由此恢复；后来的资源不能替换过去的固定版本。

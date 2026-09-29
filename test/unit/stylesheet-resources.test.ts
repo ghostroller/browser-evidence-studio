@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -12,20 +12,24 @@ import { observedFontMediaType } from '@/resources/font';
 import { EvidenceReader } from '@/evidence/reader';
 
 const stores:EvidenceStore[]=[];
-afterEach(async()=>{for(const store of stores.splice(0))await store.close();});
+afterEach(async()=>{vi.useRealTimers();for(const store of stores.splice(0))await store.close();});
 const font=Buffer.concat([Buffer.from([0,1,0,0]),Buffer.alloc(12)]);
 const css='.icon::before{content:"\ue6fe"}@font-face{font-family:icon;src:url("/icons.ttf")}';
 const mojibake=new TextDecoder('windows-1252').decode(Buffer.from(css));
 
-async function captured(options:{emptyCachedFont?:boolean;resourceChangeDuringProbe?:boolean}={}){
+async function captured(options:{emptyCachedFont?:boolean;resourceChangeDuringProbe?:boolean;earlyBaseline?:boolean;initialNavigation?:boolean}={}){
   const root=path.resolve('output/resource-encoding-tests',randomUUID());
   const store=await EvidenceStore.create(path.join(root,'runs','recording'),{id:'recording',projectId:'synthetic',kind:'demonstrate',mode:'synthetic',objective:'Synthetic cached CSS/font observation'});stores.push(store);
   const cdp=new EventEmitter() as EventEmitter&{send:(method:string,args?:any)=>Promise<any>};
-  let binding='',cssCacheReads=0;
+  let binding='',world='',cssCacheReads=0,frameReads=0,capture!:CaptureCoordinator;
+  const position={recordingId:'recording',pageId:'page',documentId:'document',streamEpoch:'epoch',sourceTimeMs:100,eventSeq:0};
+  const snapshot=()=>cdp.emit('Runtime.bindingCalled',{name:binding,executionContextId:1,payload:JSON.stringify({kind:'rrweb',formatVersion:2,position,event:{type:2,timestamp:100,data:{node:{type:0,id:1,childNodes:[]},initialOffset:{left:0,top:0}}},metadata:[],metadataComplete:true,errors:[],isTop:true})});
   const tree={frame:{id:'main',loaderId:'loader'},resources:[{url:'https://fixture.test/main.css',mimeType:'text/css',type:'Stylesheet'},{url:'https://fixture.test/icons.ttf',mimeType:'application/octet-stream',type:'Font'}]};
   cdp.send=async(method,args)=>{
-    if(method==='Runtime.addBinding')binding=args.name;
+    if(method==='Runtime.addBinding'){binding=args.name;world=args.executionContextName;}
+    if(method==='Page.getFrameTree'&&options.initialNavigation&&frameReads++===0){const old=structuredClone(tree);tree.frame.loaderId='replacement-loader';cdp.emit('Page.frameNavigated',{frame:{id:'main',loaderId:tree.frame.loaderId,url:'https://fixture.test/'}});return{frameTree:old};}
     if(method==='Page.getFrameTree'||method==='Page.getResourceTree')return{frameTree:tree};
+    if(method==='Page.addScriptToEvaluateOnNewDocument'&&options.earlyBaseline){cdp.emit('Runtime.executionContextCreated',{context:{id:1,name:world,auxData:{frameId:'main'}}});snapshot();await capture.flush();return{identifier:'script'};}
     if(method==='Page.createIsolatedWorld')return{executionContextId:1};
     if(method==='CSS.enable')cdp.emit('CSS.styleSheetAdded',{header:{styleSheetId:'sheet',frameId:'main',sourceURL:'https://fixture.test/main.css',isInline:false}});
     if(method==='CSS.getStyleSheetText')return{text:css};
@@ -37,10 +41,9 @@ async function captured(options:{emptyCachedFont?:boolean;resourceChangeDuringPr
     }
     return{result:{}};
   };
-  const capture=new CaptureCoordinator({createCDPSession:async()=>cdp} as unknown as Page,{pageId:'page',targetId:'target',webContentsId:1,navigationGeneration:0},store);
+  capture=new CaptureCoordinator({createCDPSession:async()=>cdp} as unknown as Page,{pageId:'page',targetId:'target',webContentsId:1,navigationGeneration:0},store);
   await capture.start();
-  const position={recordingId:'recording',pageId:'page',documentId:'document',streamEpoch:'epoch',sourceTimeMs:100,eventSeq:0};
-  cdp.emit('Runtime.bindingCalled',{name:binding,executionContextId:1,payload:JSON.stringify({kind:'rrweb',formatVersion:2,position,event:{type:2,timestamp:100,data:{node:{type:0,id:1,childNodes:[]},initialOffset:{left:0,top:0}}},metadata:[],metadataComplete:true,errors:[],isTop:true})});
+  if(!options.earlyBaseline)snapshot();
   await capture.flush();
   const archive=new ResourceArchive(store.runDir),resources=(await archive.list()).items;
   return {store,capture,archive,position,resources,cssCacheReads};
@@ -113,4 +116,29 @@ it('a new resource request during a cache probe cannot join the previous observa
   expect(f.resources.some(r=>r.mediaType==='font/ttf')).toBe(false);
   const events=await new EvidenceReader(f.store.runDir).events({limit:100});
   expect(events.items).toContainEqual(expect.objectContaining({type:'resource-cache-probe-skipped',data:expect.objectContaining({stage:'after-content'})}));
+});
+
+it('a baseline emitted before recorder-install acknowledgement has ready CSS scope and cannot overwrite a newer initial loader',async()=>{
+  const f=await captured({earlyBaseline:true,initialNavigation:true});
+  expect(f.capture.health).toBe('recording');
+  expect(f.resources.find(r=>r.mediaType.startsWith('text/css'))).toMatchObject({status:'captured',source:{cacheProbeLoaderId:'replacement-loader'}});
+  expect(f.resources.find(r=>r.mediaType==='font/ttf')?.status).toBe('captured');
+});
+
+it('a stylesheet published after 700ms is retained; missing headers remain bounded and stop/navigation end the wait',async()=>{
+  vi.useFakeTimers();const cdp=new EventEmitter() as any;let loader='loader';
+  cdp.send=vi.fn(async(method:string)=>method==='CSS.getStyleSheetText'?{text:css}:{});
+  const source=new StylesheetTextCapture(cdp as CDPSession,()=>loader);await source.start();
+  const started=new Date().toISOString(),url='https://fixture.test/delayed.css';
+  const delayed=source.read('main','loader',url,started);
+  await vi.advanceTimersByTimeAsync(700);
+  cdp.emit('CSS.styleSheetAdded',{header:{styleSheetId:'late',frameId:'main',sourceURL:url,isInline:false}});
+  expect((await delayed).data.toString()).toBe(css);
+  const timeout=expect(source.read('main','loader','https://fixture.test/missing.css',started)).rejects.toThrow('unavailable');
+  await vi.advanceTimersByTimeAsync(5000);await timeout;
+  const navigation=expect(source.read('main','loader','https://fixture.test/navigation.css',started)).rejects.toThrow('scope-changed');
+  loader='replacement';cdp.emit('Page.frameNavigated',{frame:{id:'main',loaderId:loader}});await navigation;
+  const stopped=expect(source.read('main','replacement','https://fixture.test/stopped.css',started)).rejects.toThrow('unobserved-at-capture-stop');
+  source.finishWaiting();await stopped;
+  expect(vi.getTimerCount()).toBe(0);
 });
