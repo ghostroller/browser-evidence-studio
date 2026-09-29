@@ -36,7 +36,8 @@ export function makeDispatch(studio:Studio){
       if(method==='selectReplay')return studio.replayHost.select(body.replayId,body.enabled);
       ensure(typeof body.replayId==='string'&&body.replayId.length>0,'A specific replay operation ID is required',400);return studio.replayHost.close(body.replayId);
     }
-    if(PROJECT_METHODS.has(method))return dispatchProject(studio,method,body,source,context.signal);
+    if(PROJECT_METHODS.has(method)){const invoke=()=>dispatchProject(studio,method,body,source,context.signal);return ['createMaterialDraft','copyMaterialDraft','manageMaterialCatalog','setWorkingMaterialDraft'].includes(method)?studio.serialized(invoke):invoke();}
+    if(['updateProfile','manageProject','manageProfile','managementDependencies','settleManagementDependencies','browserCommand'].includes(method))ensure(source==='ui','Management and browser controls require trusted UI',403);
     // Presentation never enters the run queue: a capture can take seconds while
     // trusted dialogs and resize gestures still need to hide native surfaces.
     if(['presentation','uiPreferences','showBrowser'].includes(method)){
@@ -78,6 +79,8 @@ export function makeDispatch(studio:Studio){
       case 'checkEnvironment':ensure(source==='ui','Environment checks require trusted UI',403);return studio.checkEnvironment();
       case 'profiles':return {items:studio.profiles.filter(p=>p.projectId===body.projectId)};
       case 'runs':{const runs=source==='api'?studio.runs.filter(run=>run.projectId===body.projectId):studio.runs;return {items:runs.slice(0,100).map(({id,projectId,profileId,status,createdAt})=>({id,projectId,profileId,status,createdAt})),outputTruncated:runs.length>100};}case 'run':{const run=studio.runs.find(r=>r.id===body.runId);ensure(run,'Unknown run',404);return {...run,active:source==='api'?null:studio.active?.id===body.runId?studio.state().active:null};}
+      case 'browserCommand':return studio.browserCommand(body);
+      case 'updateProfile':return studio.updateProfile(body);case 'manageProject':return studio.manageProject(body);case 'manageProfile':return studio.manageProfile(body);case 'managementDependencies':return studio.managementDependencies(body);case 'settleManagementDependencies':return studio.settleManagementDependencies(body);
       case 'createProject':return studio.createProject(body);case 'updateProject':return studio.updateProject(body);case 'createProfile':return studio.createProfile(body);case 'startRun':ensure(source==='ui','Browser session creation requires the trusted client',403);return studio.startRun(body);
       case 'workflows':{const p=studio.projects.find(p=>p.id===body.projectId);ensure(p,'Unknown project',404);return {items:p.scriptDirectory?[{directory:p.scriptDirectory,manifest:(await loadWorkflow(p.scriptDirectory)).manifest}]:[]};}
       case 'registerWorkflow':{const p=studio.projects.find(p=>p.id===body.projectId);ensure(p?.scriptDirectory,'Register directory in the client UI first',409);ensure(!body.directory||body.directory===p.scriptDirectory,'Directory does not match registration',403);return (await loadWorkflow(p.scriptDirectory)).manifest;}
@@ -117,7 +120,7 @@ export function makeDispatch(studio:Studio){
       default:ensure(false,'Unknown operation: '+method,404);
     }};
     // Read-only state and handoff replies must remain responsive during long operations.
-    const invoke=()=>READ.has(method)||['replyHuman','releaseHuman','stopRunner','cancelJob','cancelHandoff','cancelCheckpoint','inspectRunRecovery','revokeValidationStart'].includes(method)?execute():studio.serialized(execute,method==='action'?context.signal:undefined);
+    const invoke=()=>method==='browserCommand'&&['stop','dialog','download-cancel'].includes(body.command)||READ.has(method)||['replyHuman','releaseHuman','stopRunner','cancelJob','cancelHandoff','cancelCheckpoint','inspectRunRecovery','revokeValidationStart'].includes(method)?execute():studio.serialized(execute,method==='action'?context.signal:undefined);
     if(source==='api'&&['state','projects','project','profiles','workflows','runs','handoffs'].includes(method)){
       const grant=studio.tasks.get(body.authorizationId);
       const capability=method==='workflows'?'execute':method==='runs'?'history-read':method==='handoffs'?'page-read':grant.capabilities[0];

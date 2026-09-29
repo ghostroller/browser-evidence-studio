@@ -23,6 +23,7 @@ import { captureCheckpointMaterials } from '@/capture/checkpoint';
 import { snapshotElements } from '@/capture/privacy';
 import { appendReview, readReviews, type ReviewQuery } from './reviews';
 import { BrowserSessionLifecycle } from './browser-session';
+import { WorkspaceManagement, type Project, type Profile } from './workspace-management';
 import { ProjectMaterials, materialSummary } from './project-materials';
 import { TaskAuthorizations, type TaskCapability } from './task-authorization';
 import { ReplayHost } from './replay-host';
@@ -36,8 +37,6 @@ import { SessionDownloads } from '../browser/downloads';
 import { commitValidation, recoverValidationCatalog, registerValidation, saveValidationCatalog, type ValidationLifecycleContext, type ValidationLifecycleObserver, type ValidationLifecycleStage, type ValidationRecord, type ValidationRecoveryDiagnostic } from './validation-lifecycle';
 export type { ValidationLifecycleContext, ValidationLifecycleObserver, ValidationLifecycleStage } from './validation-lifecycle';
 
-interface Project { id:string; name:string; objective:string; scriptDirectory?:string; createdAt:string; }
-interface Profile { id:string; projectId:string; name:string; entryUrl?:string; instructions?:string; storageRef?:string; configRevision?:number; checkedAt?:string; checkSelector?:string; checkOrigin?:string; savedAt?:string; loginStatus:'unknown'|'verified'|'expired'; }
 interface ManagedPage extends PageIdentity { view:WebContentsView; page:Page; capture?:CaptureCoordinator; loadError?:BrowserPageStatus['loadError']; find?:BrowserPageStatus['find']; dialog?:{id:string;value:Dialog}; lastUrl?:string; }
 interface ManagedOperation { browser:Browser; gate:GateTransport; page:Page; targetId:string; documentEpoch:number; }
 interface PendingOperation { targetId:string; leaseEpoch:number; abort:AbortController; gate?:GateTransport; promise:Promise<ManagedOperation>; }
@@ -83,6 +82,8 @@ export class Studio {
   private workflowStarting?:{abort:AbortController;gate?:GateTransport;done:Promise<void>;finish:()=>void};
   private validationLaunch?:ValidationLaunch;
   private readonly validationGrants=new ValidationStartGrants();
+  readonly management=new WorkspaceManagement(this);
+  taskAuthorizations(projectId:string){return this.tasks.list(projectId);}
   readonly materials:ProjectMaterials;
   readonly replayHost:ReplayHost;
   readonly executions:ProjectExecutions;
@@ -107,7 +108,7 @@ export class Studio {
   }
   private pageAudit(r:SessionRuntime,event:any,sessionId=this.browserSessionId){return this.active===r?r.store!.appendEvent(event):this.sessionAudit(event.type,{...event,projectId:r.projectId,profileId:r.profileId},sessionId);}
   async authorizeTask(body:any){return this.serialized(async()=>{
-    const project=this.projects.find(item=>item.id===body.projectId);ensure(project,'Unknown project',404);
+    const project=this.projects.find(item=>item.id===body.projectId);ensure(project,'Unknown project',404);this.assertActivity(body.projectId,body.profileId);
     ensure(Array.isArray(body.capabilities),'Choose task capabilities');
     const browser=body.capabilities.some((value:string)=>['page-read','page-act','page-create','execute'].includes(value));
     if(!browser)return this.tasks.issue({projectId:project.id},{origins:[],pages:[],capabilities:body.capabilities,durationMs:body.durationMs,maxOperations:body.maxOperations});
@@ -167,7 +168,7 @@ export class Studio {
   }
   async init(){
     await mkdir(this.root,{recursive:true});
-    try{const ws=JSON.parse(await readFile(path.join(this.root,'workspace.json'),'utf8'));this.projects=ws.projects;this.profiles=ws.profiles;}catch(e:any){if(e.code!=='ENOENT')throw e;}
+    await this.management.init();
     await mkdir(path.join(this.root,'runs'),{recursive:true});
     for(const id of await readdir(path.join(this.root,'runs'))){
       try{const store=await EvidenceStore.open(path.join(this.root,'runs',id));this.runs.push(store.manifest);await store.close();}catch(error){this.runs.push({id,status:'unreadable',error:String(error)});}
@@ -194,7 +195,6 @@ export class Studio {
     let aborted!:()=>void;const cancelled=new Promise<never>((_resolve,reject)=>{aborted=()=>reject(signal.reason??new Error('Validation stopped'));signal.addEventListener('abort',aborted,{once:true});});
     try{await Promise.race([observed,cancelled]);}finally{signal.removeEventListener('abort',aborted);}
   }
-  private async save(){await atomicJson(path.join(this.root,'workspace.json'),{schemaVersion:1,projects:this.projects,profiles:this.profiles});}
   serialized<T>(fn:()=>Promise<T>,signal?:AbortSignal):Promise<T>{
     let started=false;const next=this.queue.then(()=>{signal?.throwIfAborted();started=true;return fn();});this.queue=next.catch(()=>{});
     if(!signal)return next;
@@ -216,10 +216,29 @@ export class Studio {
   }
   private browserState():BrowserSessionStatus|null{const browser=this.browser;if(!browser)return null;const r=browser.runtime;return {sessionId:browser.id,projectId:r.projectId,profileId:r.profileId,recordingId:browser.recordingId,controller:r.controller,leaseEpoch:r.leaseEpoch,locked:r.locked,selectedPageId:r.selectedPageId,closedPageCount:this.closedPages?.length??0,downloads:this.browserDownloads?.list()??[],notice:this.browserNotice,uiAction:this.browserUiAction,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:!!this.active&&!!p.capture?.inspecting,openerPageId:p.openerPageId,canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward(),loading:contents.isLoadingMainFrame?.()??false,zoomFactor:contents.getZoomFactor?.()??1,loadError:p.loadError,find:p.find,dialog:p.dialog?{id:p.dialog.id,type:p.dialog.value.type(),message:p.dialog.value.message(),defaultValue:p.dialog.value.defaultValue()}:undefined}]:[];})};}
   state(){const r=this.active;return {instanceId:this.instanceId,session:this.browserState(),validationStarting:this.validationLaunch?{validationId:this.validationLaunch.validationId,validationRunId:this.validationLaunch.validationRunId}:null,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,executionId:result?.executionBinding?.executionId,executionBinding:result?.executionBinding,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:p.capture!.inspecting,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,validationStartGrant:this.validationStartGrant({runId:r.id}).grant,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
-  async createProject(body:any){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');const p={id:randomUUID(),name:body.name.trim().slice(0,200),objective:String(body.objective||'').slice(0,4000),scriptDirectory:body.scriptDirectory?path.resolve(body.scriptDirectory):undefined,createdAt:now()};this.projects.push(p);await this.save();return p;}
-  async updateProject(body:any){const project=this.projects.find(item=>item.id===(body.projectId||body.id));ensure(project,'Unknown project',404);if(body.name!==undefined){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');project.name=body.name.trim().slice(0,200);}if(body.objective!==undefined){ensure(typeof body.objective==='string','Objective must be text');project.objective=body.objective.slice(0,4000);}if(body.scriptDirectory!==undefined){ensure(typeof body.scriptDirectory==='string'||body.scriptDirectory===null,'Workflow directory must be a path');project.scriptDirectory=body.scriptDirectory?path.resolve(body.scriptDirectory):undefined;}await this.save();return project;}
-  async createProfile(body:any){ensure(this.projects.some(p=>p.id===body.projectId),'Unknown project');ensure(typeof body.name==='string'&&body.name.trim(),'Profile name required');const p:Profile={id:randomUUID(),projectId:body.projectId,name:body.name.trim().slice(0,120),entryUrl:String(body.entryUrl||'about:blank'),instructions:String(body.instructions||''),checkSelector:body.checkSelector||undefined,configRevision:1,loginStatus:'unknown'};p.storageRef=`persist:bes-${p.projectId}-${p.id}`;this.profiles.push(p);await this.save();return p;}
+  createProject(body:any){return this.management.createProject(body);}
+  updateProject(body:any){return this.management.updateProject(body);}
+  createProfile(body:any){return this.management.createProfile(body);}
+  updateProfile(body:any){return this.management.updateProfile(body);}
+  manageProject(body:any){return this.management.manageProject(body);}
+  manageProfile(body:any){return this.management.manageProfile(body);}
+  managementDependencies(body:any){return this.management.managementDependencies(body);}
+  private assertActivity(projectId:string,profileId?:string){
+    const project=this.projects.find(item=>item.id===projectId);ensure(project&&project.lifecycle!=='archived','Restore the archived project before opening or running a session',409);
+    if(profileId){const profile=this.profiles.find(item=>item.id===profileId&&item.projectId===projectId);ensure(profile&&profile.lifecycle!=='disabled','Restore the disabled environment before use',409);}
+  }
+  async settleManagementDependencies(body:{projectId:string;profileId?:string;expectedSessionId:string|null;authorizationIds:string[]}){
+    const current=await this.managementDependencies(body),ids=current.dependencies.filter(item=>item.kind==='authorization'&&item.active).map(item=>item.id).sort();
+    ensure((current.sessionId??null)===body.expectedSessionId&&Array.isArray(body.authorizationIds)&&JSON.stringify([...body.authorizationIds].sort())===JSON.stringify(ids),'Management dependencies changed; inspect them again before stopping',409);
+    for(const authorizationId of ids)this.tasks.revoke(authorizationId,'User explicitly closed management dependencies');
+    const runtime=this.browser?.runtime;
+    if(runtime&&runtime.projectId===body.projectId&&(!body.profileId||runtime.profileId===body.profileId)){
+      await this.stopRunner();if(this.active)await this.seal();await this.closeSession();
+    }
+    return this.managementDependencies(body);
+  }
   async openEnvironment(body:any){
+    this.assertActivity(body.projectId,body.profileId);
     ensure(!this.browser,'Close the current environment first',409);
     const profile=this.profiles.find(p=>p.id===body.profileId&&p.projectId===body.projectId);ensure(profile,'Unknown environment',404);
     const browserSession=session.fromPartition(profile.storageRef??`persist:bes-${profile.projectId}-${profile.id}`);
@@ -227,18 +246,30 @@ export class Studio {
     browserSession.webRequest.onBeforeRequest((details,callback)=>callback({cancel:(details.resourceType==='mainFrame'||details.resourceType==='subFrame')&&!this.navigationAllowed(details.url)}));
     const runtime:SessionRuntime={projectId:profile.projectId,profileId:profile.id,pages:new Map(),selectedPageId:'',session:browserSession,controller:'human',leaseEpoch:1,capture:'not-recording',execution:'ready',locked:false};
     const owner=this.browser=new BrowserSessionLifecycle(runtime);this.closedPages=[];this.browserNotice=undefined;
-    try{await this.ensureDownloads();const page=await this.addPage(runtime);this.loadHumanUrl(page,profile.entryUrl||'about:blank');return this.state().session;}
+    try{await this.ensureDownloads();const page=await this.addPage(runtime);this.loadHumanUrl(page,profile.entryUrl||'about:blank');await this.management.commitProfileState(profile.id,profile.configRevision??0,{openedAt:now()});return this.state().session;}
     catch(error){runtime.ending=true;await this.revokeOperation(runtime);for(const page of [...runtime.pages.values()])this.window.remove(page.view);await this.browserDownloads?.dispose();this.browserDownloads=undefined;if(this.browser===owner){this.browser=undefined;this.browserAuthorizationId=undefined;this.window.show(undefined);}throw error;}
     finally{if(this.browser===owner)this.window.lock(runtime.locked||runtime.controller!=='human');else if(!this.browser)this.window.lock(false);this.onChanged();}
   }
   async checkEnvironment(){
     const runtime=this.live(),profile=this.profiles.find(p=>p.id===runtime.profileId)!;
     ensure(runtime.controller==='human'&&!runtime.locked,'Environment check requires human ownership',409);
-    const page=this.current();profile.checkedAt=now();profile.checkOrigin=new URL(page.page.url()).origin;
-    profile.loginStatus=profile.checkSelector?(await page.page.$(profile.checkSelector)?'verified':'expired'):'unknown';
-    await this.save();return profile;
+    const revision=profile.configRevision??0,page=this.current(),generation=page.navigationGeneration;
+    const origin=new URL(page.page.url()).origin;
+    let loginStatus:Profile['loginStatus']='unknown',checkReason='未配置可靠的登录检查条件。';
+    try {
+      if(profile.expectedOrigin&&profile.expectedOrigin!==origin){loginStatus='expired';checkReason='当前页面来源与预期业务站点不同。';}
+      else if(profile.checkSelector){
+        const element=await page.page.$(profile.checkSelector);
+        const visible=element?await element.evaluate(node=>{const rect=node.getBoundingClientRect(),style=getComputedStyle(node);return rect.width>0&&rect.height>0&&style.visibility!=='hidden'&&style.display!=='none';}):false;
+        await element?.dispose();
+        ensure(this.browser?.runtime===runtime&&runtime.pages.get(page.pageId)===page&&page.navigationGeneration===generation,'页面在检查期间已改变',409);
+        loginStatus=visible?'verified':'expired';checkReason=visible?'当前页面可见登录标记满足已配置的检查条件。':'当前页面未找到可见登录标记。';
+      }
+    } catch(error){loginStatus='unknown';checkReason='登录检查未完成：'+String(error);}
+    return this.management.commitProfileState(profile.id,revision,{checkedAt:now(),checkedConfigRevision:revision,checkOrigin:origin,loginStatus,checkReason});
   }
   async startRun(body:any, launch?:ValidationLaunch,options:{freshPage?:boolean}={}){
+    this.assertActivity(body.projectId,body.profileId);
     ensure(!this.validationLaunch||this.validationLaunch===launch,'Validation startup owns the browser',409);launch?.abort.signal.throwIfAborted();
     ensure(!this.active,'Seal the active run first',409); const project=this.projects.find(p=>p.id===body.projectId);ensure(project,'Unknown project');
     const profile=this.profiles.find(p=>p.id===body.profileId&&p.projectId===project.id);ensure(profile,'Profile must belong to project');
@@ -340,7 +371,7 @@ export class Studio {
     const owner=this.browser!;
     const previousPageId=r.selectedPageId;
     const view=existingView||new WebContentsView({webPreferences:{session:r.session,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true,backgroundThrottling:false}});
-    const wc=view.webContents,pageId=randomUUID(),webContentsId=wc.id;let registered:ManagedPage|undefined,committed=false,removeObserver:(()=>void)|undefined;
+    const wc=view.webContents,pageId=randomUUID(),webContentsId=wc.id;let registered:ManagedPage|undefined,committed=false,registrationRecorded=false,foregroundRecorded=false,removeObserver:(()=>void)|undefined;
     try{
     this.window.add(view,activate);this.window.lock(true);
     wc.once('destroyed',()=>{if(committed)this.pageDestroyed(owner.runtime,view,{pageId,webContentsId,openerPageId},registered);});
@@ -382,7 +413,7 @@ export class Studio {
     const capture=this.active===r?this.createCapture(this.active,Object.assign(identity,{page})):undefined;
     const p=Object.assign(identity,{view,page,capture,lastUrl:wc.getURL()}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);if(activate)r.selectedPageId=p.pageId;const foregroundAt=Date.now();
     page.on('dialog',dialog=>{p.dialog={id:randomUUID(),value:dialog};this.onChanged();});
-    if(this.active===r){await capture!.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store!.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,navigationGeneration:p.navigationGeneration,openerPageId,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});if(activate)await this.recordForeground(r as ActiveRun,previousPageId||null,'page-created',foregroundAt);}
+    if(this.active===r){await capture!.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store!.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,navigationGeneration:p.navigationGeneration,openerPageId,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});registrationRecorded=true;if(activate){await this.recordForeground(r as ActiveRun,previousPageId||null,'page-created',foregroundAt);foregroundRecorded=true;}}
     ensure(this.browser===owner&&owner.runtime===r&&!r.ending&&!this.closing,'Browser session changed during page initialization',409);
     if(activate)this.window.show(view);
     // Authorization is the final potentially throwing registration step.
@@ -391,7 +422,12 @@ export class Studio {
     }catch(error){
       removeObserver?.();if(registered){r.pages.delete(pageId);await registered.capture?.stop().catch(cleanup=>console.error('Failed page capture cleanup',cleanup));}
       if(r.selectedPageId===pageId)r.selectedPageId=r.pages.has(previousPageId)?previousPageId:'';
-      this.window.remove(view);if(this.browser===owner)this.window.show(owner.runtime.pages.get(owner.runtime.selectedPageId)?.view);throw error;
+      this.window.remove(view);if(this.browser===owner)this.window.show(owner.runtime.pages.get(owner.runtime.selectedPageId)?.view);
+      if(this.active===r&&(registrationRecorded||foregroundRecorded)){
+        await r.store!.appendEvent({type:'gap',source:'electron',pageId,data:{reason:'page-initialization-failed',registrationRecorded,foregroundRecorded,message:String(error)}}).catch(failure=>console.error('Could not persist failed page initialization',failure));
+        if(foregroundRecorded)await this.recordForeground(r as ActiveRun,pageId,'page-initialization-rollback',Date.now()).catch(failure=>console.error('Could not persist foreground restoration',failure));
+      }
+      throw error;
     }finally{if(this.browser===owner)this.window.lock(owner.runtime.locked||owner.runtime.controller!=='human');this.onChanged();}
   }
   private createCapture(r:ActiveRun,p:PageIdentity&{page:Page}){return new CaptureCoordinator(p.page,p,r.store,selection=>{if(this.active===r&&r.pages.has(p.pageId)){r.selection=selection;this.onChanged();}},reason=>{if(r.ending||this.active!==r||!r.pages.has(p.pageId))return;r.capture='degraded';this.onChanged();void r.store.updateManifest({capture:'degraded',captureHealthReason:reason}).catch(error=>console.error('Could not persist capture health',error));},false);}
@@ -796,7 +832,7 @@ export class Studio {
   async snapshot(body:any={}){const r=this.live(),p=body.pageId?r.pages.get(body.pageId):this.current();ensure(p,'Snapshot page no longer exists',409);const generation=p.navigationGeneration;if(body.generation!==undefined)ensure(body.generation===generation,'Stale navigation generation',409);const max=body.maxBytes??4000;ensure(Number.isSafeInteger(max)&&max>=512&&max<=16000,'Snapshot maxBytes must be between 512 and 16000');const elements=await p.page.evaluate(snapshotElements);ensure(this.browser?.runtime===r&&r.pages.get(p.pageId)===p&&p.navigationGeneration===generation,'Snapshot target navigated during capture; refresh its identity',409);const result={pageId:p.pageId,generation,url:p.view.webContents.getURL(),elements:[] as typeof elements,outputTruncated:false};for(const item of elements){const candidate={...result,elements:[...result.elements,item]};if(Buffer.byteLength(JSON.stringify(candidate))+32>max)break;result.elements.push(item);}result.outputTruncated=result.elements.length<elements.length;ensure(Buffer.byteLength(JSON.stringify(result))<=max,'Snapshot metadata exceeds maxBytes; increase the budget',413);return captureMetadata(result);}
   async pauseOperations(paused:boolean){const r=this.required();ensure(r.controller==='human','Only manual control can be paused here',409);r.locked=paused;this.window.lock(paused);return this.state().active;}
   async pauseCapture(paused:boolean){const r=this.required();for(const p of r.pages.values())await p.capture!.pause(paused);r.capture=paused?'paused':[...r.pages.values()].some(p=>p.capture!.health==='degraded')?'degraded':'recording';return this.state().active;}
-  async saveProfile(){const r=this.live();await r.session.cookies.flushStore();r.session.flushStorageData();const p=this.profiles.find(p=>p.id===r.profileId)!;p.savedAt=now();p.loginStatus='unknown';await this.save();if(this.active===r)await r.store!.appendEvent({type:'profile-saved',source:'studio',data:{profileId:p.id,loginStatus:'unknown',scope:'persistent cookies/localStorage/IndexedDB; memory/sessionStorage not guaranteed'}});return p;}
+  async saveProfile(){const r=this.live(),profile=this.profiles.find(p=>p.id===r.profileId)!;await r.session.cookies.flushStore();r.session.flushStorageData();const p=await this.management.commitProfileState(profile.id,profile.configRevision??0,{savedAt:now(),loginStatus:'unknown'});if(this.active===r)await r.store!.appendEvent({type:'profile-saved',source:'studio',data:{profileId:p.id,loginStatus:'unknown',scope:'persistent cookies/localStorage/IndexedDB; memory/sessionStorage not guaranteed'}});return p;}
   async seal(launch?:ValidationLaunch){ensure(!this.validationLaunch||this.validationLaunch===launch,'Validation startup owns the browser',409);launch?.abort.signal.throwIfAborted();const r=this.required();ensure(!this.workflow&&!this.workflowStarting&&!this.workflowSettlement&&!r.stopping&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Stop the runner and finish saving its report before sealing',409);r.ending=true;r.locked=true;this.window.lock(true);
     r.leaseEpoch++;
     try{
@@ -888,7 +924,7 @@ export class Studio {
     this.onChanged();return {revoked:!!grant};
   }
   async validate(body:any,options:{signal?:AbortSignal;requireGrant?:boolean}={}){
-    options.signal?.throwIfAborted();this.assertValidationIdle();
+    options.signal?.throwIfAborted();this.assertValidationIdle();this.assertActivity(body.projectId,body.profileId);
     const executionMode=body.executionMode??'from-start-validation';
     ensure(['current-page-test','from-start-validation'].includes(executionMode),'Unknown execution mode');
     ensure(!options.requireGrant||executionMode==='from-start-validation','This one-time grant authorizes from-start validation only',409);

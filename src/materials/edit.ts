@@ -12,7 +12,7 @@ export function copyCheckpoint(content: MaterialContent, checkpointId: string, c
   const annotations = source.annotations.filter(item => item.checkpointId === checkpointId);
   const annotationIds = new Map(annotations.map(item => [item.id, randomUUID()]));
   const copyId = randomUUID();
-  const copied: CheckpointCard = { ...structuredClone(card), id: copyId, derivedFrom: card.id, createdAt,
+  const copied: CheckpointCard = { ...structuredClone(card), id: copyId, title: `${card.title} 副本`, operationId: undefined, sourceReceiptRef: card.sourceReceiptRef, derivedFrom: card.id, createdAt,
     annotationIds: card.annotationIds.map(annotationId => annotationIds.get(annotationId)!) };
   const copies: MaterialAnnotation[] = annotations.map(item => ({ ...structuredClone(item), id: annotationIds.get(item.id)!, checkpointId: copyId }));
   return validateContent({ ...source, checkpoints: [...source.checkpoints, copied], annotations: [...source.annotations, ...copies] });
@@ -29,7 +29,8 @@ export function moveCheckpoint(content: MaterialContent, checkpointId: string, a
   return validateContent({ ...source,
     checkpoints: source.checkpoints.map(item => item.id === checkpointId ? { ...item, anchor } : item),
     annotations: source.annotations.map(item => annotationIds.has(item.id) ? { ...item, bindingStatus: 'needs-rebind' as const } : item),
-    fields: source.fields.map(item => {
+    fields: source.fields.map(original => {
+      const item = original.examples ? { ...original, examples: original.examples.map(example => example.checkpointId === checkpointId ? { ...example, bindingStatus: 'needs-rebind' as const } : example) } : original;
       if (!item.target) return item;
       const explicit = item.checkpointId === checkpointId || !!item.annotationId && annotationIds.has(item.annotationId);
       const legacyAtOldAnchor = !item.checkpointId && !item.annotationId && sameReplayPosition(item.target.position, card.anchor);
@@ -46,7 +47,8 @@ export function removeCheckpoint(content: MaterialContent, checkpointId: string)
   return validateContent({ ...source,
     checkpoints: source.checkpoints.filter(item => item.id !== checkpointId),
     annotations: source.annotations.filter(item => !annotationIds.has(item.id)),
-    fields: source.fields.map(item => {
+    fields: source.fields.map(original => {
+      const item = original.examples ? { ...original, examples: original.examples.filter(example => example.checkpointId !== checkpointId) } : original;
       if (!item.target || item.checkpointId !== checkpointId && (!item.annotationId || !annotationIds.has(item.annotationId))) return item;
       return { ...item, checkpointId: undefined, annotationId: undefined, bindingStatus: 'needs-rebind' as const };
     }) });

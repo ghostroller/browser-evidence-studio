@@ -467,3 +467,12 @@
 .advanced-trigger[data-state='open']::before { transform: rotate(90deg); }
 
 @media (pointer: coarse) { .split-handle { flex-basis: 20px; width: 20px; } .split-handle[aria-orientation="horizontal"] { height: 20px; flex-basis: 20px; width: auto; } }
+
+/* One primary scrolling editor at both supported window sizes. */
+.material-layout[data-view] { display: block; }
+.material-workbench .material-card-list { max-height: none; overflow: visible; display: grid; gap: 3px; }
+.material-workbench section { min-width: 0; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.material-workbench details { margin: 6px 0; }
+.material-workbench input, .material-workbench textarea, .material-workbench select { max-width: 100%; }
+.material-workbench small, .material-workbench p { overflow-wrap: anywhere; }
+.material-workbench [aria-pressed="true"] { background: var(--accent); }

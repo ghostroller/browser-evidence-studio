@@ -3,6 +3,12 @@ import type { BoundedPage, HistoricalTarget, ReadBudget, ReplayPosition } from '
 
 export const MATERIAL_SCHEMA_VERSION = 1 as const;
 export type MaterialAuthor = 'human' | 'agent';
+export interface FieldExample {
+  id: string;
+  checkpointId: string;
+  target: HistoricalTarget;
+  bindingStatus: 'bound' | 'needs-rebind' | 'unavailable';
+}
 export interface MaterialField {
   id: string;
   dataset: string;
@@ -19,6 +25,8 @@ export interface MaterialField {
   /** Retains the old target when moving a card requires revalidation. */
   bindingStatus?: 'bound' | 'needs-rebind' | 'unavailable';
   annotationId?: string;
+  /** Additive examples; absent on legacy fixed content, never backfilled on read. */
+  examples?: FieldExample[];
 }
 export interface MaterialRequirement {
   id: string;
@@ -44,11 +52,11 @@ export interface CheckpointCard {
 export interface MaterialAnnotation {
   id: string;
   checkpointId: string;
-  target: HistoricalTarget;
+  target?: HistoricalTarget;
   text: string;
   author: MaterialAuthor;
   interpretation: 'observed' | 'inferred' | 'unverified';
-  bindingStatus: 'bound' | 'needs-rebind' | 'unavailable';
+  bindingStatus: 'bound' | 'needs-rebind' | 'unavailable' | 'none';
 }
 export interface MaterialContent {
   taskBrief?: { objective:string; scope:string };

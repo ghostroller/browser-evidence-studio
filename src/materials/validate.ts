@@ -123,7 +123,7 @@ export function validateContent(value: unknown): MaterialContent {
   const fields = list(content.fields, 'fields').map((raw): MaterialField => {
     if (!record(raw)) fail('Field must be an object');
     const item = raw as Record<string, unknown>;
-    keys(item, ['id', 'dataset', 'name', 'description', 'outputPath', 'sourceProof', 'valueType', 'sourcePolicy', 'target', 'annotationId', 'checkpointId', 'bindingStatus'], 'field');
+    keys(item, ['id', 'dataset', 'name', 'description', 'outputPath', 'sourceProof', 'valueType', 'sourcePolicy', 'target', 'annotationId', 'checkpointId', 'bindingStatus', 'examples'], 'field');
     if (!['any-evidenced', 'page-displayed'].includes(String(item.sourcePolicy))) fail('Invalid source policy');
     if (item.valueType !== undefined && !['string', 'number', 'boolean', 'object', 'array', 'null'].includes(String(item.valueType))) fail('Invalid field type');
     if ((item.checkpointId !== undefined || item.bindingStatus !== undefined) && item.target === undefined) fail('Field binding metadata requires a target');
@@ -139,6 +139,12 @@ export function validateContent(value: unknown): MaterialContent {
     return { id: id(item.id, 'field.id'), dataset: id(item.dataset, 'field.dataset'), name: string(item.name, 'field.name', 256),
       description: string(item.description, 'field.description', 8000), sourcePolicy: item.sourcePolicy as MaterialField['sourcePolicy'], ...proofFields,
       ...(item.valueType === undefined ? {} : { valueType: item.valueType as MaterialField['valueType'] }),
+      ...(item.examples === undefined ? {} : { examples: list(item.examples, 'field.examples').map(raw => {
+        if (!record(raw)) return fail('Field example must be an object');
+        keys(raw, ['id', 'checkpointId', 'target', 'bindingStatus'], 'field example');
+        if (!['bound', 'needs-rebind', 'unavailable'].includes(String(raw.bindingStatus))) return fail('Invalid example binding status');
+        return { id: id(raw.id, 'example.id'), checkpointId: id(raw.checkpointId, 'example.checkpointId'), target: target(raw.target, 'example.target'), bindingStatus: raw.bindingStatus as 'bound' | 'needs-rebind' | 'unavailable' };
+      }) }),
       ...(item.target === undefined ? {} : { target: target(item.target, 'field.target') }),
       ...(item.annotationId === undefined ? {} : { annotationId: id(item.annotationId, 'field.annotationId') }),
       ...(item.checkpointId === undefined ? {} : { checkpointId: id(item.checkpointId, 'field.checkpointId') }),
@@ -165,8 +171,9 @@ export function validateContent(value: unknown): MaterialContent {
     keys(item, ['id', 'checkpointId', 'target', 'text', 'author', 'interpretation', 'bindingStatus'], 'annotation');
     if (item.author !== 'human' && item.author !== 'agent') fail('Invalid annotation author');
     if (!['observed', 'inferred', 'unverified'].includes(String(item.interpretation))) fail('Invalid interpretation');
-    if (!['bound', 'needs-rebind', 'unavailable'].includes(String(item.bindingStatus))) fail('Invalid binding status');
-    return { id: id(item.id, 'annotation.id'), checkpointId: id(item.checkpointId, 'annotation.checkpointId'), target: target(item.target, 'annotation.target'),
+    if (!['bound', 'needs-rebind', 'unavailable', 'none'].includes(String(item.bindingStatus))) fail('Invalid binding status');
+    if (item.target !== undefined && item.bindingStatus === 'none') fail('Element annotation requires a binding status');
+    return { id: id(item.id, 'annotation.id'), checkpointId: id(item.checkpointId, 'annotation.checkpointId'), ...(item.target === undefined ? {} : { target: target(item.target, 'annotation.target') }),
       text: string(item.text, 'annotation.text', 16000), author: item.author as MaterialAnnotation['author'], interpretation: item.interpretation as MaterialAnnotation['interpretation'],
       bindingStatus: item.bindingStatus as MaterialAnnotation['bindingStatus'] };
   });
@@ -190,10 +197,19 @@ export function validateContent(value: unknown): MaterialContent {
   for (const annotation of annotations) {
     const checkpoint = checkpointById.get(annotation.checkpointId) ?? fail(`Annotation ${annotation.id} has no matching checkpoint membership`);
     if (!checkpoint.annotationIds.includes(annotation.id)) fail(`Annotation ${annotation.id} has no matching checkpoint membership`);
-    if (!refs.has(annotation.target.position.recordingId)) fail(`Annotation ${annotation.id} has unlisted recording`);
-    if (annotation.bindingStatus === 'bound' && !sameReplayPosition(annotation.target.position, checkpoint.anchor)) fail(`Annotation ${annotation.id} must be reviewed after anchor movement`);
+    if (!annotation.target && annotation.bindingStatus === 'bound') fail('Text-only annotation cannot claim an element binding');
+    if (annotation.target && !refs.has(annotation.target.position.recordingId)) fail(`Annotation ${annotation.id} has unlisted recording`);
+    if (annotation.bindingStatus === 'bound' && annotation.target && !sameReplayPosition(annotation.target.position, checkpoint.anchor)) fail(`Annotation ${annotation.id} must be reviewed after anchor movement`);
   }
   for (const field of fields) {
+    if (field.examples) {
+      unique(field.examples, 'field examples');
+      for (const example of field.examples) {
+        const card = checkpointById.get(example.checkpointId);
+        if (!card || !refs.has(example.target.position.recordingId)) fail('Example has no source card or recording');
+        if (example.bindingStatus === 'bound' && !sameReplayPosition(example.target.position, card!.anchor)) fail('Example must be reviewed after anchor movement');
+      }
+    }
     if (field.annotationId && !annotationById.has(field.annotationId)) fail(`Field ${field.id} has unknown annotation`);
     if (field.target && !refs.has(field.target.position.recordingId)) fail(`Field ${field.id} has unlisted recording`);
     if (field.checkpointId) {
@@ -202,7 +218,7 @@ export function validateContent(value: unknown): MaterialContent {
     }
     if (field.target && field.annotationId) {
       const annotation = annotationById.get(field.annotationId)!;
-      if (stableTarget(field.target) !== stableTarget(annotation.target)) fail(`Field ${field.id} target and annotation disagree`);
+      if (!annotation.target || stableTarget(field.target) !== stableTarget(annotation.target)) fail(`Field ${field.id} target and annotation disagree`);
       if (field.checkpointId && field.checkpointId !== annotation.checkpointId) fail(`Field ${field.id} checkpoint and annotation disagree`);
     }
   }

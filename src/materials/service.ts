@@ -131,6 +131,54 @@ export class FileMaterialService implements MaterialService {
   workspaceCatalog(projectId: string) {
     return this.locked(projectId, (root, paths) => this.catalog(projectId, root, paths));
   }
+  async manageCatalog(projectId: string, input: { kind: 'drafts' | 'revisions' | 'recordings'; id: string; expectedCatalogRevision: number; name?: string; note?: string; hidden?: boolean }) {
+    return this.locked(projectId, async (root, paths) => {
+      id(input.id, 'catalog identity');
+      if (!['drafts', 'revisions', 'recordings'].includes(input.kind)) throw new MaterialError('INVALID_COLLECTION', 'Unknown directory collection.');
+      const catalog = await this.catalog(projectId, root, paths);
+      if (input.expectedCatalogRevision !== catalog.catalogRevision) throw new MaterialError('CATALOG_CONFLICT', 'Directory changed; reload before saving.', 409);
+      if (input.kind === 'drafts') {
+        await this.storedDraft(projectId, input.id, root, paths);
+        if (input.hidden) {
+          let files: string[] = [];
+          try { files = await this.fileIds(path.join(root, 'authoring')); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+          for (const operationId of files) {
+            const operation = await readJson(path.join(root, 'authoring', `${operationId}.json`), root) as Record<string, unknown>;
+            if (operation.projectId === projectId && operation.draftId === input.id && !['associated', 'interrupted', 'source-expired', 'not-captured'].includes(String(operation.stage))) throw new MaterialError('PENDING_AUTHORING', 'Resolve the retained capture operation before removing this working copy.', 409);
+          }
+          if (catalog.workingDraftId === input.id) throw new MaterialError('CURRENT_WORKING_COPY', 'Set another working copy as current before removing this one.', 409);
+        }
+      } else if (input.kind === 'revisions') await this.storedRevision(projectId, input.id, root, paths);
+      else {
+        const manifest = await readJson(path.join(root, 'runs', input.id, 'manifest.json'), root) as Record<string, unknown>;
+        if (manifest.projectId !== projectId || manifest.id !== input.id) throw new MaterialError('INVALID_SOURCE', 'Recording belongs to another project.', 403);
+      }
+      if (input.name !== undefined && (typeof input.name !== 'string' || input.name.length > 200)) throw new MaterialError('INVALID_CATALOG', 'Name must be at most 200 characters.');
+      if (input.note !== undefined && (typeof input.note !== 'string' || input.note.length > 4000)) throw new MaterialError('INVALID_CATALOG', 'Note must be at most 4000 characters.');
+      if (input.hidden !== undefined && typeof input.hidden !== 'boolean') throw new MaterialError('INVALID_CATALOG', 'Hidden must be boolean.');
+      catalog[input.kind][input.id] = { ...(catalog[input.kind][input.id] ?? { name: '', hidden: false }),
+        ...(input.name === undefined ? {} : { name: input.name.trim() }), ...(input.note === undefined ? {} : { note: input.note }), ...(input.hidden === undefined ? {} : { hidden: input.hidden }) };
+      await this.saveCatalog(paths, catalog); return { ...catalog, catalogRevision: catalog.catalogRevision + 1 };
+    });
+  }
+  async copyDraft(projectId: string, draftId: string, expectedDraftRevision: number, operationId: string) {
+    return this.locked(projectId, async (root, paths) => {
+      id(operationId, 'operationId');
+      const receiptFile = path.join(paths.material, `copy-${operationId}.receipt`);
+      try {
+        const receipt = await readJson(receiptFile, root) as { sourceId: string; revision: number; draftId: string };
+        if (receipt.sourceId !== draftId || receipt.revision !== expectedDraftRevision) throw new MaterialError('OPERATION_CONFLICT', 'Copy operation belongs to another source.', 409);
+        return this.storedDraft(projectId, receipt.draftId, root, paths);
+      } catch (error) { if (!(error instanceof MaterialError) || error.code !== 'NOT_FOUND') throw error; }
+      const source = await this.storedDraft(projectId, draftId, root, paths);
+      if (source.draftRevision !== expectedDraftRevision) throw new MaterialConflictError(source, expectedDraftRevision);
+      // Stable operation-derived identity lets a failed receipt retry recover the same copy.
+      const copied = { ...clone(source), draftId: `copy-${operationId}`, draftRevision: 0, author: 'human' as const, updatedAt: new Date().toISOString() };
+      try { await createJson(path.join(paths.drafts, `${copied.draftId}.json`), copied); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      await atomicJson(receiptFile, { sourceId: draftId, revision: expectedDraftRevision, draftId: copied.draftId });
+      return this.storedDraft(projectId, copied.draftId, root, paths);
+    });
+  }
   async workingDraft(projectId: string): Promise<TaskMaterialDraft> {
     return this.locked(projectId, async (root, paths) => {
       const catalog = await this.catalog(projectId, root, paths);
@@ -168,6 +216,25 @@ export class FileMaterialService implements MaterialService {
     const item = material.content[collection].find(value => value.id === entityId);
     if (!item) throw new MaterialError('NOT_FOUND', 'Material entity does not exist.', 404);
     return { item, draftRevision: 'draftRevision' in material ? material.draftRevision : undefined, contentHash: 'contentHash' in material ? material.contentHash : undefined };
+  }
+  async recordingUsage(projectId: string, recordingId: string) {
+    id(recordingId, 'recordingId');
+    return this.locked(projectId, async(root, paths) => {
+      const manifest=await readJson(path.join(root,'runs',recordingId,'manifest.json'),root) as {projectId:string;id:string};
+      if(manifest.projectId!==projectId||manifest.id!==recordingId)throw new MaterialError('INVALID_SOURCE','Recording belongs to another project.',403);
+      const catalog=await this.catalog(projectId,root,paths);
+      const revisions:Array<{revisionId:string;displayNumber?:number;cards:number}>=[];
+      const drafts:Array<{draftId:string;name:string;cards:number}>=[];
+      for(const revisionId of await this.fileIds(paths.revisions)) {
+        const material=await this.storedRevision(projectId,revisionId,root,paths);
+        if(material.content.recordingRefs.includes(recordingId))revisions.push({revisionId,displayNumber:catalog.revisions[revisionId]?.displayNumber,cards:material.content.checkpoints.filter(card=>card.anchor.recordingId===recordingId).length});
+      }
+      for(const draftId of await this.fileIds(paths.drafts)) {
+        const material=await this.storedDraft(projectId,draftId,root,paths);
+        if(material.content.recordingRefs.includes(recordingId))drafts.push({draftId,name:catalog.drafts[draftId]?.name||'工作副本',cards:material.content.checkpoints.filter(card=>card.anchor.recordingId===recordingId).length});
+      }
+      return {revisions,drafts};
+    });
   }
 
   private async root(): Promise<string> {
@@ -260,9 +327,14 @@ export class FileMaterialService implements MaterialService {
     }
     for (const annotation of content.annotations) {
       if(previous?.annotations.some(old=>old.id===annotation.id&&old.bindingStatus===annotation.bindingStatus&&JSON.stringify(old.target)===JSON.stringify(annotation.target)))continue;
-      if (annotation.bindingStatus === 'bound' && !await this.sourceVerifier!.target(annotation.target)) throw new MaterialError('INVALID_SOURCE', `Annotation ${annotation.id} target is not recorded.`);
+      if (annotation.bindingStatus === 'bound' && annotation.target && !await this.sourceVerifier!.target(annotation.target)) throw new MaterialError('INVALID_SOURCE', `Annotation ${annotation.id} target is not recorded.`);
     }
     for (const field of content.fields) {
+      for (const example of field.examples ?? []) {
+        const prior = previous?.fields.find(item => item.id === field.id)?.examples?.find(item => item.id === example.id);
+        if (prior && stable(prior) === stable(example)) continue;
+        if (example.bindingStatus === 'bound' && (!this.sourceVerifier || await this.sourceVerifier.position(example.target.position) !== 'reliable' || !await this.sourceVerifier.target(example.target))) throw new MaterialError('INVALID_SOURCE', `Field example ${example.id} is not reliable recorded source.`);
+      }
       if(previous?.fields.some(old=>old.id===field.id&&old.bindingStatus===field.bindingStatus&&JSON.stringify(old.target)===JSON.stringify(field.target)))continue;
       if (field.target && field.bindingStatus === 'bound') {
         if (!this.sourceVerifier || await this.sourceVerifier.position(field.target.position) !== 'reliable' || !await this.sourceVerifier.target(field.target)) {
@@ -299,25 +371,64 @@ export class FileMaterialService implements MaterialService {
       return { status: 'saved', draft };
     });
   }
-  async publish(projectId: string, draftId: string, expectedDraftRevision: number, author: MaterialAuthor): Promise<TaskMaterialRevision> {
+  async prepareArchive(projectId: string, draftId: string) {
+    return this.withProject(projectId, async(root, paths) => {
+      const draft = await this.storedDraft(projectId, draftId, root, paths);
+      const recordings: Array<{id:string;status:string}> = [];
+      for(const recordingId of draft.content.recordingRefs) {
+        const manifest = await readJson(path.join(root,'runs',recordingId,'manifest.json'),root) as {projectId:string;status?:string};
+        if(manifest.projectId!==projectId)throw new MaterialError('INVALID_SOURCE','Recording belongs to another project.',403);
+        recordings.push({id:recordingId,status:manifest.status??'legacy'});
+      }
+      return {draftId,draftRevision:draft.draftRevision,recordings};
+    });
+  }
+  async publicationStatus(projectId:string,operationId:string){
+    id(operationId,'operationId');
+    return this.withProject(projectId,async(root,paths)=>{
+      let journal:{draftId:string;expectedDraftRevision:number;revision:TaskMaterialRevision};
+      try { journal=await readJson(path.join(paths.material,`publish-${operationId}.receipt`),root) as typeof journal; }
+      catch(error){if(error instanceof MaterialError&&error.code==='NOT_FOUND')return {stage:'not-started' as const};throw error;}
+      const identity={draftId:journal.draftId,expectedDraftRevision:journal.expectedDraftRevision,revisionId:journal.revision.revisionId,contentHash:journal.revision.contentHash};
+      try{await this.storedRevision(projectId,journal.revision.revisionId,root,paths);return {stage:'manifest-saved' as const,...identity};}
+      catch(error){if(error instanceof MaterialError&&error.code==='NOT_FOUND')return {stage:'prepared' as const,...identity};throw error;}
+    });
+  }
+  async publish(projectId: string, draftId: string, expectedDraftRevision: number, author: MaterialAuthor, operationId?: string): Promise<TaskMaterialRevision> {
     revisionNumber(expectedDraftRevision); authorOf(author);
+    if(operationId)id(operationId,'operationId');
     return this.locked(projectId, async (root, paths) => {
       const draft = await this.storedDraft(projectId, draftId, root, paths);
-      if (draft.draftRevision !== expectedDraftRevision) throw new MaterialConflictError(draft, expectedDraftRevision);
-      await this.checkRecordingRefs(root, projectId, draft.content);
-      const revision: TaskMaterialRevision = { schemaVersion: 1, projectId, revisionId: randomUUID(),
-        ...(draft.baseRevisionId === undefined ? {} : { parentRevisionId: draft.baseRevisionId }),
-        contentHash: materialContentHash(draft.content), createdAt: new Date().toISOString(), author, content: clone(draft.content) };
-      await createJson(path.join(paths.revisions, `${revision.revisionId}.json`), revision);
-      // The manifest is already durable. A failed draft advance is reported and
-      // cannot make publication appear complete; the manifest remains inspectable.
+      const journalFile = operationId ? path.join(paths.material,`publish-${operationId}.receipt`) : undefined;
+      let revision:TaskMaterialRevision|undefined;
+      if(journalFile) {
+        try {
+          const journal=await readJson(journalFile,root) as {draftId:string;expectedDraftRevision:number;author:MaterialAuthor;revision:TaskMaterialRevision};
+          if(journal.draftId!==draftId||journal.expectedDraftRevision!==expectedDraftRevision||journal.author!==author)throw new MaterialError('OPERATION_CONFLICT','Archive operation belongs to a different draft snapshot.',409);
+          revision=journal.revision;
+          if(revision.projectId!==projectId||materialContentHash(revision.content)!==revision.contentHash)throw new MaterialError('INVALID_RECORD','Archive operation receipt is damaged.',409);
+        } catch(error) { if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND')throw error; }
+      }
+      if(!revision) {
+        if (draft.draftRevision !== expectedDraftRevision) throw new MaterialConflictError(draft, expectedDraftRevision);
+        await this.checkRecordingRefs(root, projectId, draft.content);
+        for(const recordingId of draft.content.recordingRefs) {
+          const manifest=await readJson(path.join(root,'runs',recordingId,'manifest.json'),root) as {status?:string};
+          if(manifest.status==='recording'||manifest.status==='sealing')throw new MaterialError('RECORDING_NOT_SEALED','End the referenced recording explicitly before saving an archive version; working edits remain saved.',409);
+        }
+        revision={schemaVersion:1,projectId,revisionId:randomUUID(),...(draft.baseRevisionId?{parentRevisionId:draft.baseRevisionId}:{}),contentHash:materialContentHash(draft.content),createdAt:new Date().toISOString(),author,content:clone(draft.content)};
+        if(journalFile)await atomicJson(journalFile,{draftId,expectedDraftRevision,author,revision});
+      }
+      try { await createJson(path.join(paths.revisions,`${revision.revisionId}.json`),revision); }
+      catch(error) { if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;const stored=await this.storedRevision(projectId,revision.revisionId,root,paths);if(stable(stored)!==stable(revision))throw new MaterialError('OPERATION_CONFLICT','Saved archive manifest differs from its operation receipt.',409); }
       try {
-        await atomicJson(path.join(paths.drafts, `${draftId}.json`), {
-          ...draft, draftRevision: draft.draftRevision + 1, baseRevisionId: revision.revisionId,
-          updatedAt: new Date().toISOString(), author,
-        } satisfies TaskMaterialDraft);
-      } catch (error) { throw new MaterialPartialPublishError(revision.revisionId, revision.contentHash, error); }
-      try { await this.catalog(projectId, root, paths); } catch (error) { throw new MaterialPartialPublishError(revision.revisionId, revision.contentHash, error); }
+        if(draft.draftRevision===expectedDraftRevision) {
+          if(materialContentHash(draft.content)!==revision.contentHash)throw new MaterialError('OPERATION_CONFLICT','Draft content differs from the saved archive operation.',409);
+          await atomicJson(path.join(paths.drafts,`${draftId}.json`),{...draft,draftRevision:draft.draftRevision+1,baseRevisionId:revision.revisionId,updatedAt:new Date().toISOString(),author} satisfies TaskMaterialDraft);
+        } else if(!journalFile)throw new MaterialConflictError(draft,expectedDraftRevision);
+        // On retry after later edits, only complete the directory. Never rewind a draft.
+        await this.catalog(projectId,root,paths);
+      } catch(error) { throw new MaterialPartialPublishError(revision.revisionId,revision.contentHash,error); }
       return revision;
     });
   }

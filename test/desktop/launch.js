@@ -116,7 +116,7 @@ async function main() {
     const summary={passed:phases.length===2&&phases.every(item=>item.passed)&&phases[0].pid!==phases[1].pid,output:root,phases};
     fs.writeFileSync(path.join(root,'product-journey-summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify({passed:summary.passed,output:root,phases:phases.map(item=>({phase:item.phase,passed:item.passed,error:item.result?.error||item.error}))},null,2));process.exitCode=summary.passed?0:1;return;
   }
-  for (const [flag, phase, timeout] of [ ['--refactor-recovery', 'refactor-recovery', 180000], ['--native-input', 'native-input', 180000]]) {
+  for (const [flag, phase, timeout] of [ ['--workspace-browser','workspace-browser',240000], ['--refactor-recovery', 'refactor-recovery', 180000], ['--native-input', 'native-input', 180000]]) {
     if (!process.argv.includes(flag)) continue;
     const result = await launchPhase(phase, timeout);
     const summary = { passed: result.passed, output: root, phase: result };

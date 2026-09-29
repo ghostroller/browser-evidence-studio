@@ -12,6 +12,8 @@ export const MATERIAL_COLLECTIONS = ['requirements', 'fields', 'checkpoints', 'a
 export type MaterialEdit = { operation: 'upsert'; collection: Exclude<keyof MaterialContent, 'recordingRefs' | 'taskBrief'>; item: MaterialContent[Exclude<keyof MaterialContent, 'recordingRefs' | 'taskBrief'>][number] }
   | { operation: 'remove'; collection: Exclude<keyof MaterialContent, 'recordingRefs' | 'taskBrief'>; id: string }
   | { operation:'field-binding'; fieldId:string; binding:{kind:'keep'}|{kind:'clear'}|{kind:'set';target:HistoricalTarget;checkpointId:string;annotationId?:string} }
+  | { operation: 'add-field-example'; fieldId: string; example: import('@/contracts/materials').FieldExample }
+  | { operation: 'remove-field-example'; fieldId: string; exampleId: string }
   | { operation: 'task-brief'; taskBrief: NonNullable<MaterialContent['taskBrief']> }
   | { operation: 'recordings'; recordingRefs: string[] }
   | { operation: 'copy-checkpoint' | 'remove-checkpoint'; checkpointId: string }
@@ -75,10 +77,19 @@ export class ProjectMaterials {
     ensure(source === 'ui' || draft.author === 'agent', 'Agent may edit its candidate drafts; copy a human draft into a new agent draft first', 403);
     if (draft.draftRevision !== expectedDraftRevision) return { status: 'conflict', current: materialSummary(draft), expectedDraftRevision };
     let content = structuredClone(draft.content);
+    const createdIds: string[] = [];
     for (const edit of edits) {
       ensure(edit && typeof edit === 'object', 'Invalid material edit');
       if(edit.operation==='field-binding'){const field=content.fields.find(item=>item.id===edit.fieldId);ensure(field,'Unknown field',404);ensure(['keep','set','clear'].includes(edit.binding?.kind),'Explicit binding command required');if(edit.binding.kind==='clear'){delete field.target;delete field.checkpointId;delete field.annotationId;delete field.bindingStatus;}else if(edit.binding.kind==='set'){field.target=edit.binding.target;field.checkpointId=edit.binding.checkpointId;field.annotationId=edit.binding.annotationId;field.bindingStatus='bound';}}
-      else if (edit.operation === 'copy-checkpoint') content = copyCheckpoint(content, edit.checkpointId);
+      else if (edit.operation === 'add-field-example' || edit.operation === 'remove-field-example') {
+        const field = content.fields.find(item => item.id === edit.fieldId); ensure(field, 'Unknown field', 404);
+        if (edit.operation === 'add-field-example') {
+          ensure(!field.examples?.some(item => item.id === edit.example.id), 'Example already exists', 409);
+          field.examples = [...(field.examples ?? []), structuredClone(edit.example)];
+          content.recordingRefs = [...new Set([...content.recordingRefs, edit.example.target.position.recordingId])];
+        } else field.examples = (field.examples ?? []).filter(item => item.id !== edit.exampleId);
+      }
+      else if (edit.operation === 'copy-checkpoint') { content = copyCheckpoint(content, edit.checkpointId); createdIds.push(content.checkpoints.at(-1)!.id); }
       else if (edit.operation === 'remove-checkpoint') content = removeCheckpoint(content, edit.checkpointId);
       else if (edit.operation === 'move-checkpoint') content = moveCheckpoint(content, edit.checkpointId, parseReplayPosition(edit.position));
       else if (edit.operation === 'task-brief') content.taskBrief = structuredClone(edit.taskBrief);
@@ -106,9 +117,9 @@ export class ProjectMaterials {
       if(dataset)requirement.dataset=dataset;
     }
     const recordings = new Set([...content.recordingRefs, ...content.checkpoints.map(card => card.anchor.recordingId),
-      ...content.annotations.map(annotation => annotation.target.position.recordingId), ...content.fields.flatMap(field => field.target ? [field.target.position.recordingId] : [])]);
+      ...content.annotations.flatMap(annotation => annotation.target ? [annotation.target.position.recordingId] : []), ...content.fields.flatMap(field => field.target ? [field.target.position.recordingId] : [])]);
     for (const recordingId of recordings) if(!draft.content.recordingRefs.includes(recordingId))await this.replay(recordingId, projectId);
     const result = await this.service.updateDraft(projectId, draftId, expectedDraftRevision, content, source === 'ui' ? 'human' : 'agent');
-    return result.status === 'saved' ? { status: result.status, draft: materialSummary(result.draft) } : { status: result.status, current: materialSummary(result.current), expectedDraftRevision };
+    return result.status === 'saved' ? { status: result.status, draft: materialSummary(result.draft), createdIds, focus: createdIds.length ? { collection: 'checkpoints', id: createdIds.at(-1) } : undefined } : { status: result.status, current: materialSummary(result.current), expectedDraftRevision };
   }
 }
