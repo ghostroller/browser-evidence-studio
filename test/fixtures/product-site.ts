@@ -4,6 +4,10 @@ import { createServer } from 'node:http';
 export async function startProductSite(port=0){
   if(!Number.isSafeInteger(port)||port<0||port>65535)throw new Error('Synthetic port must be an integer from 0 to 65535');
   const server=createServer((request,response)=>{
+    if(request.url==='/browser-check'){
+      response.setHeader('content-type','text/html; charset=utf-8');
+      response.end('<!doctype html><title>合成浏览器输入检查</title><style>body{font:20px system-ui;padding:32px}input{margin:16px}</style><h1>本地附件与页面菜单</h1><p>这是本机合成页面；只显示所选文件名，不上传文件。</p><label>合成附件<input type="file" onchange="document.querySelector(\'#selected-file\').textContent=this.files[0]?.name||\'未选择\'"></label><p id="selected-file">未选择</p><label>可编辑文字<input value="synthetic editable text"></label><p><a href="/orders">返回订单后台</a></p>');return;
+    }
     const logged=request.headers.cookie?.includes('bes_journey=account-one');
     if(request.url==='/login/fail'){response.setHeader('content-type','text/html; charset=utf-8');response.end('<!doctype html><title>合成登录失败</title><h1>登录失败</h1><p>合成凭据不匹配，未创建登录状态。</p><a href="/orders">返回准备登录</a>');return;}
     if(request.url==='/session/expire'){response.writeHead(303,{'set-cookie':'bes_journey=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0',location:'/orders'});response.end();return;}
