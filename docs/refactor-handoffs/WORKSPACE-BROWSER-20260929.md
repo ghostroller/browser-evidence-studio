@@ -39,3 +39,15 @@
 | IA25 | native 注册、target 等待、capture、授权登记注入；导航失败保留错误页 | 五处对应真实 Electron 注入、窗口/原页可用性 |
 
 上述故障测试运行真实 Studio 方法，对 Electron 资源边界使用模拟对象；不能据此宣称物理 Electron 故障已经发生。独立用户可发现性、T1–T3 新构建复验和窗口尺寸验收由集成主任务完成。本包没有更改旧录制、版本 hash、storageRef 或 partition。
+
+## W3 浏览器场景（已编写，尚未运行）
+
+新增 `test/desktop/workspace-browser.ts`：`runWorkspaceBrowserScenarios(studio)` 从可信 UI 创建项目、登录环境、人工浏览会话与录制；普通 DOM 只用于读控件和几何位置，操作通过实际 WebContents 输入，不调用 `window.studio.call`、隐藏 dispatch 或直接填资料文件。每次原生输入核对 BES_TEST、BES_DATA、Studio instanceId 和本任务 loopback origin。
+
+覆盖脚本包含真实历史/刷新/慢加载停止、loopback 断网恢复、native Ctrl+L/F/T/W/Shift+T、查找缩放、末标签关闭后再建、网站弹窗 opener、alert/confirm/prompt、定位权限拒绝、未录制/录制下载与取消、检查模式不执行业务点击。截图只用当前确切 native window source ID；详细结果保存 `workspace-browser-detail.json`，不会与 harness 主结果文件互相覆盖。
+
+`runWorkspaceBrowserAllocationFaults` 是明确分开的内部故障块：在 UI 创建的正在录制的合成实例中使用真实 addPage/Electron view，分别在 native 注册后、target 等待、capture 真正启动后、授权登记注入异常；检查 view 数、原页、controller mask 和原生点击。第五处导航失败通过实际 socket 断开及可见地址栏操作覆盖。故障块不创建材料/profile/session，不把注入当 OS 崩溃。
+
+主任务接入只需：在 `src/main/app.ts` 的 `allowedPhases` 增加 `workspace-browser`；对应分支 dynamic import `../../test/desktop/workspace-browser`，`Object.assign(identity, await runWorkspaceBrowserScenarios(studio))`；`test/desktop/launch.js` 的已有 `[flag, phase, timeout]` 表增加 `['--workspace-browser','workspace-browser',240000]`。从全新 synthetic BES_DATA 运行 `npm run build` 后 `node test/desktop/launch.js --workspace-browser`。场景刻意不自行启动 Electron。
+
+本提交只经过 typecheck，未执行以上桌面路径；不能填入“真实 Electron 已通过”。未替代的物理交互：原生 OS 文件选择、右键菜单项目选择、证书故障、实际自动化运行中的全局停止、独立使用者发现性。没有调用 Puppeteer uploadFile 或服务写入来掩盖这些未测项。
