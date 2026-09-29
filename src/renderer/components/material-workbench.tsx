@@ -57,6 +57,8 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   const [discardPrompt,setDiscardPrompt]=useState(false);
   const [compareFrom, setCompareFrom] = useState('');
   const [differences, setDifferences] = useState<any[]>([]);
+  const directoryWrite=useRef<Promise<void>|null>(null);
+  const copyingDraft=useRef(new Set<string>());
   const publication=useRef<{draftId:string;draftRevision:number;operationId:string}|null>(null);
   const [archiveName, setArchiveName] = useState('');
   const [archivePrompt, setArchivePrompt] = useState(false);
@@ -123,6 +125,13 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   if(editorSession.current.projectId!==projectId)editorSession.current={projectId,sequence:editorSession.current.sequence+1};
   const editorSessionId=editorSession.current.sequence;
   const ownsSession=()=>scopeRef.current===projectId&&editorSession.current.sequence===editorSessionId;
+  const directoryAction=async(action:()=>Promise<void>)=>{
+    // Blur commits precede the button they lead into. Preserve that order even
+    // across IPC; a failed preceding rename must not start the queued copy.
+    const next=(directoryWrite.current??Promise.resolve()).then(async()=>{if(ownsSession())await action();});
+    directoryWrite.current=next;
+    try{await next;}finally{if(directoryWrite.current===next)directoryWrite.current=null;}
+  };
   const draftRef = useRef<Draft | null>(null);
   const selectedDraft = (scope: string, token: number, id: string, revision?: number) => scopeRef.current === scope &&
     selectionRequest.current === token && draftRef.current?.draftId === id && (revision === undefined || draftRef.current.draftRevision === revision);
@@ -449,7 +458,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
       if(annotationId===item.id){setAnnotationId('');setAnnotationTarget(null);setAnnotationText('');setInterpretation('observed');}
     }
   };
-  const publish = async () => {
+  const publish = () => directoryAction(async () => {
     if(!ownsSession()||pendingRef.current)return;
     const selected=await saveEditor(undefined,true);
     if (!selected || !ownsSession() || draftRef.current?.draftId!==selected.draftId) return;
@@ -474,8 +483,8 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
       }
     }
     finally { if (scopeRef.current === scope && token === selectionRequest.current && write === writeRequest.current) { pendingRef.current = false; setPending(''); } }
-  };
-  const createDraft = async (baseRevisionId?:string) => {
+  });
+  const createDraft = (baseRevisionId?:string) => directoryAction(async () => {
     if (!ownsSession()||pendingRef.current) return;
     if(!await saveEditor())return;
     const scope = projectId, token = ++selectionRequest.current;
@@ -488,7 +497,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
       if(!ownsSession())return;pendingRef.current=false;await call('setWorkingMaterialDraft',{draftId:created.draftId});await openDraft(created.draftId);await refreshLists();localStorage.removeItem(operationKey);onEditWorkspace?.();
     } catch (failure) { if (scopeRef.current === scope && selectionRequest.current === token) setError(String(failure)); }
     finally { if (scopeRef.current === scope && selectionRequest.current === token) { pendingRef.current = false; setPending(''); } }
-  };
+  });
   const prepareMapping=async()=>{
     if(!ownsSession()||pendingRef.current)return;
     const saved=await saveEditor();if(!saved||!ownsSession())return;
@@ -547,12 +556,18 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
     catch (failure) { if (selectedDraft(scope, token, selected.draftId, selected.draftRevision)) setError(String(failure)); }
   };
   const run = (action:()=>Promise<unknown>) => { void action().catch(failure=>setError(String(failure))); };
-  const switchDraft = (id:string) => changeEditor(async()=>{ await call('setWorkingMaterialDraft',{draftId:id}); await openDraft(id); await refreshLists(); onEditWorkspace?.(); });
-  const manage = async(kind:'drafts'|'revisions',id:string,patch:{name?:string;hidden?:boolean;note?:string})=>{
+  const switchDraft = (id:string) => changeEditor(()=>directoryAction(async()=>{ await call('setWorkingMaterialDraft',{draftId:id}); await openDraft(id); await refreshLists(); onEditWorkspace?.(); }));
+  const manage = (kind:'drafts'|'revisions',id:string,patch:{name?:string;hidden?:boolean;note?:string})=>directoryAction(async()=>{
     const current=await call('materialCatalog');
-    await call('manageMaterialCatalog',{kind,id,expectedCatalogRevision:current.catalogRevision,...patch});await refreshLists();
-  };
+    if(!ownsSession())return;
+    const normalized={...patch,...(patch.name===undefined?{}:{name:patch.name.trim()})};
+    if(Object.entries(normalized).every(([key,value])=>(current[kind]?.[id]?.[key]??(key==='hidden'?false:''))===value))return;
+    setError('');const updated=await call('manageMaterialCatalog',{kind,id,expectedCatalogRevision:current.catalogRevision,...normalized});
+    if(!ownsSession())return;setCatalog(updated);await refreshLists();setNotice('目录信息已保存。');
+  });
   const copyWorkingDraft=async(id:string)=>{
+    const copyKey=`${projectId}/${id}`;if(copyingDraft.current.has(copyKey))return;copyingDraft.current.add(copyKey);
+    try{await directoryAction(async()=>{
     const saved=await saveEditor();if(!saved||!ownsSession())return;
     const key=`bes.copy.${projectId}.${id}`;
     const prior=localStorage.getItem(key);
@@ -561,8 +576,8 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
     localStorage.setItem(key,JSON.stringify(request));
     const copy=await call('copyMaterialDraft',request);
     if(!ownsSession())return;
-    await manage('drafts',copy.draftId,{name:(catalog?.drafts?.[id]?.name||'工作副本')+' 副本'});
-    localStorage.removeItem(key);await refreshLists();
+    localStorage.removeItem(key);await refreshLists();if(ownsSession()){setError('');setNotice('已复制工作副本；可设为当前后继续编辑。');}
+    });}finally{copyingDraft.current.delete(copyKey);}
   };
   const copyCard = async()=>{ if(!card)return;const id=card.id;const saved=await saveEditor();if(saved)await mutate([{operation:'copy-checkpoint',checkpointId:id}],'已复制并选中新保存点。',saved); };
   const removeCard = async()=>{if(!card)return;const id=card.id;const saved=await saveEditor();if(saved&&await mutate([{operation:'remove-checkpoint',checkpointId:id}],'已移除保存点；原始录制和固定版本保留。',saved)){setCardId('');setEditor('summary');}};
@@ -571,7 +586,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   const prepareArchive=async()=>{if(publication.current){await publish();return;}const saved=await saveEditor();if(!saved)return;const impact=await call('prepareMaterialArchive',{draftId:saved.draftId});const open=impact.recordings.filter((item:any)=>['recording','sealing'].includes(item.status)).map((item:any)=>item.id);setArchiveImpact(open);setArchivePrompt(true);};
   const confirmArchive=async()=>{if(archiveImpact.length){const state=await call('state');if(archiveImpact.length!==1||state.active?.id!==archiveImpact[0]||state.active.projectId!==projectId)throw new Error('存在其他未封存录制，请先在对应环境完成收尾。');await call('seal');}setArchivePrompt(false);await publish();};
   const startCheckpoint=async()=>{if(position){changeEditor(()=>{setCardId('');setTitle('保存点 '+new Date(position.sourceTimeMs).toLocaleTimeString());setNotes('');setKind('observation');setCardRequirementIds([]);setEditor('card');markDirty('card');});}else if(live)await recordCurrent();else if(onStartRecording){await onStartRecording();await recordCurrent();}else throw new Error('请打开环境并开始录制，或暂停历史回放。');};
-  useEffect(()=>{if(transitionRef)transitionRef.current=async()=>!!await saveEditor();return()=>{if(transitionRef)transitionRef.current=null;};});
+  useEffect(()=>{if(transitionRef)transitionRef.current=async()=>{if(directoryWrite.current)await directoryWrite.current;return !!await saveEditor();};return()=>{if(transitionRef)transitionRef.current=null;};});
   useEffect(()=>{const key=(event:KeyboardEvent)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='s'){event.preventDefault();if(!viewedRevision)void saveEditor();}if(event.key==='Escape'&&liveIntent){setLiveIntent(null);void onCancelLive?.();}};window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);});
   const fields = Object.values(entityCache.current.fields??{}) as MaterialField[];
   const cardFields=fields.filter(field=>field.checkpointId===cardId||field.examples?.some(example=>example.checkpointId===cardId)||card?.requirementIds.some(id=>currentRequirements.find(req=>req.id===id)?.fieldIds.includes(field.id)));

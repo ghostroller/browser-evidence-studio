@@ -167,25 +167,38 @@ export class FileMaterialService implements MaterialService {
     return this.locked(projectId,async(root,paths)=>{
       id(operationId,'operationId');revisionNumber(expectedDraftRevision);
       const receiptFile=path.join(paths.material,`copy-${operationId}.receipt`);
-      let receipt:{sourceId:string;revision:number;draftId:string;copy?:TaskMaterialDraft}|undefined;
+      let receipt:{sourceId:string;revision:number;draftId:string;copy?:TaskMaterialDraft;name?:string}|undefined;
       try{receipt=await readJson(receiptFile,root) as typeof receipt;}
       catch(error){if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND')throw error;}
       if(receipt){
         if(receipt.sourceId!==draftId||receipt.revision!==expectedDraftRevision)throw new MaterialError('OPERATION_CONFLICT','Copy operation belongs to another source.',409);
-        try{return await this.storedDraft(projectId,receipt.draftId,root,paths);}
-        catch(error){if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND'||!receipt.copy)throw error;}
+        if(receipt.name!==undefined&&(typeof receipt.name!=='string'||receipt.name.length>200))throw new MaterialError('INVALID_RECORD','Copy directory receipt is damaged.',409);
       }else{
         const source=await this.storedDraft(projectId,draftId,root,paths);
         if(source.draftRevision!==expectedDraftRevision)throw new MaterialConflictError(source,expectedDraftRevision);
         const copy={...clone(source),draftId:`copy-${operationId}`,draftRevision:0,author:'human' as const,updatedAt:new Date().toISOString()};
-        receipt={sourceId:draftId,revision:expectedDraftRevision,draftId:copy.draftId,copy};
+        const catalog=await this.catalog(projectId,root,paths);
+        const name=(catalog.drafts[draftId]?.name||'工作副本').slice(0,197)+' 副本';
+        receipt={sourceId:draftId,revision:expectedDraftRevision,draftId:copy.draftId,copy,name};
         // Persist the source snapshot before allocating a copy. Lost replies and
         // failed manifest writes recover this exact operation after restart.
         await atomicJson(receiptFile,receipt);
       }
-      if(!receipt.copy||receipt.copy.projectId!==projectId||receipt.copy.draftId!==receipt.draftId)throw new MaterialError('INVALID_RECORD','Copy receipt is damaged.',409);
-      await createJson(path.join(paths.drafts,`${receipt.draftId}.json`),receipt.copy);
-      return this.storedDraft(projectId,receipt.draftId,root,paths);
+      let copy:TaskMaterialDraft;
+      try{copy=await this.storedDraft(projectId,receipt.draftId,root,paths);}
+      catch(error){
+        if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND')throw error;
+        if(!receipt.copy||receipt.copy.projectId!==projectId||receipt.copy.draftId!==receipt.draftId)throw new MaterialError('INVALID_RECORD','Copy receipt is damaged.',409);
+        await createJson(path.join(paths.drafts,`${receipt.draftId}.json`),receipt.copy);copy=receipt.copy;
+      }
+      // The receipt owns both content and its initial directory entry. Retry a
+      // partially saved copy under this writer without overwriting later edits.
+      const catalog=await this.catalog(projectId,root,paths);
+      if(!catalog.drafts[copy.draftId]){
+        catalog.drafts[copy.draftId]={name:receipt.name??(catalog.drafts[draftId]?.name||'工作副本').slice(0,197)+' 副本',hidden:false};
+        await this.saveCatalog(paths,catalog);
+      }
+      return copy;
     });
   }
   async workingDraft(projectId: string): Promise<TaskMaterialDraft> {

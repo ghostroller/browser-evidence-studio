@@ -83,6 +83,28 @@ it('archive journal recovers a prepared manifest and a later pointer failure wit
  expect((await restart.getDraft('project',draft.draftId)).content.taskBrief?.objective).toBe('Later edit');
  expect((await restart.listRevisions('project',{limit:100,maxBytes:28000})).items).toHaveLength(1);
 });
+
+it('copy publishes its directory name before success and preserves later edits on retry',async()=>{
+ const source=await service.workingDraft('project');let catalog=await service.workspaceCatalog('project');
+ await service.manageCatalog('project',{kind:'drafts',id:source.draftId,expectedCatalogRevision:catalog.catalogRevision,name:'Review alternative'});
+ const copy=await service.copyDraft('project',source.draftId,0,'named-copy');catalog=await service.workspaceCatalog('project');
+ expect(catalog.drafts[copy.draftId]).toEqual({name:'Review alternative 副本',hidden:false});expect(catalog.workingDraftId).toBe(source.draftId);
+ await service.manageCatalog('project',{kind:'drafts',id:copy.draftId,expectedCatalogRevision:catalog.catalogRevision,name:'Later manual name'});
+ await service.updateDraft('project',copy.draftId,0,{...copy.content,taskBrief:{objective:'Later copy edit',scope:''}},'human');
+ const restart=new FileMaterialService(root),retried=await restart.copyDraft('project',source.draftId,0,'named-copy');
+ expect(retried.draftId).toBe(copy.draftId);expect(retried.content.taskBrief?.objective).toBe('Later copy edit');
+ expect((await restart.workspaceCatalog('project')).drafts[copy.draftId].name).toBe('Later manual name');
+});
+
+it('copy directory write failure resumes the same prepared name and identity after restart',async()=>{
+ const source=await service.workingDraft('project'),before=await service.workspaceCatalog('project');
+ const rename=fs.rename.bind(fs);vi.spyOn(fs,'rename').mockImplementation(async(a,b)=>{if(String(b).endsWith('catalog.json'))throw Object.assign(new Error('copy directory unavailable'),{code:'EIO'});return rename(a,b);});
+ await expect(service.copyDraft('project',source.draftId,0,'directory-cut')).rejects.toThrow('copy directory unavailable');vi.restoreAllMocks();
+ expect(await service.workspaceCatalog('project')).toEqual(before);expect((await service.listDrafts('project',{limit:100,maxBytes:28000})).items).toHaveLength(2);
+ const restart=new FileMaterialService(root),recovered=await restart.copyDraft('project',source.draftId,0,'directory-cut');
+ expect(recovered.draftId).toBe('copy-directory-cut');expect((await restart.workspaceCatalog('project')).drafts[recovered.draftId].name).toBe('默认工作副本 副本');
+ expect((await restart.listDrafts('project',{limit:100,maxBytes:28000})).items).toHaveLength(2);
+});
 it('removed copies retain content and cannot hide the current or unresolved capture copy',async()=>{
  const first=await service.workingDraft('project'),other=await service.createDraft('project','human');let catalog=await service.workspaceCatalog('project');
  await expect(service.manageCatalog('project',{kind:'drafts',id:first.draftId,expectedCatalogRevision:catalog.catalogRevision,hidden:true})).rejects.toMatchObject({code:'CURRENT_WORKING_COPY'});

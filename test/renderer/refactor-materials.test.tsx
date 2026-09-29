@@ -1,10 +1,10 @@
 /** @vitest-environment jsdom */
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { Harness, fixture, target } from './material-harness';
+import { Harness, fixture, target, deferred } from './material-harness';
 
 afterEach(()=>{cleanup();localStorage.clear();delete (window as Partial<Window>).studio;});
 const click=async(name:string|RegExp)=>{
@@ -41,6 +41,33 @@ test('ordinary count and uniqueness controls persist and do not infer business c
 });
 test('workcopy directory rename and current pointer survive component remount',async()=>{
  const f=await fixture();await f.materials.service.createDraft('project','human');const view=render(<Harness/>);await screen.findByRole('button',{name:'保存修改'});await click('存档');await click('工作副本');const names=await screen.findAllByLabelText('副本名称');fireEvent.blur(names[0],{target:{value:'Named copy'}});await waitFor(async()=>expect(Object.values((await f.materials.service.workspaceCatalog('project')).drafts).some(item=>item.name==='Named copy')).toBe(true));view.unmount();render(<Harness/>);await click('存档');await click('工作副本');await screen.findByDisplayValue('Named copy');
+});
+
+test('blur rename completes before copy, and refocusing an unchanged name does not write again',async()=>{
+ const f=await fixture(),gate=deferred<void>(),service=f.materials.service,manage=service.manageCatalog.bind(service);
+ render(<Harness/>);await click('存档');await click('工作副本');const input=await screen.findByLabelText('副本名称');
+ const copy=vi.spyOn(service,'copyDraft');vi.spyOn(service,'manageCatalog').mockImplementationOnce(async(...args)=>{await gate.promise;return manage(...args);});
+ fireEvent.change(input,{target:{value:'Alternative'}});fireEvent.blur(input);
+ await waitFor(()=>expect(service.manageCatalog).toHaveBeenCalledTimes(1));fireEvent.click(screen.getByRole('button',{name:'复制工作副本'}));
+ await act(async()=>{});expect(copy).not.toHaveBeenCalled();await act(async()=>gate.resolve());
+ await screen.findByText('已复制工作副本；可设为当前后继续编辑。');await screen.findByDisplayValue('Alternative 副本');
+ expect((await service.listDrafts('project',{limit:100,maxBytes:28000})).items).toHaveLength(2);
+ expect((await service.workspaceCatalog('project')).workingDraftId).toBe(f.draft.draftId);
+ const before=(await service.workspaceCatalog('project')).catalogRevision;
+ fireEvent.focus(screen.getByDisplayValue('Alternative'));fireEvent.blur(screen.getByDisplayValue('Alternative'));
+ await act(async()=>{});await service.workspaceCatalog('project');expect((await service.workspaceCatalog('project')).catalogRevision).toBe(before);
+});
+
+test('failed blur rename blocks the queued copy and leaves input available for an explicit retry',async()=>{
+ const f=await fixture(),gate=deferred<void>(),service=f.materials.service;
+ render(<Harness/>);await click('存档');await click('工作副本');const input=await screen.findByLabelText('副本名称');
+ const copy=vi.spyOn(service,'copyDraft');vi.spyOn(service,'manageCatalog').mockImplementationOnce(async()=>{await gate.promise;throw new Error('rename unavailable');});
+ fireEvent.change(input,{target:{value:'Retained input'}});fireEvent.blur(input);
+ await waitFor(()=>expect(service.manageCatalog).toHaveBeenCalledTimes(1));fireEvent.click(screen.getByRole('button',{name:'复制工作副本'}));
+ await act(async()=>gate.resolve());await screen.findByText('Error: rename unavailable');expect(copy).not.toHaveBeenCalled();
+ expect((input as HTMLInputElement).value).toBe('Retained input');expect((await service.listDrafts('project',{limit:100,maxBytes:28000})).items).toHaveLength(1);
+ fireEvent.blur(input);fireEvent.click(screen.getByRole('button',{name:'复制工作副本'}));
+ await screen.findByText('已复制工作副本；可设为当前后继续编辑。');await screen.findByDisplayValue('Retained input 副本');expect(copy).toHaveBeenCalledTimes(1);
 });
 
 test('field on the second page keeps its exact identity and owner after saving',async()=>{
