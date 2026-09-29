@@ -1,4 +1,4 @@
-import { WebContentsView, session, app, type Session, type DownloadItem, type WebContents } from 'electron';
+import { WebContentsView, session, app, Menu, clipboard, shell, type Session } from 'electron';
 import { mkdir, readFile, readdir, stat, open } from 'node:fs/promises';
 import path from 'node:path';
 import { sameReplayPosition } from '@/contracts/recording';
@@ -31,12 +31,14 @@ import { rewriteReplayEvent } from '@/resources/replay-resources';
 import { ProjectExecutions, type ManagedExecution } from './project-executions';
 import { captureMetadata } from '@/capture/url-privacy';
 import { navigateObserved } from '../browser/navigation';
+import { browserUrl, browserShortcut, type BrowserCommand, type BrowserPageStatus, type BrowserSessionStatus } from '../browser/browser-controls';
+import { SessionDownloads } from '../browser/downloads';
 import { commitValidation, recoverValidationCatalog, registerValidation, saveValidationCatalog, type ValidationLifecycleContext, type ValidationLifecycleObserver, type ValidationLifecycleStage, type ValidationRecord, type ValidationRecoveryDiagnostic } from './validation-lifecycle';
 export type { ValidationLifecycleContext, ValidationLifecycleObserver, ValidationLifecycleStage } from './validation-lifecycle';
 
 interface Project { id:string; name:string; objective:string; scriptDirectory?:string; createdAt:string; }
 interface Profile { id:string; projectId:string; name:string; entryUrl?:string; instructions?:string; storageRef?:string; configRevision?:number; checkedAt?:string; checkSelector?:string; checkOrigin?:string; savedAt?:string; loginStatus:'unknown'|'verified'|'expired'; }
-interface ManagedPage extends PageIdentity { view:WebContentsView; page:Page; capture?:CaptureCoordinator; }
+interface ManagedPage extends PageIdentity { view:WebContentsView; page:Page; capture?:CaptureCoordinator; loadError?:BrowserPageStatus['loadError']; find?:BrowserPageStatus['find']; dialog?:{id:string;value:Dialog}; lastUrl?:string; }
 interface ManagedOperation { browser:Browser; gate:GateTransport; page:Page; targetId:string; documentEpoch:number; }
 interface PendingOperation { targetId:string; leaseEpoch:number; abort:AbortController; gate?:GateTransport; promise:Promise<ManagedOperation>; }
 interface CheckpointOperation { id:string; pageId:string; phase:'draining'|'capturing'|'saving'; startedAt:string; abort:AbortController; done:Promise<void>; }
@@ -66,6 +68,10 @@ export class Studio {
   readonly instanceId=randomUUID();
   private readonly authoringTasks=new Map<string,{appInstanceId:string;sessionId:string|undefined;fingerprint:string;promise:Promise<any>}>();
   private browser?:BrowserSessionLifecycle<SessionRuntime>;
+  private browserDownloads?:SessionDownloads;
+  private closedPages:{url:string;title:string}[]=[];
+  private browserNotice?:string;
+  private browserUiAction?:BrowserSessionStatus['uiAction'];
   get browserSessionId(){return this.browser?.id;}
   projects:Project[]=[]; profiles:Profile[]=[]; runs:any[]=[]; active?:ActiveRun;
   connection:any;
@@ -89,7 +95,7 @@ export class Studio {
   private validationRecovery:{diagnostics:ValidationRecoveryDiagnostic[];catalogStatus:'rebuilt'|'write-failed'}={diagnostics:[],catalogStatus:'rebuilt'};
   private fixture?:{url:string;close:()=>Promise<void>};
   onChanged=()=>{};
-  constructor(readonly root:string, readonly window:StudioWindow, readonly endpoint:string, private readonly lifecycleObserver?:ValidationLifecycleObserver) {this.materials=new ProjectMaterials(root);this.replayHost=new ReplayHost(window,this.materials,root);this.executions=new ProjectExecutions(root,this.materials);}
+  constructor(readonly root:string, readonly window:StudioWindow, readonly endpoint:string, private readonly lifecycleObserver?:ValidationLifecycleObserver) {this.materials=new ProjectMaterials(root);this.replayHost=new ReplayHost(window,this.materials,root);this.executions=new ProjectExecutions(root,this.materials);window.onBrowserShortcut=action=>this.handleBrowserShortcut(action);}
   private taskAuthorizationChanged(){
     if(!this.closing&&this.executingAuthorizationId&&this.tasks.get(this.executingAuthorizationId).status!=='active')void this.stopRunner().catch(error=>console.error('Task revocation could not complete worker shutdown',error));
     this.onChanged();
@@ -208,7 +214,7 @@ export class Studio {
     return r.store!.appendEvent({type:'page-foreground',source:'electron',occurredAt:new Date(observedAtMs).toISOString(),timeBasis:'host-wall-clock',
       ...(selectedPageId?{pageId:selectedPageId}:{}),data:{version:1,previousPageId,selectedPageId,observedAtMs,transitionOrdinal,reason}});
   }
-  private browserState(){const browser=this.browser;if(!browser)return null;const r=browser.runtime;return {sessionId:browser.id,projectId:r.projectId,profileId:r.profileId,recordingId:browser.recordingId,controller:r.controller,leaseEpoch:r.leaseEpoch,locked:r.locked,selectedPageId:r.selectedPageId,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:!!this.active&&!!p.capture?.inspecting,openerPageId:p.openerPageId,canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward()}]:[];})};}
+  private browserState():BrowserSessionStatus|null{const browser=this.browser;if(!browser)return null;const r=browser.runtime;return {sessionId:browser.id,projectId:r.projectId,profileId:r.profileId,recordingId:browser.recordingId,controller:r.controller,leaseEpoch:r.leaseEpoch,locked:r.locked,selectedPageId:r.selectedPageId,closedPageCount:this.closedPages?.length??0,downloads:this.browserDownloads?.list()??[],notice:this.browserNotice,uiAction:this.browserUiAction,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:!!this.active&&!!p.capture?.inspecting,openerPageId:p.openerPageId,canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward(),loading:contents.isLoadingMainFrame?.()??false,zoomFactor:contents.getZoomFactor?.()??1,loadError:p.loadError,find:p.find,dialog:p.dialog?{id:p.dialog.id,type:p.dialog.value.type(),message:p.dialog.value.message(),defaultValue:p.dialog.value.defaultValue()}:undefined}]:[];})};}
   state(){const r=this.active;return {instanceId:this.instanceId,session:this.browserState(),validationStarting:this.validationLaunch?{validationId:this.validationLaunch.validationId,validationRunId:this.validationLaunch.validationRunId}:null,projects:this.projects,profiles:this.profiles,runs:this.runs,validations:this.validations.map(({result,...v})=>({...v,executionId:result?.executionBinding?.executionId,executionBinding:result?.executionBinding,validation:result?.validation})),validationRecovery:this.validationRecovery,fixtureUrl:this.fixture?.url,versions:{node:process.versions.node,electron:process.versions.electron,chromium:process.versions.chrome,puppeteer:'25.11.0',rrweb:'2.1.6'},active:r?{id:r.id,projectId:r.projectId,profileId:r.profileId,controller:r.controller,leaseEpoch:r.leaseEpoch,capture:r.capture,execution:r.execution,locked:r.locked,checkpoint:r.checkpointTask?{id:r.checkpointTask.id,pageId:r.checkpointTask.pageId,phase:r.checkpointTask.phase,startedAt:r.checkpointTask.startedAt}:null,pages:[...r.pages.values()].flatMap(p=>{const contents=this.pageContents(p);return contents?[{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,url:contents.getURL(),title:contents.getTitle(),generation:p.navigationGeneration,inspecting:p.capture!.inspecting,openerPageId:p.openerPageId}]:[];}),selectedPageId:r.selectedPageId,validationStartGrant:this.validationStartGrant({runId:r.id}).grant,handoff:r.handoff,selection:r.selection}:null,connection:this.connection};}
   async createProject(body:any){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');const p={id:randomUUID(),name:body.name.trim().slice(0,200),objective:String(body.objective||'').slice(0,4000),scriptDirectory:body.scriptDirectory?path.resolve(body.scriptDirectory):undefined,createdAt:now()};this.projects.push(p);await this.save();return p;}
   async updateProject(body:any){const project=this.projects.find(item=>item.id===(body.projectId||body.id));ensure(project,'Unknown project',404);if(body.name!==undefined){ensure(typeof body.name==='string'&&body.name.trim(),'Project name required');project.name=body.name.trim().slice(0,200);}if(body.objective!==undefined){ensure(typeof body.objective==='string','Objective must be text');project.objective=body.objective.slice(0,4000);}if(body.scriptDirectory!==undefined){ensure(typeof body.scriptDirectory==='string'||body.scriptDirectory===null,'Workflow directory must be a path');project.scriptDirectory=body.scriptDirectory?path.resolve(body.scriptDirectory):undefined;}await this.save();return project;}
@@ -217,12 +223,13 @@ export class Studio {
     ensure(!this.browser,'Close the current environment first',409);
     const profile=this.profiles.find(p=>p.id===body.profileId&&p.projectId===body.projectId);ensure(profile,'Unknown environment',404);
     const browserSession=session.fromPartition(profile.storageRef??`persist:bes-${profile.projectId}-${profile.id}`);
-    browserSession.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false));browserSession.setPermissionCheckHandler(()=>false);
+    this.configurePermissions(browserSession);
     browserSession.webRequest.onBeforeRequest((details,callback)=>callback({cancel:(details.resourceType==='mainFrame'||details.resourceType==='subFrame')&&!this.navigationAllowed(details.url)}));
     const runtime:SessionRuntime={projectId:profile.projectId,profileId:profile.id,pages:new Map(),selectedPageId:'',session:browserSession,controller:'human',leaseEpoch:1,capture:'not-recording',execution:'ready',locked:false};
-    this.browser=new BrowserSessionLifecycle(runtime);
-    try{const page=await this.addPage(runtime);await this.navigate(profile.entryUrl||'about:blank',page,true);this.window.lock(false);return this.state().session;}
-    catch(error){this.window.lock(false);throw error;}
+    const owner=this.browser=new BrowserSessionLifecycle(runtime);this.closedPages=[];this.browserNotice=undefined;
+    try{await this.ensureDownloads();const page=await this.addPage(runtime);this.loadHumanUrl(page,profile.entryUrl||'about:blank');return this.state().session;}
+    catch(error){runtime.ending=true;await this.revokeOperation(runtime);for(const page of [...runtime.pages.values()])this.window.remove(page.view);await this.browserDownloads?.dispose();this.browserDownloads=undefined;if(this.browser===owner){this.browser=undefined;this.browserAuthorizationId=undefined;this.window.show(undefined);}throw error;}
+    finally{if(this.browser===owner)this.window.lock(runtime.locked||runtime.controller!=='human');else if(!this.browser)this.window.lock(false);this.onChanged();}
   }
   async checkEnvironment(){
     const runtime=this.live(),profile=this.profiles.find(p=>p.id===runtime.profileId)!;
@@ -239,7 +246,7 @@ export class Studio {
     ensure(!previous||(previous.projectId===project.id&&previous.profileId===profile.id),'Close the live browser session before changing project or profile',409);
     ensure(!previous||previous.pages.size>0||options.freshPage,'Close the empty browser session before starting a new one',409);
     const id=launch?.validationRunId??randomUUID();const browserSession=previous?.session??session.fromPartition(profile.storageRef??`persist:bes-${project.id}-${profile.id}`);
-    browserSession.setPermissionRequestHandler((_wc,_permission,callback)=>callback(false)); browserSession.setPermissionCheckHandler(()=>false);
+    this.configurePermissions(browserSession);
     browserSession.webRequest.onBeforeRequest((details,callback)=>callback({cancel:(details.resourceType==='mainFrame'||details.resourceType==='subFrame')&&!this.navigationAllowed(details.url)}));
     const store=await EvidenceStore.create(path.join(this.root,'runs',id),captureMetadata({id,projectId:project.id,kind:body.kind==='validate'?'validate':'demonstrate',mode:process.env.BES_TEST?'synthetic':'local',objective:project.objective,profileId:profile.id,versions:this.state().versions,browserEnvironment:browserEnvironmentMetadata(browserSession),appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}));
     this.protectCaptureMetadata(store);
@@ -264,15 +271,23 @@ export class Studio {
       launch?.abort.signal.throwIfAborted();if(launch){launch.target={pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration};ensure(r.selectedPageId===page.pageId,'Validation startup page was replaced',409);}
       r.capture=[...r.pages.values()].some(p=>p.capture!.health==='degraded')?'degraded':'recording';r.controller='human';r.locked=!!launch;this.window.lock(!!launch);await store.updateManifest({capture:r.capture,controller:'human',leaseEpoch:r.leaseEpoch});return this.state().active;
     }
-    catch(error){r.capture='degraded';r.execution='failed';await store.appendEvent({type:'gap',source:'lifecycle',data:{reason:String(error)}});throw error;}
+    catch(error){r.capture='degraded';r.execution='failed';if(this.active===r&&!r.stopping&&!r.ending){r.controller='human';r.locked=false;this.window.lock(false);}await store.appendEvent({type:'gap',source:'lifecycle',data:{reason:String(error)}});throw error;}
+  }
+  private configurePermissions(browserSession:Session){
+    browserSession.setPermissionRequestHandler((wc,permission,callback,details)=>{
+      callback(false);this.browserNotice=`网站权限已拒绝：${permission}（${details.requestingUrl||wc?.getURL()||'未知来源'}）。此权限暂未支持，未改变环境安全设置。`;this.onChanged();
+    });
+    browserSession.setPermissionCheckHandler((wc,permission,origin)=>{if(wc&&this.browser?.runtime.pages.size&&[...this.browser.runtime.pages.values()].some(page=>page.webContentsId===wc.id)){this.browserNotice=`网站权限已拒绝：${permission}（${origin}）。此权限暂未支持。`;this.onChanged();}return false;});
+  }
+  private async ensureDownloads(){
+    if(this.browserDownloads)return;
+    const owner=this.browser!;
+    const downloads=new SessionDownloads(owner.runtime.session,path.join(this.root,'downloads'),wc=>this.browser===owner?[...owner.runtime.pages.values()].find(page=>page.webContentsId===wc.id)?.pageId:undefined,()=>this.onChanged());
+    await downloads.start();this.browserDownloads=downloads;
   }
   private async manageDownloads(r:ActiveRun){
-    const directory=path.join(this.root,'downloads');await mkdir(directory,{recursive:true});let accepting=true;const active=new Set<DownloadItem>(),writes=new Set<Promise<unknown>>();
-    const listener=(event:Electron.Event,item:DownloadItem,wc:WebContents)=>{const p=[...r.pages.values()].find(page=>page.webContentsId===wc.id);if(!accepting||!p){event.preventDefault();return;}const download=path.join(directory,randomUUID());item.setSavePath(download);active.add(item);
-      item.once('done',(_event,state)=>{active.delete(item);if(!accepting)return;const source={pageId:p.pageId,url:item.getURL(),filename:item.getFilename()};const writing=(async()=>{if(state==='completed'){const size=(await stat(download)).size;const artifact=size>64*1024*1024?await r.store.putArtifact({kind:'download',mediaType:item.getMimeType()||'application/octet-stream',captureStatus:'excluded',reason:'Download exceeds the 64 MiB evidence import budget; original remains in the local downloads directory',source:{...source,downloadBytes:size},metadata:{localDownloadId:path.basename(download)}}):await r.store.putArtifact({kind:'download',mediaType:item.getMimeType()||'application/octet-stream',data:await readFile(download),source});await r.store!.appendEvent({type:'download',source:'electron',artifactRefs:[artifact.id],data:{captureStatus:artifact.captureStatus}});}else await r.store!.appendEvent({type:'gap',source:'electron',data:{reason:'download-'+state,...source}});})().catch(async error=>{r.capture='degraded';this.onChanged();await r.store!.appendEvent({type:'gap',source:'electron',data:{reason:'download-capture-failed',error:String(error),...source}}).catch(failure=>console.error('Could not save download failure',failure));}).finally(()=>writes.delete(writing));writes.add(writing);});};
-    r.session.on('will-download',listener);
-    r.stopDownloads=async()=>{if(!accepting)return;accepting=false;for(const item of active){const source={url:item.getURL(),filename:item.getFilename()};item.cancel();await r.store!.appendEvent({type:'gap',source:'electron',data:{reason:'download-cancelled-at-run-end',...source}});}active.clear();await Promise.allSettled(writes);};
-    r.releaseDownloads=()=>r.session.removeListener('will-download',listener);
+    await this.ensureDownloads();this.browserDownloads!.beginRecording(r.id,r.store);
+    r.stopDownloads=()=>this.browserDownloads!.finishRecording();
   }
   private pageDestroyed(r:SessionRuntime,view:WebContentsView,identity:{pageId:string;webContentsId:number;openerPageId?:string},registered?:ManagedPage){
     const closedAt=now(),wasSelected=r.selectedPageId===identity.pageId,targetId=registered?.targetId;
@@ -295,13 +310,14 @@ export class Studio {
       if(this.browser?.runtime===r&&!r.ending&&!this.closing){this.window.show(replacement?.view);this.window.lock(r.locked||r.controller!=='human');}
       if(this.active===r&&!r.ending&&!this.closing)foregroundWrite=this.recordForeground(r as ActiveRun,identity.pageId,'page-closed',Date.parse(closedAt));
     }
-    if(r.ending||this.closing||this.active!==r){if(!r.pages.size)r.controller='none';this.onChanged();void revoked.catch(error=>console.error('Could not revoke closed-page operation',error));return;}
+    if(r.ending||this.closing||this.active!==r){if(!r.pages.size&&controllerAtClosure!=='human')r.controller='none';this.onChanged();void revoked.catch(error=>console.error('Could not revoke closed-page operation',error));return;}
     if(r.handoff?.pageId===identity.pageId&&r.handoff.status==='waiting'){
       r.handoff.status='needs-attention';const done=this.humanDone;this.humanDone=undefined;
       if(r.handoff.owner==='agent')r.execution='paused';
       done?.reject(new Error('The human-assistance page closed before completion was verified'));
     }
-    if(!r.pages.size){r.capture='stopped';r.controller='none';}
+    // Closing the last human tab does not stop the recorder or surrender ownership.
+    if(!r.pages.size&&controllerAtClosure!=='human')r.controller='none';
     const selectedPageId=r.selectedPageId||null,closures=r.pageClosures??(r.pageClosures=new Set<Promise<void>>());
     const checkpointRecovery=checkpointAffected?(async()=>{
       // The old checkpoint cannot release a newer lease. This page-close owner
@@ -322,12 +338,27 @@ export class Studio {
   }
   private async addPage(r:SessionRuntime,openerPageId?:string,existingView?:WebContentsView,activate=true){
     const owner=this.browser!;
+    const previousPageId=r.selectedPageId;
     const view=existingView||new WebContentsView({webPreferences:{session:r.session,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true,backgroundThrottling:false}});
+    const wc=view.webContents,pageId=randomUUID(),webContentsId=wc.id;let registered:ManagedPage|undefined,committed=false,removeObserver:(()=>void)|undefined;
+    try{
     this.window.add(view,activate);this.window.lock(true);
-    const wc=view.webContents,pageId=randomUUID(),webContentsId=wc.id;let registered:ManagedPage|undefined;
-    wc.once('destroyed',()=>this.pageDestroyed(owner.runtime,view,{pageId,webContentsId,openerPageId},registered));
-    wc.on('before-input-event',(e)=>{const live=owner.runtime;if(live.locked||live.controller!=='human')e.preventDefault();});wc.on('will-navigate',(e,url)=>{if(!/^https?:|^about:blank$/.test(url)||!this.navigationAllowed(url))e.preventDefault();});
-    wc.on('will-redirect',(event,url)=>{if(!this.navigationAllowed(url))event.preventDefault();});
+    wc.once('destroyed',()=>{if(committed)this.pageDestroyed(owner.runtime,view,{pageId,webContentsId,openerPageId},registered);});
+    wc.on('before-input-event',(e,input)=>{const live=owner.runtime;const action=browserShortcut(input);if(live.locked||live.controller!=='human'){e.preventDefault();return;}if(action){e.preventDefault();this.handleBrowserShortcut(action,registered);}});
+    const denied=(url:string)=>{if(registered)registered.loadError={kind:'denied',url,message:'导航被当前授权范围或网址协议限制拒绝'};this.onChanged();};
+    wc.on('will-navigate',(e,url)=>{if(!/^https?:|^about:blank$/.test(url)||!this.navigationAllowed(url)){e.preventDefault();denied(url);}});
+    wc.on('will-redirect',(event,url)=>{if(!this.navigationAllowed(url)){event.preventDefault();denied(url);}});
+    wc.on('did-start-loading',()=>{if(registered)registered.loadError=undefined;this.onChanged();});
+    wc.on('did-stop-loading',()=>this.onChanged());wc.on('page-title-updated',()=>this.onChanged());
+    wc.on('did-navigate',(_event,url)=>{if(registered)registered.lastUrl=url;this.onChanged();});
+    wc.on('did-fail-load',(_event,code,message,url,main)=>{if(registered&&main&&code!==-3){registered.loadError={kind:message.includes('CERT')?'certificate':'network',url,message,code};this.onChanged();}});
+    wc.on('found-in-page',(_event,result)=>{if(registered){registered.find={requestId:result.requestId,activeMatchOrdinal:result.activeMatchOrdinal,matches:result.matches};this.onChanged();}});
+    wc.on('context-menu',(_event,params)=>{if(!registered||this.browser!==owner||owner.runtime.controller!=='human'||owner.runtime.locked||registered.capture?.inspecting)return;const target=registered,body=this.humanCommandIdentity(target);Menu.buildFromTemplate([
+      {label:'复制文字',enabled:!!params.selectionText,click:()=>clipboard.writeText(params.selectionText)},
+      {label:'复制链接',enabled:!!params.linkURL,click:()=>clipboard.writeText(params.linkURL)},
+      {label:'粘贴',enabled:params.isEditable,click:()=>{if(this.browser===owner&&owner.runtime.leaseEpoch===body.leaseEpoch&&owner.runtime.controller==='human'&&!owner.runtime.locked&&owner.runtime.pages.get(target.pageId)===target&&target.navigationGeneration===body.generation)wc.paste();}},
+      {label:'在新受管标签打开链接',enabled:/^https?:\/\//.test(params.linkURL),click:()=>{void this.serialized(()=>this.browserCommand({...body,command:'new',url:params.linkURL})).catch(error=>this.browserFailure(error));}},
+    ]).popup({window:this.window.window});});
     wc.setWindowOpenHandler(details=>this.browser!==owner||owner.runtime.ending||this.closing||!this.navigationAllowed(details.url)||(owner.runtime.controller==='agent'&&!!this.browserAuthorizationId&&!this.tasks.get(this.browserAuthorizationId).capabilities.includes('page-create'))?{action:'deny'}:({action:'allow',overrideBrowserWindowOptions:{webPreferences:{session:r.session,nodeIntegration:false,contextIsolation:true,sandbox:true,webSecurity:true,backgroundThrottling:false}},createWindow:(options)=>{
       // Electron has already created the guest WebContents. Adopting it preserves
       // window.open/opener identity; creating another one throws in openGuestWindow.
@@ -335,7 +366,7 @@ export class Studio {
       const parentPageId=[...owner.runtime.pages.values()].find(page=>page.webContentsId===wc.id)?.pageId;
       void this.serialized(async()=>{const live=owner.runtime;if(this.browser!==owner||live.ending||this.closing){if(child.webContents&&!child.webContents.isDestroyed())child.webContents.close();return;}const p=await this.addPage(live,parentPageId,child);if(this.active===live)await live.store!.appendEvent({type:'gap',source:'electron',pageId:p.pageId,data:{reason:'popup-before-capture-ready',openerPageId:parentPageId}});this.window.lock(live.locked||live.controller!=='human');}).catch(async error=>{this.window.remove(child);const live=owner.runtime;if(this.active===live&&!live.ending)await live.store!.appendEvent({type:'gap',source:'electron',data:{reason:String(error)}}).catch(writeError=>console.error('Could not persist popup failure',writeError));else console.error('Could not register live session popup',error);});return child.webContents;
     }}));
-    wc.on('render-process-gone',(_e,details)=>{registered?.capture?.documentDestroyed();const live=owner.runtime;if(live.ending)return;live.capture='degraded';this.onChanged();if(this.active===live)void live.store!.appendEvent({type:'gap',source:'electron',data:{reason:'render-process-gone',details}}).catch(error=>console.error('Could not persist renderer failure',error));});
+    wc.on('render-process-gone',(_e,details)=>{registered?.capture?.documentDestroyed();if(registered)registered.loadError={kind:'renderer',url:registered.lastUrl||'',message:'网页进程退出：'+details.reason};const live=owner.runtime;if(live.ending)return;live.capture='degraded';this.onChanged();if(this.active===live)void live.store!.appendEvent({type:'gap',source:'electron',data:{reason:'render-process-gone',details}}).catch(error=>console.error('Could not persist renderer failure',error));});
     // An un-navigated WebContents has an empty URL and Puppeteer intentionally keeps
     // its target uninitialized. Prime only new views with about:blank before binding.
     if(!existingView)await wc.loadURL('about:blank');
@@ -346,13 +377,83 @@ export class Studio {
     const identity:PageIdentity={pageId,targetId,webContentsId,navigationGeneration:0,openerPageId};
     // Navigation identity belongs to the browser session and must keep advancing
     // when there is no recorder. The Puppeteer observer outlives capture CDP.
-    page.on('framenavigated',frame=>{if(frame===page.mainFrame()){identity.navigationGeneration++;this.onChanged();}});
+    const onNavigation=(frame:ReturnType<Page['mainFrame']>)=>{if(frame===page.mainFrame()){identity.navigationGeneration++;this.onChanged();}};
+    page.on('framenavigated',onNavigation);removeObserver=()=>page.off('framenavigated',onNavigation);
     const capture=this.active===r?this.createCapture(this.active,Object.assign(identity,{page})):undefined;
-    const p=Object.assign(identity,{view,page,capture}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);const previousPageId=r.selectedPageId||null;if(activate)r.selectedPageId=p.pageId;const foregroundAt=Date.now();
+    const p=Object.assign(identity,{view,page,capture,lastUrl:wc.getURL()}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);if(activate)r.selectedPageId=p.pageId;const foregroundAt=Date.now();
+    page.on('dialog',dialog=>{if(dialog.type()==='beforeunload')return;p.dialog={id:randomUUID(),value:dialog};this.onChanged();});
+    if(this.active===r){await capture!.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store!.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,navigationGeneration:p.navigationGeneration,openerPageId,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});if(activate)await this.recordForeground(r as ActiveRun,previousPageId||null,'page-created',foregroundAt);}
+    ensure(this.browser===owner&&owner.runtime===r&&!r.ending&&!this.closing,'Browser session changed during page initialization',409);
+    if(activate)this.window.show(view);
+    // Authorization is the final potentially throwing registration step.
     if(openerPageId&&r.controller==='agent'&&this.browserAuthorizationId)this.tasks.addPage(this.browserAuthorizationId,{pageId:p.pageId,targetId:p.targetId});
-    if(this.active===r){await capture!.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store!.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{...identity,view:undefined,page:undefined,capture:undefined,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});if(activate)await this.recordForeground(r as ActiveRun,previousPageId,'page-created',foregroundAt);}if(activate)this.window.show(view);this.onChanged();return p;
+    committed=true;this.onChanged();return p;
+    }catch(error){
+      removeObserver?.();if(registered){r.pages.delete(pageId);await registered.capture?.stop().catch(cleanup=>console.error('Failed page capture cleanup',cleanup));}
+      if(r.selectedPageId===pageId)r.selectedPageId=r.pages.has(previousPageId)?previousPageId:'';
+      this.window.remove(view);if(this.browser===owner)this.window.show(owner.runtime.pages.get(owner.runtime.selectedPageId)?.view);throw error;
+    }finally{if(this.browser===owner)this.window.lock(owner.runtime.locked||owner.runtime.controller!=='human');this.onChanged();}
   }
   private createCapture(r:ActiveRun,p:PageIdentity&{page:Page}){return new CaptureCoordinator(p.page,p,r.store,selection=>{if(this.active===r&&r.pages.has(p.pageId)){r.selection=selection;this.onChanged();}},reason=>{if(r.ending||this.active!==r||!r.pages.has(p.pageId))return;r.capture='degraded';this.onChanged();void r.store.updateManifest({capture:'degraded',captureHealthReason:reason}).catch(error=>console.error('Could not persist capture health',error));},false);}
+  private humanCommandIdentity(page?:ManagedPage){const r=this.live();return {sessionId:this.browserSessionId!,leaseEpoch:r.leaseEpoch,...(page?{pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration}:{})};}
+  private browserFailure(error:unknown){this.browserNotice=String(error);this.onChanged();}
+  private handleBrowserShortcut(action:string,page?:ManagedPage){
+    const r=this.browser?.runtime;if(!r)return;
+    const target=page??r.pages.get(r.selectedPageId);
+    if(page&&r.pages.get(page.pageId)!==page)return;
+    if(['address','find','save','cancel'].includes(action)){
+      this.browserUiAction={id:randomUUID(),action:action as 'address'|'find'|'save'|'cancel',pageId:target?.pageId??''};
+      this.window.focusUi();this.onChanged();return;
+    }
+    const body=this.humanCommandIdentity(target);
+    if(action.startsWith('zoom-')){const factor=target?.view.webContents.getZoomFactor()??1;void this.serialized(()=>this.browserCommand({...body,command:'zoom',zoomFactor:action==='zoom-reset'?1:Math.max(.25,Math.min(3,factor+(action==='zoom-in'?.1:-.1)))})).catch(error=>this.browserFailure(error));return;}
+    void this.serialized(()=>this.browserCommand({...body,command:action as BrowserCommand['command']})).catch(error=>this.browserFailure(error));
+  }
+  private loadHumanUrl(page:ManagedPage,input:string){
+    let url:string;try{url=browserUrl(input);}catch(error){page.loadError={kind:'url',url:String(input),message:String(error)};this.onChanged();throw error;}
+    if(!this.navigationAllowed(url)){page.loadError={kind:'denied',url,message:'此网址不在当前授权范围内'};this.onChanged();throw new StudioError(403,'navigation_denied','此网址不在当前授权范围内');}
+    page.loadError=undefined;page.lastUrl=url;
+    // Native events own human navigation progress. Do not hold the command queue
+    // until load completion: Stop must be able to interrupt a slow response.
+    void page.view.webContents.loadURL(url).catch(error=>{if(this.browser?.runtime.pages.get(page.pageId)===page&&!page.view.webContents.isDestroyed()&&!String(error).includes('ERR_ABORTED')){page.loadError??={kind:'network',url,message:String(error)};this.onChanged();}});this.onChanged();
+  }
+  async browserCommand(body:BrowserCommand){
+    const r=this.live();ensure(body.sessionId===this.browserSessionId&&body.leaseEpoch===r.leaseEpoch,'浏览器会话或控制权已变化，请重试',409);
+    ensure(r.controller==='human'&&!r.locked&&!r.ending&&!r.stopping,'浏览器由自动化控制或正在锁定，请先停止或接管',409);
+    const page=body.pageId?r.pages.get(body.pageId):undefined;
+    if(body.pageId)ensure(page&&body.targetId===page.targetId&&body.generation===page.navigationGeneration,'标签身份或页面代际已变化，请重试',409);
+    const selected=r.pages.get(r.selectedPageId);
+    if(!['dialog','notice-dismiss','download-cancel','download-show'].includes(body.command))ensure(this.active!==r||!selected?.capture?.inspecting,'请先结束元素选择',409);
+    if(['new','reopen'].includes(body.command)){
+      ensure(!selected||page===selected,'新标签需绑定当前页面身份',409);
+      const previous=body.command==='reopen'?this.closedPages?.at(-1):undefined;
+      if(body.command==='reopen')ensure(previous,'没有可恢复的已关闭标签',409);
+      const url=browserUrl(previous?.url??body.url??'about:blank');
+      const created=await this.addPage(r,page?.pageId);r.leaseEpoch++;
+      this.loadHumanUrl(created,url);if(previous)this.closedPages.pop();return this.browserState();
+    }
+    if(body.command==='notice-dismiss'){this.browserNotice=undefined;return this.browserState();}
+    if(body.command==='download-cancel'){ensure(body.downloadId,'缺少下载身份');this.browserDownloads?.cancel(body.downloadId);return this.browserState();}
+    if(body.command==='download-show'){ensure(body.downloadId&&this.browserDownloads,'缺少下载身份');shell.showItemInFolder(this.browserDownloads.location(body.downloadId));return this.browserState();}
+    ensure(page,'请选择一个实时标签',409);
+    if(body.command==='select'){await this.selectPage(page.pageId);return this.browserState();}
+    if(body.command==='close')return this.closePage(page.pageId);
+    ensure(page===selected,'此操作仅适用于当前标签',409);
+    const wc=page.view.webContents;
+    switch(body.command){
+      case 'navigate':this.loadHumanUrl(page,body.url??'');break;
+      case 'back':ensure(wc.navigationHistory.canGoBack(),'没有上一页',409);wc.navigationHistory.goBack();break;
+      case 'forward':ensure(wc.navigationHistory.canGoForward(),'没有下一页',409);wc.navigationHistory.goForward();break;
+      case 'reload':this.loadHumanUrl(page,page.loadError?.url||page.lastUrl||wc.getURL());break;
+      case 'stop':wc.stop();break;
+      case 'find':ensure(typeof body.text==='string'&&body.text.length>0&&body.text.length<=500,'请输入 1–500 字的查找文字');wc.findInPage(body.text,{forward:body.forward!==false,findNext:!!body.findNext});break;
+      case 'find-close':wc.stopFindInPage('clearSelection');page.find=undefined;break;
+      case 'zoom':{ensure(typeof body.zoomFactor==='number'&&Number.isFinite(body.zoomFactor)&&body.zoomFactor>=.25&&body.zoomFactor<=3,'缩放范围是 25%–300%');const previous=wc.getZoomFactor();wc.setZoomFactor(body.zoomFactor);await this.pageAudit(r,{type:'page-zoom',source:'ui',pageId:page.pageId,navigationGeneration:page.navigationGeneration,data:{previous,zoomFactor:body.zoomFactor}});break;}
+      case 'dialog':{const pending=page.dialog;ensure(pending&&pending.id===body.dialogId,'站点对话框已变化',409);if(body.accept)await pending.value.accept(body.text);else await pending.value.dismiss();if(page.dialog===pending)page.dialog=undefined;break;}
+      default:ensure(false,'未知浏览器操作');
+    }
+    this.onChanged();return this.browserState();
+  }
   async createTaskPage(body:any,signal?:AbortSignal){
     signal?.throwIfAborted();
     const r=this.live(),anchor=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;
@@ -363,20 +464,21 @@ export class Studio {
     const destination=new URL(body.startUrl);
     ensure(!destination.username&&!destination.password&&this.navigationAllowed(destination.href),'Task page destination is outside authorized origins',403);
     const previousPageId=r.selectedPageId;
-    const page=await this.addPage(r,undefined,undefined,false);
+    let page:ManagedPage|undefined;
     try{
+      page=await this.addPage(r,undefined,undefined,false);
       signal?.throwIfAborted();
       ensure(this.browser?.runtime===r&&r.controller==='agent'&&!r.locked&&r.pages.get(anchor.pageId)===anchor&&anchor.navigationGeneration===body.generation&&r.leaseEpoch===leaseEpoch&&r.selectedPageId===previousPageId,'Task page creation lost its browser lease',409);
       await this.navigate(destination.href,page,true);
       signal?.throwIfAborted();
       ensure(this.browser?.runtime===r&&r.controller==='agent'&&!r.locked&&r.pages.get(anchor.pageId)===anchor&&anchor.navigationGeneration===body.generation&&r.leaseEpoch===leaseEpoch&&r.selectedPageId===previousPageId&&r.pages.get(page.pageId)===page,'Task page creation lost its browser lease',409);
-      this.tasks.addPage(body.authorizationId,{pageId:page.pageId,targetId:page.targetId});
       await this.pageAudit(r,{type:'page-created',source:'api',pageId:page.pageId,data:{authorizationId:body.authorizationId,anchorPageId:anchor.pageId,generation:page.navigationGeneration}});
       signal?.throwIfAborted();
       ensure(this.browser?.runtime===r&&r.leaseEpoch===leaseEpoch&&r.controller==='agent'&&r.pages.get(anchor.pageId)===anchor&&anchor.navigationGeneration===body.generation&&r.pages.get(page.pageId)===page,'Task page creation lost its browser lease',409);
+      this.tasks.addPage(body.authorizationId,{pageId:page.pageId,targetId:page.targetId});
       return {runId:this.active===r?r.id:undefined,sessionId:this.browserSessionId,profileId:r.profileId,pageId:page.pageId,targetId:page.targetId,generation:page.navigationGeneration,selectedPageId:r.selectedPageId};
     }catch(error){
-      if(r.pages.get(page.pageId)===page){await this.closePageContents(page);await Promise.all([...(r.pageClosures??[])]);}
+      if(page&&r.pages.get(page.pageId)===page){try{await this.closePageContents(page);}catch{this.window.remove(page.view);}await Promise.all([...(r.pageClosures??[])]);}
       throw error;
     }finally{if(this.browser?.runtime===r)this.window.lock(r.locked||String(r.controller)!=='human');this.onChanged();}
   }
@@ -397,9 +499,10 @@ export class Studio {
   }
   async closePage(pageId:string){
     const r=this.live(),p=r.pages.get(pageId);ensure(p,'Unknown page',404);
+    const closed={url:p.view.webContents.getURL(),title:p.view.webContents.getTitle()};
     ensure(r.controller==='human'&&!r.locked&&!r.ending&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Stop the runner before closing its page',409);
     r.locked=true;r.leaseEpoch++;this.window.lock(true);
-    try{await this.closePageContents(p);await Promise.all([...(r.pageClosures??[])]);}
+    try{await this.closePageContents(p);await Promise.all([...(r.pageClosures??[])]);if(!r.pages.has(pageId)){this.closedPages??=[];this.closedPages.push(closed);this.closedPages=this.closedPages.slice(-20);}}
     finally{if(this.browser?.runtime===r&&!r.stopping&&!r.ending){r.locked=false;this.window.lock(r.controller!=='human');}this.onChanged();}
     return this.browserState();
   }
@@ -440,8 +543,8 @@ export class Studio {
     const browser=this.browser;ensure(browser,'No live browser session',409);ensure(!this.active,'Seal the recording before closing its browser session',409);
     ensure(!this.validationLaunch&&!this.workflow&&!this.workflowStarting&&!this.workflowSettlement,'Stop the runner before closing its browser session',409);
     const r=browser.runtime;r.ending=true;r.locked=true;r.leaseEpoch++;this.window.lock(true);
-    try{await this.revokeOperation(r);for(const p of [...r.pages.values()])await this.closePageContents(p);this.browser=undefined;this.browserAuthorizationId=undefined;return {closed:true,sessionId:browser.id};}
-    finally{r.ending=false;r.locked=false;this.window.lock(false);this.onChanged();}
+    try{await this.revokeOperation(r);for(const p of [...r.pages.values()])await this.closePageContents(p);await this.browserDownloads?.dispose();this.browserDownloads=undefined;this.browser=undefined;this.browserAuthorizationId=undefined;this.closedPages=[];return {closed:true,sessionId:browser.id};}
+    finally{r.ending=false;r.locked=false;if(this.browser===browser)this.window.lock(r.controller!=='human');else if(!this.browser)this.window.lock(false);this.onChanged();}
   }
   private assertOperationOwner(r:SessionRuntime,p:ManagedPage,leaseEpoch:number,generation?:number){
     ensure(this.browser?.runtime===r&&!this.closing&&!r.ending&&r.controller==='agent'&&!r.locked&&!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Agent no longer owns this browser',409);
@@ -698,7 +801,7 @@ export class Studio {
       for(const p of [...r.pages.values()])await p.capture!.stop();await r.store.seal();const manifest=r.store.manifest;await r.store.close();
       r.releaseDownloads?.();r.releaseDownloads=undefined;r.stopDownloads=undefined;
       this.runs=this.runs.map(x=>x.id===r.id?manifest:x);this.browser!.detach(r.id);this.active=undefined;
-      r.ending=false;r.capture='stopped';r.controller=r.pages.size?'human':'none';r.locked=false;r.selection=undefined;r.handoff=undefined;
+      r.ending=false;r.capture='stopped';r.controller='human';r.locked=false;r.selection=undefined;r.handoff=undefined;
       this.window.lock(false);this.onChanged();return manifest;
     }catch(error){
       r.capture='degraded';r.ending=false;r.locked=true;this.onChanged();
@@ -995,5 +1098,5 @@ export class Studio {
   async validation(id:string){const record=this.validations.find(v=>v.id===id);ensure(record,'Unknown validation',404);let currentVersion='unknown';if(record.result){const registered=this.projects.find(project=>project.id===record.projectId)?.scriptDirectory;if(!registered||path.relative(path.resolve(record.directory),path.resolve(registered))!=='')currentVersion='needs-revalidation';else try{const hash=await fingerprintWorkflow(registered,path.join(app.getAppPath(),'package-lock.json'));currentVersion=hash.sha256===record.result.fingerprintAfter.sha256?'matched':'needs-revalidation';}catch{currentVersion='unavailable';}}return {...record,currentVersion};}
   async review(body:any){ensure(this.validations.some(v=>v.id===body.id),'Unknown validation',404);return appendReview(this.root,body.id,body);}
   async reviews(id:string,options:ReviewQuery={}){ensure(this.validations.some(v=>v.id===id),'Unknown validation',404);return readReviews(this.root,id,options);}
-  async close(){this.closing=true;this.replayHost.close();this.tasks.close();this.validationLaunch?.abort.abort(new Error('Application closing during validation startup'));this.active?.checkpointTask?.abort.abort(new Error('Application closing'));const startup=this.workflowStarting;startup?.abort.abort(new Error('Application closing'));startup?.gate?.close();if(this.active){this.active.ending=true;this.active.locked=true;this.active.leaseEpoch++;await this.revokeOperation(this.active);}await this.queue.catch(()=>{});if(startup)await startup.done;const settlement=this.workflowSettlement;if(this.workflow)await this.workflow.cancel('Application closing');if(settlement)await settlement;this.humanDone?.reject(new Error('Application closing'));this.humanDone=undefined;if(this.active){const r=this.active;await r.stopDownloads?.();await Promise.allSettled([...(r.pageClosures??[])]);for(const p of [...r.pages.values()])await p.capture!.stop().catch(()=>{});await r.store.updateManifest({status:'interrupted',execution:'interrupted'});await r.store.close();this.window.closeViews();r.releaseDownloads?.();this.active=undefined;}await this.fixture?.close();this.observer?.disconnect();this.window.closeViews();this.browser=undefined;}
+  async close(){this.closing=true;this.replayHost.close();this.tasks.close();this.validationLaunch?.abort.abort(new Error('Application closing during validation startup'));this.active?.checkpointTask?.abort.abort(new Error('Application closing'));const startup=this.workflowStarting;startup?.abort.abort(new Error('Application closing'));startup?.gate?.close();if(this.active){this.active.ending=true;this.active.locked=true;this.active.leaseEpoch++;await this.revokeOperation(this.active);}await this.queue.catch(()=>{});if(startup)await startup.done;const settlement=this.workflowSettlement;if(this.workflow)await this.workflow.cancel('Application closing');if(settlement)await settlement;this.humanDone?.reject(new Error('Application closing'));this.humanDone=undefined;if(this.active){const r=this.active;await r.stopDownloads?.();await Promise.allSettled([...(r.pageClosures??[])]);for(const p of [...r.pages.values()])await p.capture!.stop().catch(()=>{});await r.store.updateManifest({status:'interrupted',execution:'interrupted'});await r.store.close();this.window.closeViews();r.releaseDownloads?.();this.active=undefined;}await this.browserDownloads?.dispose();this.browserDownloads=undefined;await this.fixture?.close();this.observer?.disconnect();this.window.closeViews();this.browser=undefined;}
 }
