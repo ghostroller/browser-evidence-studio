@@ -353,7 +353,7 @@
 .implementation-details { flex: none; padding: 8px; display: grid; gap: 16px; }
 .result-source-location { padding: 8px; max-height: 160px; overflow: auto; border-bottom: 1px solid var(--border); font-size: 12px; }
 .workspace-panel[data-selection-locked] { position: relative; }
-.workspace-panel[data-selection-locked]::after { content: '正在历史页选择元素 · 按 Esc 取消'; position: absolute; z-index: 10; inset: 0; display: grid; place-items: center; padding: 20px; background: color-mix(in oklch, var(--background) 85%, transparent); color: var(--foreground); font-size: 13px; text-align: center; }
+.workspace-panel[data-selection-locked]::after { content: attr(data-selection-label); position: absolute; z-index: 10; inset: 0; display: grid; place-items: center; padding: 20px; background: color-mix(in oklch, var(--background) 85%, transparent); color: var(--foreground); font-size: 13px; text-align: center; }
 .material-workbench h3 { margin: 12px 0 5px; font-size: 13px; }
 .material-workbench h4 { margin: 10px 0 5px; font-size: 12px; }
 .material-workbench label { display: grid; gap: 3px; margin: 6px 0; }
