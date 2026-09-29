@@ -65,6 +65,7 @@ export async function runWorkspaceLayoutScenarios(studio:Studio) {
       await clickTarget('document.querySelector("[aria-label=编辑注释] textarea")');
       ui.sendInputEvent({type:'keyDown',keyCode:'TAB'});ui.sendInputEvent({type:'keyUp',keyCode:'TAB'});
       assert(await read<boolean>('document.activeElement?.tagName==="BUTTON"'),'Normal Tab reaches the source-selection action');
+      assert(await read<boolean>('(()=>{const el=document.querySelector(".material-toolbar"),r=el.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return !!hit&&(el===hit||el.contains(hit));})()'),'Working copy identity remains visible while the editor scrolls');
       await captureUiFrame(studio,'layout-editor-'+width+'.png');report.sizes.push(metric);
     }
     await click('保存注释');await wait(()=>read<boolean>('!document.querySelector("[aria-label=编辑注释]")'),Boolean,'annotation saved');
