@@ -12,6 +12,7 @@ export const MATERIAL_COLLECTIONS = ['requirements', 'fields', 'checkpoints', 'a
 export type MaterialEdit = { operation: 'upsert'; collection: Exclude<keyof MaterialContent, 'recordingRefs' | 'taskBrief'>; item: MaterialContent[Exclude<keyof MaterialContent, 'recordingRefs' | 'taskBrief'>][number] }
   | { operation: 'remove'; collection: Exclude<keyof MaterialContent, 'recordingRefs' | 'taskBrief'>; id: string }
   | { operation:'field-binding'; fieldId:string; binding:{kind:'keep'}|{kind:'clear'}|{kind:'set';target:HistoricalTarget;checkpointId:string;annotationId?:string} }
+  | { operation: 'task-brief'; taskBrief: NonNullable<MaterialContent['taskBrief']> }
   | { operation: 'recordings'; recordingRefs: string[] }
   | { operation: 'copy-checkpoint' | 'remove-checkpoint'; checkpointId: string }
   | { operation: 'move-checkpoint'; checkpointId: string; position: ReplayPosition };
@@ -53,10 +54,9 @@ export class ProjectMaterials {
     return node.metadataComplete && node.ref.kind === target.kind && sameReplayPosition(node.ref.position, target.position) && node.ref.nodeId === target.nodeId && node.ref.frameId === target.frameId && node.ref.mirrorScopeId === target.mirrorScopeId;
   }
   async workingDraft(projectId:string){
-    const page=await this.service.listDrafts(projectId,{limit:100,maxBytes:28672});
-    const existing=page.items.find(item=>item.status==='available'&&item.author==='human');
-    return existing?this.service.getDraft(projectId,existing.draftId):this.service.createDraft(projectId,'human');
+    return this.service.workingDraft(projectId);
   }
+
   async authorReceipt(projectId:string,input:{operationId:string;receiptId:string;position:ReplayPosition;title:string;notes:string;draftId?:string;derivedFrom?:string}){
     const draft=input.draftId?await this.service.getDraft(projectId,input.draftId):await this.workingDraft(projectId);
     const existing=draft.content.checkpoints.find(card=>card.operationId===input.operationId);
@@ -81,6 +81,7 @@ export class ProjectMaterials {
       else if (edit.operation === 'copy-checkpoint') content = copyCheckpoint(content, edit.checkpointId);
       else if (edit.operation === 'remove-checkpoint') content = removeCheckpoint(content, edit.checkpointId);
       else if (edit.operation === 'move-checkpoint') content = moveCheckpoint(content, edit.checkpointId, parseReplayPosition(edit.position));
+      else if (edit.operation === 'task-brief') content.taskBrief = structuredClone(edit.taskBrief);
       else if (edit.operation === 'recordings') content.recordingRefs = structuredClone(edit.recordingRefs);
       else {
         ensure(edit.operation === 'upsert' || edit.operation === 'remove', 'Unknown material edit operation');

@@ -8,7 +8,7 @@ import { MATERIAL_COLLECTIONS, materialBudget, materialSummary } from './project
 import { parseReplayPosition } from '@/contracts/recording';
 import { ensure } from '@/shared/errors';
 
-export const PROJECT_METHODS = new Set(['previewImplementation','confirmImplementation','taskAuthorizations', 'authorizeTask', 'revokeTask', 'exportFixedTaskHandoff', 'taskChanges', 'materialDrafts', 'materialRevisions', 'materialDraft', 'materialRevision', 'materialCollection', 'createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft', 'materialDiff', 'recordingStreams', 'recordingForeground', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators', 'execution', 'executionItems', 'datasetBatches', 'datasetRecords', 'assessExecution', 'executionReport', 'executionReportItems', 'reviewExecution']);
+export const PROJECT_METHODS = new Set(['materialEntity','materialCatalog','setWorkingMaterialDraft','previewImplementation','confirmImplementation','taskAuthorizations', 'authorizeTask', 'revokeTask', 'exportFixedTaskHandoff', 'taskChanges', 'materialDrafts', 'materialRevisions', 'materialDraft', 'materialRevision', 'materialCollection', 'createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft', 'materialDiff', 'recordingStreams', 'recordingForeground', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators', 'execution', 'executionItems', 'datasetBatches', 'datasetRecords', 'assessExecution', 'executionReport', 'executionReportItems', 'reviewExecution']);
 const EDIT = new Set(['createMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft']);
 const HISTORY = new Set(['recordingStreams', 'recordingForeground', 'recordingPositions', 'resolveRecordingTime', 'historicalState', 'historicalNode', 'historicalLocators']);
 const RESULTS = new Set(['execution','executionItems','datasetBatches','datasetRecords','assessExecution','executionReport','executionReports','executionReportItems','reviewExecution']);
@@ -18,6 +18,10 @@ for(const method of RESULTS)PROJECT_METHODS.add(method);
  * enter Studio's browser-operation queue or change the selected live page. */
 export async function dispatchProject(studio: Studio, method: string, body: any, source: 'api' | 'ui', signal?: AbortSignal): Promise<unknown> {
   ensure(typeof body.projectId === 'string' && studio.projects.some(project => project.id === body.projectId), 'Unknown project', 404);
+  if (method === 'materialCatalog' || method === 'setWorkingMaterialDraft') {
+    ensure(source === 'ui', 'Workspace directory requires trusted UI', 403);
+    return method === 'materialCatalog' ? studio.materials.service.workspaceCatalog(body.projectId) : materialSummary(await studio.materials.service.setWorkingDraft(body.projectId, body.draftId));
+  }
   if(method==='previewImplementation'||method==='confirmImplementation'){ensure(source==='ui','Mapping confirmation requires trusted UI',403);return implementationMapping(studio,body,method==='confirmImplementation');}
   if (method === 'authorizeTask') { ensure(source === 'ui', 'Only the trusted client can authorize a task', 403); return studio.authorizeTask(body); }
   if (method === 'revokeTask') { ensure(source === 'ui', 'Only the trusted client can revoke task authorization', 403); return studio.revokeTask(body); }
@@ -56,6 +60,7 @@ export async function dispatchProject(studio: Studio, method: string, body: any,
       case 'executionReportItems': return studio.executions.reportItems(body.projectId,body.executionId,body.reportId,body.collection,budget);
       case 'reviewExecution': ensure(source==='ui','Human reviews must originate in the trusted client',403);return studio.executions.review(body.projectId,body.executionId,body.reportId,body);
       case 'taskChanges': return { instanceId: studio.instanceId, ...studio.tasks.changes(body.projectId, body.afterSequence ?? 0, budget.limit) };
+      case 'materialEntity': return service.entity(body.projectId, { kind: body.kind, id: body.kind === 'draft' ? body.draftId : body.revisionId, expectedHash: body.contentHash }, body.collection, body.entityId);
       case 'materialDrafts': return service.listDrafts(body.projectId, budget);
       case 'materialRevisions': return service.listRevisions(body.projectId, budget);
       case 'materialDraft': return materialSummary(await service.getDraft(body.projectId, body.draftId));

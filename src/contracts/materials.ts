@@ -80,7 +80,7 @@ export interface TaskMaterialRevision {
   content: MaterialContent;
 }
 export interface MaterialDifference {
-  collection: keyof Omit<MaterialContent, 'recordingRefs' | 'taskBrief'> | 'recordingRefs';
+  collection: keyof MaterialContent;
   id: string;
   change: 'added' | 'removed' | 'changed';
   changedFields: string[];

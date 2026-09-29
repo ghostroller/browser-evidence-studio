@@ -9,6 +9,7 @@ import { claimWriterLock, WriterLockError } from '@/evidence/writer-lock';
 import { MaterialConflictError, MaterialError, MaterialPartialPublishError } from './errors';
 import { id, validateContent } from './validate';
 import { measured } from './paging';
+import type { MaterialCatalog } from '@/contracts/workspace';
 
 const MAX_FILE_BYTES = 3 * 1024 * 1024;
 const EMPTY: MaterialContent = { requirements: [], fields: [], checkpoints: [], annotations: [], recordingRefs: [] };
@@ -72,9 +73,9 @@ async function createJson(file: string, value: unknown): Promise<void> {
 }
 
 interface ProjectPaths { material: string; drafts: string; revisions: string }
-export type DraftSummary = { draftId: string; status: 'available'; draftRevision: number; updatedAt: string; author: MaterialAuthor; baseRevisionId?: string } |
+export type DraftSummary = { draftId: string; status: 'available'; draftRevision: number; updatedAt: string; author: MaterialAuthor; baseRevisionId?: string; name?: string; hidden?: boolean; current?: boolean } |
   { draftId: string; status: 'unavailable'; reason: string };
-export type RevisionSummary = { revisionId: string; status: 'available'; contentHash: string; createdAt: string; author: MaterialAuthor; parentRevisionId?: string } |
+export type RevisionSummary = { revisionId: string; status: 'available'; contentHash: string; createdAt: string; author: MaterialAuthor; parentRevisionId?: string; name?: string; hidden?: boolean; displayNumber?: number } |
   { revisionId: string; status: 'unavailable'; reason: string };
 /** Production adapter must resolve these against A's recorded replay/source index. */
 export interface MaterialSourceVerifier {
@@ -83,6 +84,91 @@ export interface MaterialSourceVerifier {
 }
 export class FileMaterialService implements MaterialService {
   constructor(private readonly dataRoot: string, private readonly sourceVerifier?: MaterialSourceVerifier) {}
+
+  private async readCatalog(root: string, paths: ProjectPaths): Promise<MaterialCatalog> {
+    try {
+      const value = await readJson(path.join(paths.material, 'catalog.json'), root);
+      if (!isRecord(value) || value.schemaVersion !== 1 || !Number.isSafeInteger(value.catalogRevision) || !isRecord(value.drafts) || !isRecord(value.revisions) || !isRecord(value.recordings)) throw new MaterialError('INVALID_CATALOG', 'Material directory is damaged; original content was retained.', 500);
+      for (const entries of [value.drafts, value.revisions, value.recordings]) for (const [key, entry] of Object.entries(entries)) {
+        id(key, 'catalog identity');
+        if (!isRecord(entry) || typeof entry.name !== 'string' || typeof entry.hidden !== 'boolean' || entry.displayNumber !== undefined && (!Number.isSafeInteger(entry.displayNumber) || Number(entry.displayNumber) < 1)) throw new MaterialError('INVALID_CATALOG', 'Material directory entry is damaged.', 500);
+      }
+      if (value.workingDraftId !== undefined) id(value.workingDraftId, 'workingDraftId');
+      return value as unknown as MaterialCatalog;
+    } catch (error) {
+      if (!(error instanceof MaterialError) || error.code !== 'NOT_FOUND') throw error;
+      return { schemaVersion: 1, catalogRevision: 0, drafts: {}, revisions: {}, recordings: {} };
+    }
+  }
+  private async saveCatalog(paths: ProjectPaths, catalog: MaterialCatalog) {
+    await atomicJson(path.join(paths.material, 'catalog.json'), { ...catalog, catalogRevision: catalog.catalogRevision + 1 });
+  }
+  private async fileIds(folder: string) {
+    const result: string[] = [];
+    for (const entry of await fs.readdir(folder, { withFileTypes: true })) {
+      if (!entry.name.endsWith('.json')) continue;
+      if (!entry.isFile() || entry.isSymbolicLink()) throw new MaterialError('INVALID_PATH', 'Material directory contains a non-file entry.');
+      result.push(id(entry.name.slice(0, -5), 'material file ID'));
+    }
+    return result;
+  }
+  /** Migrate the complete legacy collection once, under the same writer as publication. */
+  private async catalog(projectId: string, root: string, paths: ProjectPaths) {
+    const catalog = await this.readCatalog(root, paths);
+    let changed = false;
+    const missing: Array<{ id: string; at: string }> = [];
+    for (const revisionId of await this.fileIds(paths.revisions)) if (!catalog.revisions[revisionId]) {
+      try { missing.push({ id: revisionId, at: (await this.storedRevision(projectId, revisionId, root, paths)).createdAt }); }
+      catch (error) { if (!(error instanceof MaterialError) || !['INVALID_RECORD', 'HASH_MISMATCH', 'NOT_FOUND', 'MATERIAL_TOO_LARGE'].includes(error.code)) throw error; }
+    }
+    let number = Math.max(0, ...Object.values(catalog.revisions).map(entry => entry.displayNumber ?? 0));
+    for (const value of missing.sort((a, b) => a.at.localeCompare(b.at) || a.id.localeCompare(b.id))) {
+      catalog.revisions[value.id] = { name: '', hidden: false, displayNumber: ++number }; changed = true;
+    }
+    if (changed) { await this.saveCatalog(paths, catalog); catalog.catalogRevision++; }
+    return catalog;
+  }
+  workspaceCatalog(projectId: string) {
+    return this.locked(projectId, (root, paths) => this.catalog(projectId, root, paths));
+  }
+  async workingDraft(projectId: string): Promise<TaskMaterialDraft> {
+    return this.locked(projectId, async (root, paths) => {
+      const catalog = await this.catalog(projectId, root, paths);
+      if (catalog.workingDraftId) {
+        if (catalog.drafts[catalog.workingDraftId]?.hidden) throw new MaterialError('INVALID_CATALOG', 'Current working copy is removed.', 409);
+        return this.storedDraft(projectId, catalog.workingDraftId, root, paths);
+      }
+      const candidates: TaskMaterialDraft[] = [];
+      for (const draftId of await this.fileIds(paths.drafts)) {
+        if (catalog.drafts[draftId]?.hidden) continue;
+        const candidate = await this.storedDraft(projectId, draftId, root, paths);
+        if (candidate.author === 'human') candidates.push(candidate);
+      }
+      candidates.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.draftId.localeCompare(b.draftId));
+      const draft = candidates[0] ?? await this.newDraft(projectId, 'human', root, paths);
+      catalog.workingDraftId = draft.draftId;
+      catalog.drafts[draft.draftId] ??= { name: '默认工作副本', hidden: false };
+      await this.saveCatalog(paths, catalog);
+      return draft;
+    });
+  }
+  async setWorkingDraft(projectId: string, draftId: string) {
+    return this.locked(projectId, async (root, paths) => {
+      const draft = await this.storedDraft(projectId, draftId, root, paths), catalog = await this.catalog(projectId, root, paths);
+      if (draft.author !== 'human' || catalog.drafts[draftId]?.hidden) throw new MaterialError('INVALID_WORKING_COPY', 'Choose an available human working copy.', 409);
+      catalog.workingDraftId = draftId;
+      catalog.drafts[draftId] ??= { name: '工作副本', hidden: false };
+      await this.saveCatalog(paths, catalog); return draft;
+    });
+  }
+  async entity(projectId: string, source: { kind: 'draft' | 'revision'; id: string; expectedHash?: string }, collection: Exclude<keyof MaterialContent, 'taskBrief' | 'recordingRefs'>, entityId: string) {
+    if (!['requirements', 'fields', 'checkpoints', 'annotations'].includes(collection)) throw new MaterialError('INVALID_COLLECTION', 'Unknown entity collection.');
+    id(entityId, 'entityId');
+    const material = source.kind === 'draft' ? await this.getDraft(projectId, source.id) : await this.revision(projectId, source.id, source.expectedHash);
+    const item = material.content[collection].find(value => value.id === entityId);
+    if (!item) throw new MaterialError('NOT_FOUND', 'Material entity does not exist.', 404);
+    return { item, draftRevision: 'draftRevision' in material ? material.draftRevision : undefined, contentHash: 'contentHash' in material ? material.contentHash : undefined };
+  }
 
   private async root(): Promise<string> {
     const root = await fs.realpath(this.dataRoot);
@@ -185,15 +271,18 @@ export class FileMaterialService implements MaterialService {
       }
     }
   }
+  private async newDraft(projectId: string, author: MaterialAuthor, root: string, paths: ProjectPaths, baseRevisionId?: string): Promise<TaskMaterialDraft> {
+    const base = baseRevisionId === undefined ? undefined : await this.storedRevision(projectId, baseRevisionId, root, paths);
+    const workspace = await readJson(path.join(root, 'workspace.json'), root) as { projects: Array<{ id: string; objective?: string }> };
+    const draft: TaskMaterialDraft = { schemaVersion: 1, projectId, draftId: randomUUID(), draftRevision: 0,
+      ...(base ? { baseRevisionId: base.revisionId } : {}), author, updatedAt: new Date().toISOString(),
+      content: clone(base?.content ?? { ...EMPTY, taskBrief: { objective: workspace.projects.find(p => p.id === projectId)?.objective ?? '', scope: '' } }) };
+    await createJson(path.join(paths.drafts, `${draft.draftId}.json`), draft);
+    return draft;
+  }
   async createDraft(projectId: string, author: MaterialAuthor, baseRevisionId?: string): Promise<TaskMaterialDraft> {
     authorOf(author);
-    return this.locked(projectId, async (root, paths) => {
-      const base = baseRevisionId === undefined ? undefined : await this.storedRevision(projectId, baseRevisionId, root, paths);
-      const draft: TaskMaterialDraft = { schemaVersion: 1, projectId, draftId: randomUUID(), draftRevision: 0,
-        ...(base ? { baseRevisionId: base.revisionId } : {}), author, updatedAt: new Date().toISOString(), content: clone(base?.content ?? {...EMPTY,taskBrief:{objective:String(((await readJson(path.join(root,'workspace.json'),root)) as any).projects.find((p:any)=>p.id===projectId)?.objective??''),scope:''}}) };
-      await createJson(path.join(paths.drafts, `${draft.draftId}.json`), draft);
-      return draft;
-    });
+    return this.locked(projectId, (root, paths) => this.newDraft(projectId, author, root, paths, baseRevisionId));
   }
   getDraft(projectId: string, draftId: string): Promise<TaskMaterialDraft> {
     return this.withProject(projectId, (root, paths) => this.storedDraft(projectId, draftId, root, paths));
@@ -228,6 +317,7 @@ export class FileMaterialService implements MaterialService {
           updatedAt: new Date().toISOString(), author,
         } satisfies TaskMaterialDraft);
       } catch (error) { throw new MaterialPartialPublishError(revision.revisionId, revision.contentHash, error); }
+      try { await this.catalog(projectId, root, paths); } catch (error) { throw new MaterialPartialPublishError(revision.revisionId, revision.contentHash, error); }
       return revision;
     });
   }
@@ -293,69 +383,52 @@ export class FileMaterialService implements MaterialService {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > 1024 * 1024 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
       throw new MaterialError('INVALID_BUDGET', 'Material listing budget is outside supported limits.');
     }
-    return this.withProject(projectId, async (root, paths) => {
-      const folder = kind === 'draft' ? paths.drafts : paths.revisions;
-      const before = await fs.stat(folder, { bigint: true });
-      const query = createHash('sha256').update(`${projectId}:${kind}:${before.dev}:${before.ino}:${before.mtimeNs}`).digest('hex');
-      let afterId = '';
-      if (cursor !== undefined) {
-        if (cursor.length > 4096) throw new MaterialError('INVALID_CURSOR', 'Material listing cursor is too long.');
-        let parsed: unknown;
-        try { parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { throw new MaterialError('INVALID_CURSOR', 'Material listing cursor is malformed.'); }
-        if (!isRecord(parsed) || parsed.query !== query || typeof parsed.afterId !== 'string') throw new MaterialError('INVALID_CURSOR', 'Material listing cursor is stale or belongs to another collection.');
-        afterId = id(parsed.afterId, 'cursor.afterId');
-      }
-      // opendir need not return sorted entries; keep only the next limit+1 IDs.
-      const candidates: string[] = [];
-      for await (const entry of await fs.opendir(folder)) {
-        if (!entry.name.endsWith('.json')) continue;
-        if (entry.isSymbolicLink()) throw new MaterialError('INVALID_PATH', 'Material listing contains a symbolic link.');
-        if (!entry.isFile()) throw new MaterialError('INVALID_PATH', 'Material listing contains a non-file entry.');
-        const entryId = entry.name.slice(0, -5);
-        id(entryId, 'material file ID');
-        if (entryId <= afterId) continue;
-        candidates.push(entryId);
-        candidates.sort();
-        if (candidates.length > limit + 1) candidates.pop();
-      }
-      const items: Array<DraftSummary | RevisionSummary> = [];
-      for (const candidateId of candidates.slice(0, limit)) {
-        let summary: DraftSummary | RevisionSummary;
+    return this.locked(projectId, async (root, paths) => {
+      const catalog = await this.catalog(projectId, root, paths);
+      const entries: Array<DraftSummary | RevisionSummary> = [];
+      for (const key of await this.fileIds(kind === 'draft' ? paths.drafts : paths.revisions)) {
         try {
           if (kind === 'draft') {
-            const draft = await this.storedDraft(projectId, candidateId, root, paths);
-            summary = { draftId: candidateId, status: 'available', draftRevision: draft.draftRevision,
-              updatedAt: draft.updatedAt, author: draft.author, ...(draft.baseRevisionId ? { baseRevisionId: draft.baseRevisionId } : {}) };
+            const value = await this.storedDraft(projectId, key, root, paths);
+            entries.push({ draftId: key, status: 'available', draftRevision: value.draftRevision, updatedAt: value.updatedAt, author: value.author, baseRevisionId: value.baseRevisionId,
+              ...catalog.drafts[key], current: catalog.workingDraftId === key });
           } else {
-            const revision = await this.storedRevision(projectId, candidateId, root, paths);
-            summary = { revisionId: candidateId, status: 'available', contentHash: revision.contentHash,
-              createdAt: revision.createdAt, author: revision.author, ...(revision.parentRevisionId ? { parentRevisionId: revision.parentRevisionId } : {}) };
+            const value = await this.storedRevision(projectId, key, root, paths);
+            entries.push({ revisionId: key, status: 'available', contentHash: value.contentHash, createdAt: value.createdAt, author: value.author, parentRevisionId: value.parentRevisionId, ...catalog.revisions[key] });
           }
         } catch (error) {
           if (!(error instanceof MaterialError) || !['INVALID_RECORD', 'HASH_MISMATCH', 'NOT_FOUND', 'MATERIAL_TOO_LARGE'].includes(error.code)) throw error;
-          summary = kind === 'draft' ? { draftId: candidateId, status: 'unavailable', reason: error.code } :
-            { revisionId: candidateId, status: 'unavailable', reason: error.code };
+          entries.push(kind === 'draft' ? { draftId: key, status: 'unavailable', reason: error.code } : { revisionId: key, status: 'unavailable', reason: error.code });
         }
-        const candidate = [...items, summary];
-        const hasMore = candidateId !== candidates.at(-1) || candidates.length > limit;
-        const preview = measured<BoundedPage<DraftSummary | RevisionSummary>>({ items: candidate, outputTruncated: hasMore,
-          ...(hasMore ? { nextCursor: Buffer.from(JSON.stringify({ query, afterId: candidateId })).toString('base64url') } : {}) });
-        if (preview.returnedBytes > maxBytes) {
+      }
+      const key = (entry: DraftSummary | RevisionSummary) => 'draftId' in entry ? entry.draftId : entry.revisionId;
+      const date = (entry: DraftSummary | RevisionSummary) => entry.status === 'available' ? ('updatedAt' in entry ? entry.updatedAt : entry.createdAt) : '';
+      entries.sort((a, b) => date(b).localeCompare(date(a)) || key(b).localeCompare(key(a)));
+      const query = createHash('sha256').update(JSON.stringify([projectId, kind, catalog.catalogRevision, entries])).digest('hex');
+      let offset = 0;
+      if (cursor !== undefined) {
+        let parsed: unknown;
+        try { if (cursor.length > 4096) throw new Error(); parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')); } catch { throw new MaterialError('INVALID_CURSOR', 'Material listing cursor is malformed.'); }
+        if (!isRecord(parsed) || parsed.query !== query || !Number.isSafeInteger(parsed.offset) || Number(parsed.offset) < 0 || Number(parsed.offset) > entries.length) throw new MaterialError('INVALID_CURSOR', 'Material listing changed; restart from the first page.');
+        offset = Number(parsed.offset);
+      }
+      const items: Array<DraftSummary | RevisionSummary> = [];
+      const pageFor = (values: Array<DraftSummary | RevisionSummary>) => {
+        const next = offset + values.length, more = next < entries.length;
+        return measured<BoundedPage<DraftSummary | RevisionSummary>>({ items: values, outputTruncated: more,
+          ...(more ? { nextCursor: Buffer.from(JSON.stringify({ query, offset: next })).toString('base64url') } : {}) });
+      };
+      for (const entry of entries.slice(offset, offset + limit)) {
+        if (pageFor([...items, entry]).returnedBytes > maxBytes) {
           if (!items.length) throw new MaterialError('READ_BUDGET_EXCEEDED', 'One material summary exceeds maxBytes.', 413);
           break;
         }
-        items.push(summary);
+        items.push(entry);
       }
-      const after = await fs.stat(folder, { bigint: true });
-      if (before.mtimeNs !== after.mtimeNs || before.ino !== after.ino || before.dev !== after.dev) throw new MaterialError('LIST_CHANGED', 'Material listing changed during this read; restart from the first page.', 409);
-      const lastId = items.length ? kind === 'draft' ? (items.at(-1) as DraftSummary).draftId : (items.at(-1) as RevisionSummary).revisionId : afterId;
-      const hasMore = candidates.some(candidate => candidate > lastId);
-      const page = measured<BoundedPage<DraftSummary | RevisionSummary>>({ items, outputTruncated: hasMore,
-        ...(hasMore ? { nextCursor: Buffer.from(JSON.stringify({ query, afterId: lastId })).toString('base64url') } : {}) });
-      if (page.returnedBytes > maxBytes) throw new MaterialError('READ_BUDGET_EXCEEDED', 'Material summary page exceeds maxBytes.', 413);
-      return page;
+      return pageFor(items);
     });
   }
+
   async diff(projectId: string, fromRevisionId: string, toRevisionId: string, budget: ReadBudget): Promise<BoundedPage<MaterialDifference>> {
     const { maxBytes, limit, cursor } = budget;
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > 1024 * 1024 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
@@ -394,6 +467,7 @@ export class FileMaterialService implements MaterialService {
 
 function differences(before: MaterialContent, after: MaterialContent): MaterialDifference[] {
   const result: MaterialDifference[] = [];
+  if (stable(before.taskBrief) !== stable(after.taskBrief)) result.push({ collection: 'taskBrief', id: 'taskBrief', change: !before.taskBrief ? 'added' : !after.taskBrief ? 'removed' : 'changed', changedFields: ['objective', 'scope'].filter(key => stable(before.taskBrief?.[key as 'objective' | 'scope']) !== stable(after.taskBrief?.[key as 'objective' | 'scope'])) });
   for (const collection of ['requirements', 'fields', 'checkpoints', 'annotations'] as const) {
     const left = new Map(before[collection].map(item => [item.id, item]));
     const right = new Map(after[collection].map(item => [item.id, item]));
