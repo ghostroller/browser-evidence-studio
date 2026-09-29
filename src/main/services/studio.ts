@@ -58,6 +58,7 @@ export interface SessionRuntime {
   session:Session; controller:'human'|'agent'|'none'; leaseEpoch:number; capture:string; execution:string;
   operation?:ManagedOperation; pendingOperation?:PendingOperation; locked:boolean; stopping?:boolean; ending?:boolean; selection?:unknown; handoff?:any;
   pageClosures?:Set<Promise<void>>;
+  pageCreations?:Set<Promise<unknown>>;
   stopDownloads?:()=>Promise<void>;releaseDownloads?:()=>void;
   checkpointTask?:CheckpointOperation;
   handoffReleases?:Map<string,Promise<HandoffReleaseResult>>;
@@ -69,6 +70,7 @@ export class Studio {
   private browser?:BrowserSessionLifecycle<SessionRuntime>;
   private browserDownloads?:SessionDownloads;
   private closedPages:{url:string;title:string}[]=[];
+  private stopTask?:{owner:unknown;promise:Promise<unknown>};
   private browserNotice?:string;
   private browserUiAction?:BrowserSessionStatus['uiAction'];
   get browserSessionId(){return this.browser?.id;}
@@ -492,6 +494,11 @@ export class Studio {
     this.onChanged();return this.browserState();
   }
   async createTaskPage(body:any,signal?:AbortSignal){
+    const runtime=this.live(),pending=this.createTaskPageOwned(body,signal);
+    (runtime.pageCreations??=new Set()).add(pending);
+    try{return await pending;}finally{runtime.pageCreations.delete(pending);}
+  }
+  private async createTaskPageOwned(body:any,signal?:AbortSignal){
     signal?.throwIfAborted();
     const r=this.live(),anchor=r.pages.get(body.pageId),leaseEpoch=r.leaseEpoch;
     ensure(anchor&&anchor.navigationGeneration===body.generation&&body.leaseEpoch===leaseEpoch,'Task page identity or lease is stale',409);
@@ -581,6 +588,7 @@ export class Studio {
   }
   async closeSession(){
     const browser=this.browser;ensure(browser,'No live browser session',409);ensure(!this.active,'Seal the recording before closing its browser session',409);
+    ensure(!browser.runtime.stopping,'Wait for browser automation to stop before closing its session',409);
     ensure(!this.validationLaunch&&!this.workflow&&!this.workflowStarting&&!this.workflowSettlement,'Stop the runner before closing its browser session',409);
     const r=browser.runtime;r.ending=true;r.locked=true;r.leaseEpoch++;this.window.lock(true);
     try{await this.revokeOperation(r);for(const p of [...r.pages.values()])await this.closePageContents(p);await this.browserDownloads?.dispose();this.browserDownloads=undefined;this.browser=undefined;this.browserAuthorizationId=undefined;this.closedPages=[];return {closed:true,sessionId:browser.id};}
@@ -626,7 +634,7 @@ export class Studio {
   }
   async control(controller:'human'|'agent',launch?:ValidationLaunch){
     ensure(!this.validationLaunch||this.validationLaunch===launch,'Validation startup owns the browser',409);launch?.abort.signal.throwIfAborted();
-    const r=this.live();ensure(r.handoff?.status!=='waiting','Use the handoff release or stop button',409);ensure(!['running','waiting-human','finalizing'].includes(r.execution),'Stop the runner before changing ownership',409);
+    const r=this.live();ensure(!r.stopping&&!r.ending,'Browser is stopping or closing',409);ensure(r.handoff?.status!=='waiting','Use the handoff release or stop button',409);ensure(!['running','waiting-human','finalizing','stopping'].includes(r.execution),'Stop the runner before changing ownership',409);
     r.locked=true;const transitionEpoch=++r.leaseEpoch;this.window.lock(true);
     if(r.pendingOperation)await this.revokeOperation(r);
     if(r.operation){const operation=r.operation;await operation.gate.quiesce();await operation.browser.disconnect();if(r.operation===operation)r.operation=undefined;}
@@ -1113,6 +1121,12 @@ export class Studio {
   }
   async cancelHandoff(handoffId?:string){const r=this.required();ensure(r.handoff&&(!handoffId||r.handoff.handoffId===handoffId),'Unknown handoff',404);return this.stopRunner();}
   async stopRunner(){
+    const owner=this.browser??this.active??this.validationLaunch;
+    if(this.stopTask&&this.stopTask.owner===owner)return this.stopTask.promise;
+    const task={owner,promise:this.stopRunnerOwned()};this.stopTask=task;
+    try{return await task.promise;}finally{if(this.stopTask===task)this.stopTask=undefined;}
+  }
+  private async stopRunnerOwned(){
     const launch=this.validationLaunch;
     if(launch){
       const before=this.active;if(before){before.stopping=true;before.locked=true;before.leaseEpoch++;this.window.lock(true);}
@@ -1120,20 +1134,22 @@ export class Studio {
       if(launch.handle)await launch.handle.cancel('User requested stop during validation startup');
       await launch.done;
     }
-    if(!this.active)return null;
-    const r=this.required(),startup=this.workflowStarting,checkpoint=r.checkpointTask;
+    const r=this.active??this.browser?.runtime;if(!r)return null;
+    const startup=this.workflowStarting,checkpoint=r.checkpointTask;
     checkpoint?.abort.abort(new Error('Runner stopping'));
-    r.stopping=true;r.locked=true;r.execution='stopping';r.leaseEpoch++;this.window.lock(true);
+    r.stopping=true;r.locked=true;r.execution='stopping';const stopEpoch=++r.leaseEpoch;this.window.lock(true);this.browserAuthorizationId=undefined;
     startup?.abort.abort(new Error('User requested stop during workflow startup'));startup?.gate?.close();
     const operationStopped=this.revokeOperation(r);
+    if(r.pageCreations?.size)for(const page of r.pages.values())if(!page.view.webContents.isDestroyed())page.view.webContents.stop();
     if(this.workflow)await this.workflow.cancel('User requested stop and takeover');
     if(startup)await startup.done;
     if(this.workflowSettlement)await this.workflowSettlement;
     await operationStopped;
+    await Promise.allSettled([...(r.pageCreations??[])]);
     if(checkpoint)await checkpoint.done;
     this.humanDone?.reject(new Error('Handoff cancelled'));this.humanDone=undefined;
-    if(this.active===r){r.stopping=false;r.execution='cancelled';r.controller='human';r.locked=false;if(r.handoff)r.handoff.status='cancelled';this.window.lock(false);}
-    return this.state().active;
+    if((this.active===r||this.browser?.runtime===r)&&r.leaseEpoch===stopEpoch&&!this.closing&&!r.ending){r.stopping=false;r.execution='cancelled';r.controller='human';r.locked=false;if(r.handoff)r.handoff.status='cancelled';this.window.lock(false);}
+    this.onChanged();return this.active===r?this.state().active:this.state().session;
   }
   async validation(id:string){const record=this.validations.find(v=>v.id===id);ensure(record,'Unknown validation',404);let currentVersion='unknown';if(record.result){const registered=this.projects.find(project=>project.id===record.projectId)?.scriptDirectory;if(!registered||path.relative(path.resolve(record.directory),path.resolve(registered))!=='')currentVersion='needs-revalidation';else try{const hash=await fingerprintWorkflow(registered,path.join(app.getAppPath(),'package-lock.json'));currentVersion=hash.sha256===record.result.fingerprintAfter.sha256?'matched':'needs-revalidation';}catch{currentVersion='unavailable';}}return {...record,currentVersion};}
   async review(body:any){ensure(this.validations.some(v=>v.id===body.id),'Unknown validation',404);return appendReview(this.root,body.id,body);}

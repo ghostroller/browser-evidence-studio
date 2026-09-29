@@ -87,7 +87,7 @@ test('urgent stop remains available during an unrelated pending request and targ
   expect(stop.disabled).toBe(false);
   expect((screen.getByRole('button', { name: '全局停止自动化' }) as HTMLButtonElement).disabled).toBe(false);
   fireEvent.click(stop);
-  await waitFor(() => expect(call).toHaveBeenCalledWith('stopRunner', { runId: runA, validationId: undefined }));
+  await waitFor(() => expect(call).toHaveBeenCalledWith('stopRunner', { runId: runA, sessionId:undefined, validationId: undefined }));
   await act(async () => pendingSave.resolve({}));
 });
 

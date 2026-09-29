@@ -6,7 +6,7 @@
 
 - [13：源码审查、对象归属与实施计划](refactor/13-workspace-archives-and-management.md)：本轮目标、明确的代码问题、数据/服务修改、兼容及实施边界。
 - [14：交互规格与验收](refactor/14-interaction-spec-and-acceptance.md)：界面归属、动作结果、工作区状态、管理/浏览器行为及验收清单。
-- `refactor-handoffs/WORKSPACE-UX-20260929.md`：实施 Agent 在开始/交付时创建并维护的本轮短进度记录；未生成前不视为已有证据。
+- [本轮实施与分层验收](refactor-handoffs/WORKSPACE-UX-20260929.md)：唯一进度入口；包含本轮源码/构建、IA01–IA30、失败记录和启动方法。
 
 13/14 是本次用户要求的细化：替代旧方案中将草稿/版本直接混在保存点编辑器里的呈现，以及“本轮只收口旧 M1、不得做管理”的范围限制。原件、隐私、权限、来源核验和固定版本约束继续有效。
 

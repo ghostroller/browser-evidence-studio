@@ -113,6 +113,17 @@ it('global stop with no live session or validation is a no-op and never creates 
   expect(f.pending.abort.signal.aborted).toBe(false);
 });
 
+it('stopping blocks closing its live session and does not absorb a replacement session stop',async()=>{
+  const f=fixture(),first=f.studio.stopRunner();
+  await expect(f.studio.closeSession()).rejects.toMatchObject({status:409});
+  const replacementQuiet=deferred(),replacementDisconnect=vi.fn(()=>replacementQuiet.promise);
+  const replacement={...f.runtime,stopping:false,execution:'ready',locked:false,leaseEpoch:40,pendingOperation:undefined,operation:{gate:{close:vi.fn()},browser:{disconnect:replacementDisconnect}}};
+  f.studio.browser={id:'session-replacement',runtime:replacement};const second=f.dispatch('stopRunner',{sessionId:'session-replacement'},'ui');
+  await Promise.resolve();expect(replacementDisconnect).toHaveBeenCalledOnce();expect(replacement.locked).toBe(true);
+  f.connectionReady.resolve();f.transportQuiet.resolve();await first;expect(replacement.controller).toBe('agent');
+  replacementQuiet.resolve();await second;expect(replacement.controller).toBe('human');expect(replacement.leaseEpoch).toBe(41);
+});
+
 it('concurrent global stops share the same transport drain and neither acknowledges takeover early', async () => {
   const f = fixture(), returned: number[] = [];
   const first = f.dispatch('stopRunner', { sessionId: 'session-current' }, 'ui').then(() => { returned.push(1); });

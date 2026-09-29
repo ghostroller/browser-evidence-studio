@@ -16,10 +16,13 @@ export async function implementProductTask(directory:string,revision:TaskMateria
   await writeFile(path.join(directory,'workflow.json'),JSON.stringify({schemaVersion:1,workflowId:'ui-authored-orders',driver:'puppeteer',entry:'./run.mjs',exportName:'run',requirements:[{id:requirement.id,checkpointKey:'orders',description:requirement.description,dataset:requirement.dataset}]},null,2));
   await writeFile(path.join(directory,'run.mjs'),`export async function run({page,input,reporter,steps}) {
     return steps.run({stepId:'orders',run:async ctx=>{
+      if(input.variant==='wait')await page.waitForFunction(()=>false,{timeout:60000});
       await page.waitForSelector('[data-field=amount]');
       const records=await page.$$eval('[data-entity]',nodes=>nodes.map(node=>({id:node.getAttribute('data-entity'),amount:node.querySelector('[data-field=amount]').innerText})));
       ${numeric?"for(const record of records)record.amount=Number(record.amount);":""}
       if(input.variant==='wrong')records[0].amount=${numeric?'999':"'999.00'"};
+      if(input.variant==='missing')records.pop();
+      if(input.variant==='duplicate')records[1]={...records[0]};
       const checkpoint=await reporter.checkpoint('orders',{requirementIds:[${JSON.stringify(requirement.id)}],stepAttemptId:ctx.identity.attemptId});
       return {records,sourceRefs:input.variant==='unverified'?[]:checkpoint.sourceRefs};
     },commit:async(value,ctx)=>{

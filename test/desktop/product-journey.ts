@@ -214,7 +214,7 @@ export async function runProductJourney(studio:Studio,reopen=false){
     await fill('有效分钟数','10');await fill('最多操作数','100');await click('授予这次任务');
     await choose('交接资料版本',boundId.slice(0,16));await click('准备交给 Agent');
     await wait(()=>read<string>("document.querySelector('.task-authorizations .notice')?.textContent||''"),value=>value.includes('固定交接已保存'),'fixed handoff export');
-    const authorizationId=await read<string>("[...document.querySelectorAll('.task-grant')].find(el=>[...el.querySelectorAll('button')].some(button=>button.textContent==='撤销此授权')).querySelector('code').textContent");
+    let authorizationId=await read<string>("[...document.querySelectorAll('.task-grant')].find(el=>[...el.querySelectorAll('button')].some(button=>button.textContent==='撤销此授权')).querySelector('code').textContent");
     const connection=JSON.parse(await readFile(path.join(studio.root,'connection','agent-connection.json'),'utf8'));
     const discoveryResponse=await fetch(connection.address+'/v1/state?authorizationId='+authorizationId,{headers:{Authorization:`Bearer ${connection.token}`}});assert.equal(discoveryResponse.status,200);const discovery:any=await discoveryResponse.json();assert.equal(discovery.active,null);const session=discovery.session,page=session.pages.find((page:any)=>page.pageId===session.selectedPageId);assert(page);assert.equal(session.controller,'agent');
     await click('返回工作台');const runsBefore=studio.runs.length,frontPageId=studio.current().pageId;
@@ -232,14 +232,27 @@ export async function runProductJourney(studio:Studio,reopen=false){
       const denied:any=await deniedResponse.json();if(deniedResponse.status===202){const terminal=await wait<any>(async()=>{const response=await fetch(connection.address+'/v1/jobs/'+denied.jobId+'?authorizationId='+authorizationId,{headers:{Authorization:`Bearer ${connection.token}`}});return response.json();},value=>['succeeded','failed','cancelled'].includes(value.status),'stopped run target rejected');assert.equal(terminal.status,'failed');}else assert.equal(deniedResponse.status,409);
       assert.equal(studio.active,undefined);
     }
+    if(numeric){
+      await click('全局停止自动化');await wait(async()=>studio.state().session?.controller,value=>value==='human','unrecorded global stop returns human ownership');
+      assert.equal(studio.active,undefined);assert.equal((studio as any).browser.runtime.operation,undefined);assert.equal((studio as any).browserAuthorizationId,undefined);
+      report.unrecordedStop={passed:true,sessionId:session.sessionId,oldLease:session.leaseEpoch,newLease:studio.state().session!.leaseEpoch};
+      await click('任务授权');await click('撤销此授权');
+      for(const label of ['运行登记脚本','导出交接包','读取当前页面','操作当前页面','创建页面']){
+        const expression=`[...document.querySelectorAll('.task-capabilities label')].find(el=>el.textContent.trim()===${JSON.stringify(label)})?.querySelector('input')`;
+        if(!await read<boolean>(`(${expression}).checked`))await clickExpression(expression);
+      }
+      await fill('有效分钟数','10');await fill('最多操作数','100');await click('授予这次任务');
+      authorizationId=await read<string>("[...document.querySelectorAll('.task-grant')].find(el=>[...el.querySelectorAll('button')].some(button=>button.textContent==='撤销此授权')).querySelector('code').textContent");
+      Object.assign(session,studio.state().session);await click('返回工作台');
+    }
     const response=await fetch(connection.address+'/v1/validations',{method:'POST',headers:{Authorization:`Bearer ${connection.token}`,'Content-Type':'application/json','Idempotency-Key':randomUUID()},body:JSON.stringify({authorizationId,projectId:session.projectId,profileId:session.profileId,sessionId:session.sessionId,leaseEpoch:session.leaseEpoch,pageId:page.pageId,generation:page.generation,executionMode:'current-page-test',materialRevisionId:boundId,materialContentHash:fixed.contentHash,input:{variant:'good'}})});
     const submitted:any=await response.json();assert.equal(response.status,202,JSON.stringify(submitted));
     const job=await wait<any>(async()=>{const response=await fetch(connection.address+'/v1/jobs/'+submitted.jobId+'?authorizationId='+authorizationId,{headers:{Authorization:`Bearer ${connection.token}`}});return response.json();},value=>['succeeded','failed','cancelled'].includes(value.status),'authorized execution start');assert.equal(job.status,'succeeded',JSON.stringify(job.error));
     await wait(async()=>studio.state().validations.find(item=>item.id===job.result.id)?.status,value=>value==='completed','authorized execution completion');
     await click('任务授权');await click('撤销此授权');await click('返回工作台');
     const revokedRead=await fetch(connection.address+'/v1/sessions/'+session.sessionId+'/snapshot?'+sessionQuery(page),{headers});assert.equal(revokedRead.status,403);report.regressions.E04.revokedReadRejected=true;
-    const results=[];
-    for(const variant of ['good','wrong','unverified']){
+    const results=[],implementationHash=createHash('sha256').update(await readFile(path.join(implementation,'run.mjs'))).digest('hex');
+    for(const variant of numeric?['good','wrong','unverified','missing','duplicate']:['good','wrong','unverified']){
       await fill('输入 JSON',JSON.stringify({variant}));const before=studio.state().validations.length;
       await click('运行脚本并验收');
       await wait(async()=>studio.state().validations.length,n=>n===before+1,'new UI execution');
@@ -250,8 +263,13 @@ export async function runProductJourney(studio:Studio,reopen=false){
       await wait(()=>read<string>("document.querySelector('.result-center')?.innerText||''"),value=>value.includes('独立')||value.includes('source:'),'saved visible report');
       const reports=await studio.executions.reports(studio.projects[0].id,execution.id,{limit:10,maxBytes:24576});
       const saved=reports.items[0] as any;assert(saved);
-      const expected=variant==='good'?'pass':variant==='wrong'?'fail':'inconclusive';assert.equal(saved.overall,expected);
+      const expected=variant==='good'?'pass':variant==='unverified'?'inconclusive':'fail';assert.equal(saved.overall,expected);
       results.push({variant,executionId:execution.id,materialRevisionId:boundId,reportId:saved.reportId,overall:saved.overall});
+      if(variant==='missing'||variant==='duplicate'){
+        const details:any=await studio.executions.reportItems(studio.projects[0].id,execution.id,saved.reportId,'requirements',{limit:10,maxBytes:24576});
+        const name=variant==='missing'?'row-count':'unique:id';assert(details.items[0].checks.some((check:any)=>check.name===name&&check.verdict==='fail'),`Expected ${name} failure`);
+      }
+      assert.equal(createHash('sha256').update(await readFile(path.join(implementation,'run.mjs'))).digest('hex'),implementationHash,'All variants run the same registered code');
       if(numeric&&variant==='wrong'){
         const details:any=await studio.executions.reportItems(studio.projects[0].id,execution.id,saved.reportId,'requirements',{limit:10,maxBytes:24576});
         const req=details.items[0],diagnostic=req.fieldDiagnostics.find((item:any)=>item.code==='value-mismatch');assert(diagnostic);assert.equal(diagnostic.interpretation,'plain-decimal-v1');
@@ -267,7 +285,17 @@ export async function runProductJourney(studio:Studio,reopen=false){
       await click('返回工作台');
       if(numeric&&variant==='wrong')await click('返回实时页面');
     }
-    report.journeys.U06={passed:true,results,authorizedExecutionWithoutActiveRecording:job.result.id,exportedFixedVersion:boundId};report.passed=true;
+    if(numeric){
+      await fill('输入 JSON',JSON.stringify({variant:'wait'}));await click('运行脚本并验收');
+      await wait(async()=>studio.active?.execution,value=>value==='running','actual worker running before modal stop');
+      const stoppingRun=studio.active!.id,stoppingValidation=studio.state().validations[0].id;
+      await click('返回工作台');await click('项目与环境管理');
+      await clickExpression("[...document.querySelectorAll('.overlay-heading button')].find(el=>el.textContent==='全局停止自动化')");
+      await wait(async()=>studio.active?.execution,value=>value==='cancelled','worker quiescent before human takeover');
+      assert.equal(studio.active!.id,stoppingRun);assert.equal(studio.active!.controller,'human');assert.equal(studio.active!.locked,false);assert.equal((studio as any).workflow,undefined);
+      await click('返回工作台');report.modalStop={activeWorker:true,runId:stoppingRun,validationId:stoppingValidation,quiescent:true,humanTakeover:true};
+    }
+    report.journeys.U06={passed:true,results,implementationHash,authorizedExecutionWithoutActiveRecording:job.result.id,exportedFixedVersion:boundId};report.passed=true;
     await writeFile(path.join(studio.root,'journey-state.json'),JSON.stringify({processId:process.pid,draftId:knownDraftId,target:(await draft()).content.fields[0].target,revisionId:fixed.revisionId,contentHash:fixed.contentHash},null,2));
     }
 
