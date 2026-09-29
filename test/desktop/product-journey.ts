@@ -128,6 +128,7 @@ export async function runProductJourney(studio:Studio,reopen=false){
     const authorReceipt=studio.materials.authorReceipt.bind(studio.materials);
     if(numeric)studio.materials.authorReceipt=async(...args)=>{if(associationFailures++===0)throw new Error('Synthetic one-shot material association failure');return authorReceipt(...args);};
     await click('新增实时例证');await wait(async()=>studio.current().capture?.inspecting,Boolean,'live selection');
+    await wait(()=>read<string>("document.querySelector('.workspace-panel')?.getAttribute('data-selection-label')||''"),value=>value.includes('实时页'),'live selection mask describes the actual source');
     await clickExpression("document.querySelector('[data-field=amount]')",studio.current().view.webContents);
     if(numeric){await click('重试关联已保存原件');studio.materials.authorReceipt=authorReceipt;report.partialAssociation={visibleRetry:true,associationFailures:1};}
     await wait(async()=>(await draft()).content.checkpoints.length,n=>n===2,'durable live example');
