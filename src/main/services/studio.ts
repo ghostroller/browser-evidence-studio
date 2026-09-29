@@ -381,7 +381,7 @@ export class Studio {
     page.on('framenavigated',onNavigation);removeObserver=()=>page.off('framenavigated',onNavigation);
     const capture=this.active===r?this.createCapture(this.active,Object.assign(identity,{page})):undefined;
     const p=Object.assign(identity,{view,page,capture,lastUrl:wc.getURL()}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);if(activate)r.selectedPageId=p.pageId;const foregroundAt=Date.now();
-    page.on('dialog',dialog=>{if(dialog.type()==='beforeunload')return;p.dialog={id:randomUUID(),value:dialog};this.onChanged();});
+    page.on('dialog',dialog=>{p.dialog={id:randomUUID(),value:dialog};this.onChanged();});
     if(this.active===r){await capture!.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store!.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,navigationGeneration:p.navigationGeneration,openerPageId,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});if(activate)await this.recordForeground(r as ActiveRun,previousPageId||null,'page-created',foregroundAt);}
     ensure(this.browser===owner&&owner.runtime===r&&!r.ending&&!this.closing,'Browser session changed during page initialization',409);
     if(activate)this.window.show(view);
@@ -529,6 +529,9 @@ export class Studio {
       // attempt's beforeunload dialog (cancel closing), never arbitrary dialogs.
       const beforeUnloadDialog=(dialog:Dialog)=>{
         if(dialog.type()!=='beforeunload'||cancellationAcknowledged)return;
+        // This close attempt owns its cancellation. Navigation beforeunload
+        // prompts outside this scope remain visible for an explicit response.
+        if(p.dialog?.value===dialog)p.dialog=undefined;
         // Electron may already have cancelled before this CDP response arrives.
         // Keep any rejection as evidence while awaiting the native outcome;
         // neither a stale dialog nor a protocol failure proves close success.
