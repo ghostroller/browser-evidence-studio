@@ -26,7 +26,7 @@ export async function runProductJourney(studio:Studio,reopen=false){
   const report:any={passed:false,journeys:{},inputOrigin:'empty BES_DATA; visible production UI',implementation:'explicit demonstration implementer; proposal confirmed in UI'};
   const mark=(action:string)=>{evidence.mark(action);console.log('JOURNEY '+action);};
   const read=<T>(expression:string,wc=ui):Promise<T>=>wc.executeJavaScript(expression);
-  async function wait<T>(fn:()=>Promise<T>,check:(v:T)=>boolean,name:string):Promise<T>{const end=Date.now()+20000;while(Date.now()<end){const value=await fn();if(check(value))return value;await delay(150);}throw new Error('Journey timeout: '+name+'; '+await read('document.body.innerText.slice(-3500)'));}
+  async function wait<T>(fn:()=>Promise<T>,check:(v:T)=>boolean,name:string,timeoutMs=20000):Promise<T>{const end=Date.now()+timeoutMs;while(Date.now()<end){const value=await fn();if(check(value))return value;await delay(150);}throw new Error('Journey timeout: '+name+'; '+await read('document.body.innerText.slice(-3500)'));}
   const visible="el.getClientRects().length&&!el.closest('[hidden]')&&!el.closest('[inert]')";
   async function target(expression:string,wc=ui){return wait<any>(()=>read<any>(`(()=>{const el=${expression};if(!el||el.disabled||!(${visible}))return null;el.scrollIntoView({block:'center',inline:'nearest'});const r=el.getBoundingClientRect();return{x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()`,wc),Boolean,expression);}
   async function clickExpression(expression:string,wc=ui){const point=await target(expression,wc);assert(await read<boolean>(`(()=>{const el=${expression},hit=document.elementFromPoint(${point.x},${point.y});return !!el&&!!hit&&(el===hit||el.contains(hit));})()`,wc),'Visible target must receive the native click: '+expression);wc.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});wc.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});await delay(350);}
@@ -70,7 +70,7 @@ export async function runProductJourney(studio:Studio,reopen=false){
       await fill('说明','进程中断后仍可编辑，旧操作和原件保留');await click('完成保存点编辑');
       assert.equal((await draft()).content.checkpoints[0].notes,'进程中断后仍可编辑，旧操作和原件保留');
       report.interruptedRecovery={visible:true,oldOperationRetained:true,unrelatedEditSaved:true};report.passed=true;
-      await wait(async()=>frames.length,n=>n>12,'recovery visible evidence');
+      await wait(async()=>frames.length,n=>n>12,'recovery visible evidence',120000);
     }else if(reopen){
       const saved=JSON.parse(await readFile(path.join(studio.root,'journey-state.json'),'utf8'));
       assert.notEqual(saved.processId,process.pid);knownDraftId=saved.draftId;
@@ -81,7 +81,9 @@ export async function runProductJourney(studio:Studio,reopen=false){
       const content=(await draft()).content;assert.deepEqual(content.fields[0].target,saved.target);
       assert.equal((await studio.materials.service.revision(studio.projects[0].id,saved.revisionId)).contentHash,saved.contentHash);
       report.journeys.U03={passed:true,restartedProcess:true,restoredBinding:content.fields[0].target};report.passed=true;
-      await wait(async()=>frames.length,value=>value>12,'continuous reopened-window evidence');
+      // Windows capture may supply a frame every ~6 seconds after a WGC timeout.
+      // Keep the 13-frame and <10-second gap requirements; allow their collection.
+      await wait(async()=>frames.length,value=>value>12,'continuous reopened-window evidence',120000);
     }else{
     await click('新建项目');await fill('项目名称','订单金额检查');await fill('业务目标','取得当前合成账户的两条订单实付金额，单位元，按页面显示保留。');await click('创建项目');
     await wait(async()=>studio.projects.length,n=>n===1,'UI-created project');
