@@ -161,6 +161,14 @@ requestHuman 在闸门确认关闭后进入 await，正常交还经真实状态�
 
 rrweb 使用固定稳定版本，跨导航重新注入，保存完整快照和增量事件。定期产生可独立回放的块；checkpoint 引用所在块和偏移，不重新启动录制。回放器离线、不执行原站脚本，不任意请求原站资源。
 
+样式资源的回放表示使用 `CSS.getStyleSheetText` 读取渲染器已经解码的文本，按 frame、loader、stylesheet ID 和变更计数绑定；随后保存为 UTF-8，并显式返回 `text/css; charset=utf-8`。资源来源记为 `byteRepresentation: renderer-stylesheet-utf8`，保留 `styleSheetId/textSource/textEncoding`；它是当时观察到的渲染器样式表示，不冒充 HTTP 原始字节。网络正文的独立原始观察记录照常保留。样式不存在、同 URL 版本不唯一、读取期间导航或样式变化时记录不可用，不猜测反解乱码。
+
+初始缓存探测记录 `cacheProbeId/cacheProbeLoaderId/cdpFrameId`。只有同一批次、frame、loader 和录制位置的 CSS 与依赖才可建立缓存资源关联；探测期间新资源请求或样式变更中止该批次的后续读取。普通网络响应继续按观察到的请求时间区间和完成时间绑定，不用“URL 最新版本”替代。旧原件没有这些来源字段时不推断批次，也不改写旧 blob/hash。
+
+CDP 标为 `Font` 的响应即使 MIME 为 `application/octet-stream`，也在有界读取后检查 TTF/OTF/WOFF/WOFF2/字体集签名；验证通过才规范化字体 MIME，并记录 `observedMediaType`。仅凭文件扩展名不接纳二进制。预加载字体可能已被 Chromium 释放原始缓存字节：即使资源树仍列出该字体，`Page.getResourceContent` 也可能空值或报不可用；此时保留明确的 missing/failed 资源记录，不联网补抓。旧 CSS 已乱码且字体原字节未归档的录制不能由此恢复；后来的资源不能替换过去的固定版本。
+
+对应服务回归为 `test/unit/stylesheet-resources.test.ts`。独立 Windows 合成验证用 `node test/desktop/run-resource-encoding-probe.mjs`：只创建隐藏 Electron 窗口和独立临时 userData，以只读系统字体验证真实 `CSS.getPlatformFontsForNode` 与离线零联网；须先取得同机测试排他。结果和失败日志留在该工作树 `output/resource-encoding-electron-*`，不提交。此测试分别报告两个 CDP 文本接口的字符，不能把合成站点中未复现的乱码称为已复现。
+
 P0 回看覆盖主文档 DOM、滚动、鼠标、输入、导航边界和关键帧；跨域 iframe、Canvas、视频、Shadow DOM 和资源缺失按实测能力展示。基础 DOM 回放不得因单个不支持区域导致整段不可读；增强保真度可延后。rrweb 回放不能替代真实截图或证明原程序执行。
 
 ### 4.2 网络和正文

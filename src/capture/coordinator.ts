@@ -13,11 +13,13 @@ import { sameStream, type PresentationSample, type RecordingEnvelope } from './r
 import { parseReplayPosition, sameReplayPosition, type HistoricalElementRef, type ReplayPosition } from '@/contracts/recording';
 import { ArchiveReplayService } from '@/replay/service';
 import { CaptureBudget, DeferredBodyReads, type CaptureChannel } from './budget';
-import { ResourceCapture, isArchivableResource, privateResourceUrl, RESOURCE_MAX_BYTES } from '@/resources/archive';
+import { ResourceCapture, isArchivableResource, privateResourceUrl, RESOURCE_MAX_BYTES, type CaptureResourceInput } from '@/resources/archive';
 import { captureError, captureMetadata, credentialUrl } from './url-privacy';
 import { prepareResponseBody, RESPONSE_CDP_BUFFER_BYTES, RESPONSE_WORKING_BYTES } from './response-body';
 import type { ArtifactInput } from '@/evidence/contracts';
 import { SourceFrameScopes } from './frame-scopes';
+import { StylesheetTextCapture } from './stylesheet-text';
+import { observedFontMediaType } from '@/resources/font';
 
 export interface PageIdentity { pageId:string; targetId:string; webContentsId:number; navigationGeneration:number; openerPageId?:string; }
 const BODY_LIMIT = 8 * 1024 * 1024;
@@ -25,6 +27,8 @@ interface ResourceDocument { frameId:string; loaderId:string; }
 
 export class CaptureCoordinator {
   private cdp!: CDPSession;
+  private stylesheets!:StylesheetTextCapture;
+  private resourceEpoch=0;
   private pending = new Set<Promise<unknown>>();
   private readonly requests:RequestLedger;
   private contexts = new Map<number,string>();
@@ -147,9 +151,10 @@ export class CaptureCoordinator {
     });
     cdp.on('Network.requestWillBeSent',(e:any)=>{
       if(this.paused||this.stopped)return;
+      if(['Stylesheet','Font','Image'].includes(e.type))this.resourceEpoch++;
       const navigationGeneration=this.identity.navigationGeneration;
       const responseObservedAt=new Date().toISOString();
-      const {current,previous,evicted}=this.requests.begin({requestId:e.requestId,url:e.request.url,frameId:e.frameId,loaderId:e.loaderId,redirect:!!e.redirectResponse,scope:{pageId:this.identity.pageId,recordingId:this.store.manifest.id,navigationGeneration}});
+      const {current,previous,evicted}=this.requests.begin({requestId:e.requestId,url:e.request.url,frameId:e.frameId,loaderId:e.loaderId,resourceType:e.type,redirect:!!e.redirectResponse,scope:{pageId:this.identity.pageId,recordingId:this.store.manifest.id,navigationGeneration}});
       if(e.redirectResponse&&previous)this.requests.observeRedirect(previous,e.redirectResponse.mimeType,responseObservedAt);
       const data={requestKey:current.key,requestId:e.requestId,frameId:e.frameId,loaderId:e.loaderId,timestamp:e.timestamp,request:requestMetadata(e.request),redirectHop:current.hop};
       this.task(async()=>{
@@ -167,7 +172,7 @@ export class CaptureCoordinator {
       },Buffer.byteLength(JSON.stringify(data))+(typeof e.request.postData==='string'?Math.min(Buffer.byteLength(e.request.postData),REQUEST_BODY_LIMIT):e.request.hasPostData||e.request.postDataEntries?.length?REQUEST_BODY_LIMIT:0));
     });
     cdp.on('Network.requestServedFromCache',(e:any)=>{if(!this.paused&&!this.stopped)this.requests.servedFromCache(e.requestId);});
-    cdp.on('Network.responseReceived',(e:any)=>{if(this.paused||this.stopped)return;const responseObservedAt=new Date().toISOString(),r=this.requests.response(e.requestId,e.response.mimeType,responseObservedAt,{fromCache:!!(e.response.fromDiskCache||e.response.fromPrefetchCache),fromServiceWorker:!!e.response.fromServiceWorker});this.task(async()=>{
+    cdp.on('Network.responseReceived',(e:any)=>{if(this.paused||this.stopped)return;const responseObservedAt=new Date().toISOString(),r=this.requests.response(e.requestId,e.response.mimeType,responseObservedAt,{fromCache:!!(e.response.fromDiskCache||e.response.fromPrefetchCache),fromServiceWorker:!!e.response.fromServiceWorker,resourceType:e.type});this.task(async()=>{
       await this.event('network-response',{requestKey:r?.key,response:{...e.response,headers:redact(e.response.headers)}});
       if(!r)await this.event('gap',{reason:'response-without-observed-request',requestId:e.requestId,url:e.response.url});
       if(r?.streaming){const artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:'unknown',reason:'SSE payload completeness unsupported; connection may remain open',source:this.responseSource(r)});await this.event('network-stream',{requestKey:r.key,url:r.url,completeness:'unsupported'},[artifact.id]);}
@@ -175,8 +180,8 @@ export class CaptureCoordinator {
     cdp.on('Network.loadingFinished',(e:any)=>{if(this.paused||this.stopped)return;const completionObservedAt=new Date().toISOString(),responseRead=this.requests.acquireResponseRead(e.requestId),r=this.requests.complete(e.requestId,completionObservedAt),document=r?.frameId&&r.loaderId&&this.frameLoaders.get(r.frameId)===r.loaderId?this.currentDocument():undefined;const accepted=this.bodyTask(async()=>{try{
       if(!r){await this.event('gap',{reason:'completion-without-observed-request',requestId:e.requestId});return;}
       if(r.streaming){await this.event('network-stream-ended',{requestKey:r.key,encodedDataLength:e.encodedDataLength,completeness:'unsupported'});return;}
-      let artifact;
-      const resource=isArchivableResource(r.mime);let position:ReplayPosition|undefined;
+      let artifact,resourceCaptured=false,resourceFailure:string|undefined;
+      const resource=isArchivableResource(r.mime)||r.resourceType==='Font';let position:ReplayPosition|undefined;
       if(resource){try{position=await this.currentSourcePosition(document);}catch(error){await this.event('gap',{category:'resource',reason:'resource-source-baseline-unavailable',requestKey:r.key,cause:captureError(error)});}if(!position)await this.event('gap',{category:'resource',reason:'resource-source-document-changed',requestKey:r.key});}
       const resourceFrameId=resource&&position?await this.resourceFrame(r.frameId,position,r.loaderId):undefined;
       const resourceInput=position?{position,frameId:resourceFrameId??'unmapped',requestId:r.key,url:r.url,mediaType:r.mime,requestStartedAt:r.startedAt,availableObservedAt:completionObservedAt,...(!resourceFrameId?{status:'unsupported' as const,reason:'frame-source-scope-unavailable'}:{}),source:{encodedDataLength:e.encodedDataLength,cdpFrameId:r.frameId,...(r.fromCache?{fromCache:true}:{}),...(r.fromServiceWorker?{fromServiceWorker:true}:{}),...(r.initialUrl!==r.url?{requestUrl:r.initialUrl}:{})}}:undefined;
@@ -199,8 +204,19 @@ export class CaptureCoordinator {
         }
         // Persistence errors must reach the capture task's durable gap/failure
         // path, rather than becoming a successful body-read fallback artifact.
-        if(resource&&resourceInput)await this.resources.capture({...resourceInput,...(safe.redacted?{status:'redacted' as const,reason:safe.excludedReason??'response-privacy-policy'}:safe.observedBytes?{status:'missing' as const,reason:'resource-byte-budget'}:{data:safe.data})});
-        if(resource&&!/text|svg/i.test(r.mime))artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:resourceInput&&resourceFrameId||safe.redacted?'excluded':'missing',reason:safe.redacted?'response-privacy-policy':resourceInput&&resourceFrameId?'Binary bytes captured in offline resource archive':'offline-resource-source-scope-unavailable',source:this.responseSource(r)});
+        if(resource&&resourceInput){
+          let captured:CaptureResourceInput={...resourceInput,...(safe.redacted?{status:'redacted' as const,reason:safe.excludedReason??'response-privacy-policy'}:safe.observedBytes?{status:'missing' as const,reason:'resource-byte-budget'}:{data:safe.data})};
+          if(!safe.redacted&&!safe.observedBytes&&safe.data&&r.resourceType==='Font'){
+            const mediaType=observedFontMediaType(safe.data);
+            captured={...captured,mediaType:mediaType??'font/unknown',source:{...captured.source,observedMediaType:r.mime},...(!mediaType?{status:'unsupported' as const,reason:'font-signature-unrecognized'}:{})};
+          }
+          if(/^text\/css(?:;|$)/i.test(r.mime)&&!safe.redacted&&!safe.observedBytes&&r.frameId&&r.loaderId){
+            try{const sheet=await this.stylesheets.read(r.frameId,r.loaderId,r.url,r.startedAt);if(responseRead.invalidated)throw new Error(responseRead.invalidated);captured={...captured,data:sheet.data,mediaType:'text/css; charset=utf-8',source:{...captured.source,textSource:'renderer-stylesheet' as const,textEncoding:'utf-8' as const,styleSheetId:sheet.styleSheetId}};}
+            catch(error){captured={...captured,data:undefined,status:'unsupported',reason:String(error)};}
+          }
+          const reference=await this.resources.capture(captured);resourceCaptured=reference.status==='captured';resourceFailure=reference.reason;
+        }
+        if(resource&&!/text|svg/i.test(r.mime))artifact=await this.artifact({kind:'response-body',mediaType:r.mime,captureStatus:resourceCaptured||safe.redacted?'excluded':'missing',reason:safe.redacted?'response-privacy-policy':resourceCaptured?'Binary bytes captured in offline resource archive':resourceFailure??'offline-resource-source-scope-unavailable',source:this.responseSource(r)});
         else {artifact=await this.artifact({kind:'response-body',mediaType:r.mime,data:safe.data,limitBytes:BODY_LIMIT,...(safe.excludedReason?{captureStatus:'excluded' as const,reason:safe.excludedReason}:{}),metadata:{privacyRedacted:safe.redacted,representation:safe.redacted?'privacy-redacted-response':'observed-response',...(safe.privacyError?{privacyError:safe.privacyError}:{}),...(safe.observedBytes?{originalByteBasis:'entire-observed-CDP-response-UTF8'}:{})},source:this.responseSource(r)},safe.observedBytes);}
       }
       await this.event('network-body',{requestKey:r.key,url:r.url,encodedDataLength:e.encodedDataLength},[artifact.id]);
@@ -219,6 +235,7 @@ export class CaptureCoordinator {
     this.scriptId=(await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:script,worldName:this.world})).identifier;
     const {frameTree}=await this.cdp.send('Page.getFrameTree'); this.frameId=frameTree.frame.id;
     const registerFrame=(tree:typeof frameTree)=>{if(this.frameLoaders.size>=256)return;this.frameLoaders.set(tree.frame.id,tree.frame.loaderId);for(const child of tree.childFrames??[])registerFrame(child);};registerFrame(frameTree);
+    this.stylesheets=new StylesheetTextCapture(this.cdp,frame=>this.frameLoaders.get(frame));await this.stylesheets.start();
     const {executionContextId}=await cdp.send('Page.createIsolatedWorld',{frameId:this.frameId,worldName:this.world});
     this.contexts.set(executionContextId,this.frameId!);
     const document=this.currentDocument();if(document)this.contextDocuments.set(executionContextId,document);
@@ -227,30 +244,40 @@ export class CaptureCoordinator {
     await this.event('capture-ready',{capabilities:{mainDocument:true,rrweb:true,recordingFormat:2,sourceAdapter:RRWEB_ADAPTER_VERSION,networkBodies:true,crossOriginFrames:'unsupported',openShadowRoots:'captured-unverified',canvas:'unsupported',media:'unsupported',nodeHttp:'unobserved'},targetId:this.identity.targetId});
   }
   private async captureLoadedResources(position:ReplayPosition,document:ResourceDocument|undefined){
-    const current=()=>!this.documentGone&&this.documentMatches(document)&&!this.pendingMainBaseline&&!!this.lastPosition&&sameStream(position,this.lastPosition);
-    const skipped=async(stage:string,cdpFrameId=document?.frameId)=>this.event('resource-cache-probe-skipped',{reason:'source-document-or-loader-changed',from:position,cdpFrameId,loaderId:document?.loaderId,stage});
+    const resourceEpoch=this.resourceEpoch,stylesheetRevision=this.stylesheets.revision;
+    const current=()=>!this.documentGone&&this.documentMatches(document)&&!this.pendingMainBaseline&&!!this.lastPosition&&sameStream(position,this.lastPosition)&&resourceEpoch===this.resourceEpoch&&stylesheetRevision===this.stylesheets.revision;
+    const skipped=async(stage:string,cdpFrameId=document?.frameId)=>this.event('resource-cache-probe-skipped',{reason:'source-document-loader-or-resource-state-changed',from:position,cdpFrameId,loaderId:document?.loaderId,stage});
     if(!current()){await skipped('queued');return;}
     let frameTree;
     try{({frameTree}=await this.cdp.send('Page.getResourceTree',undefined, {timeout:5000}));}catch(error){if(!current()){await skipped('resource-tree-error');return;}throw error;}
     if(!current()||frameTree.frame.id!==document!.frameId||frameTree.frame.loaderId!==document!.loaderId){await skipped('resource-tree');return;}
-    let count=0;
+    let count=0;const cacheProbeId=randomUUID();
     const visit=async(tree:typeof frameTree):Promise<void>=>{
       const frameCurrent=()=>current()&&this.frameLoaders.get(tree.frame.id)===tree.frame.loaderId;
       if(!frameCurrent()){await skipped('frame-tree',tree.frame.id);return;}
       const frameId=await this.resourceFrame(tree.frame.id,position,tree.frame.loaderId);
       for(const resource of tree.resources){
         if(!frameCurrent()){await skipped('before-content',tree.frame.id);return;}
-        if(!isArchivableResource(resource.mimeType))continue;
+        if(!isArchivableResource(resource.mimeType)&&resource.type!=='Font')continue;
         if(++count>1000){await this.event('gap',{category:'resource',reason:'initial-resource-count-budget',from:position});return;}
-        const input={position,frameId:frameId??'unmapped',url:resource.url,mediaType:resource.mimeType,...(!frameId?{status:'unsupported' as const,reason:'frame-source-scope-unavailable'}:{}),source:{fromCache:true,cdpFrameId:tree.frame.id}};
+        const input={position,frameId:frameId??'unmapped',url:resource.url,mediaType:resource.mimeType,...(!frameId?{status:'unsupported' as const,reason:'frame-source-scope-unavailable'}:{}),source:{fromCache:true,cdpFrameId:tree.frame.id,cacheProbeId,cacheProbeLoaderId:tree.frame.loaderId}};
         if(privateResourceUrl(resource.url)){await this.resources.capture({...input,status:'redacted'});continue;}
+        if(/^text\/css(?:;|$)/i.test(resource.mimeType)){
+          let sheet;
+          try{sheet=await this.stylesheets.read(tree.frame.id,tree.frame.loaderId,resource.url);}
+          catch(error){if(!frameCurrent()){await skipped('stylesheet-error',tree.frame.id);return;}await this.resources.capture({...input,status:'unsupported',reason:String(error)});continue;}
+          if(!frameCurrent()){await skipped('after-stylesheet',tree.frame.id);return;}
+          await this.resources.capture({...input,mediaType:'text/css; charset=utf-8',data:sheet.data,source:{...input.source,textSource:'renderer-stylesheet',textEncoding:'utf-8',styleSheetId:sheet.styleSheetId}});
+          continue;
+        }
         let body;
         try{
           body=await this.cdp.send('Page.getResourceContent',{frameId:tree.frame.id,url:resource.url});
           if(!frameCurrent()){await skipped('after-content',tree.frame.id);return;}
           if(body.content.length>(body.base64Encoded?Math.ceil(RESOURCE_MAX_BYTES/3)*4:RESOURCE_MAX_BYTES))throw new Error('resource-byte-budget');
-        }catch(error){if(!frameCurrent()){await skipped('content-error',tree.frame.id);return;}await this.resources.capture({...input,status:'failed',reason:'browser-cached-resource-unavailable'});await this.event('resource-cache-probe-failed',{from:position,url:resource.url,cdpFrameId:tree.frame.id,cause:captureError(error)});continue;}
-        await this.resources.capture({...input,data:Buffer.from(body.content,body.base64Encoded?'base64':'utf8')});
+        }catch(error){if(!frameCurrent()){await skipped('content-error',tree.frame.id);return;}await this.resources.capture({...input,...(resource.type==='Font'?{mediaType:'font/unknown',source:{...input.source,observedMediaType:resource.mimeType}}:{}),status:'failed',reason:'browser-cached-resource-unavailable'});await this.event('resource-cache-probe-failed',{from:position,url:resource.url,cdpFrameId:tree.frame.id,cause:captureError(error)});continue;}
+        const data=Buffer.from(body.content,body.base64Encoded?'base64':'utf8'),font=resource.type==='Font'?observedFontMediaType(data):undefined;
+        await this.resources.capture({...input,data,...(resource.type==='Font'?{mediaType:font??'font/unknown',source:{...input.source,observedMediaType:resource.mimeType},...(!font?{status:data.length?'unsupported' as const:'missing' as const,reason:data.length?'font-signature-unrecognized':'browser-cached-font-bytes-unavailable'}:{})}:{})});
       }
       for(const child of tree.childFrames??[])await visit(child);
     };

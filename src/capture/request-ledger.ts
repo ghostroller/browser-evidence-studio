@@ -6,6 +6,7 @@ export interface CapturedRequest {
   /** First URL in this observed redirect chain; url is the current/final hop. */
   initialUrl: string;
   mime: string;
+  resourceType?:string;
   hop: number;
   frameId?: string;
   loaderId?: string;
@@ -36,7 +37,7 @@ export class RequestLedger {
   private sequence = 0;
   constructor(private readonly sessionId: string, private readonly targetId: string, private readonly capacity = 4096) {}
 
-  begin(input: { requestId: string; url: string; frameId?: string; loaderId?: string; redirect: boolean; scope?: { pageId: string; recordingId: string; navigationGeneration: number } }): {
+  begin(input: { requestId: string; url: string; frameId?: string; loaderId?: string; resourceType?:string; redirect: boolean; scope?: { pageId: string; recordingId: string; navigationGeneration: number } }): {
     current: CapturedRequest; previous?: CapturedRequest; evicted?: CapturedRequest;
   } {
     const previous = this.active.get(input.requestId);
@@ -48,7 +49,7 @@ export class RequestLedger {
       requestId: input.requestId,
       key: `${this.sessionId}/${this.targetId}/${input.requestId}/${occurrence}/${hop}`,
       occurrence, hop, url: input.url, initialUrl: previous && input.redirect ? previous.initialUrl : input.url, mime: '', frameId: input.frameId, loaderId: input.loaderId, startedAt: new Date().toISOString(),
-      pageId: input.scope?.pageId, recordingId: input.scope?.recordingId, navigationGeneration: input.scope?.navigationGeneration,
+      pageId: input.scope?.pageId, recordingId: input.scope?.recordingId, navigationGeneration: input.scope?.navigationGeneration,resourceType:input.resourceType,
     };
     let evicted: CapturedRequest | undefined;
     if (!previous && this.active.size >= this.capacity) {
@@ -61,9 +62,9 @@ export class RequestLedger {
     return { current, previous, evicted };
   }
 
-  response(requestId: string, mime: string, observedAt?: string, origin?: { fromCache?: boolean; fromServiceWorker?: boolean }): CapturedRequest | undefined {
+  response(requestId: string, mime: string, observedAt?: string, origin?: { fromCache?: boolean; fromServiceWorker?: boolean;resourceType?:string }): CapturedRequest | undefined {
     const current = this.active.get(requestId);
-    if (current) { this.observeResponse(current, mime, observedAt); current.fromCache ||= origin?.fromCache; current.fromServiceWorker ||= origin?.fromServiceWorker; }
+    if (current) { this.observeResponse(current, mime, observedAt); current.fromCache ||= origin?.fromCache; current.fromServiceWorker ||= origin?.fromServiceWorker;current.resourceType=origin?.resourceType??current.resourceType; }
     return current;
   }
 

@@ -1,5 +1,5 @@
 import type { eventWithTime, serializedNodeWithId } from '@rrweb/types';
-import type { ReplayPosition } from '@/contracts/recording';
+import { sameReplayPosition, type ReplayPosition } from '@/contracts/recording';
 import { ResourceArchive } from './archive';
 import { OFFLINE_CSP, rewriteCssUrls, rewriteSrcset } from './rewrite';
 import type { RecordingEnvelope } from '@/capture/recording-types';
@@ -118,6 +118,11 @@ export interface ReplayResourceDiagnostic {
   status: 'pending' | 'missing' | 'excluded' | 'unsupported' | 'read-failed'; reason: string;
 }
 function observedMs(value?:string):number|undefined { const parsed=value===undefined?NaN:Date.parse(value);return Number.isFinite(parsed)?parsed:undefined; }
+function sameCacheProbe(parent:ArchivedResource,child:ArchivedResource):boolean {
+  const a=parent.source,b=child.source;
+  return !!a.fromCache&&!!b.fromCache&&!parent.requestId&&!child.requestId&&typeof a.cacheProbeId==='string'&&/^[a-f0-9-]{36}$/.test(a.cacheProbeId)&&a.cacheProbeId===b.cacheProbeId&&
+    !!a.cacheProbeLoaderId&&a.cacheProbeLoaderId===b.cacheProbeLoaderId&&!!a.cdpFrameId&&a.cdpFrameId===b.cdpFrameId&&parent.frameId===child.frameId&&sameReplayPosition(parent.position,child.position);
+}
 function status(reference:ArchivedResource|undefined):ReplayResourceDiagnostic['status'] {
   return reference?.status==='redacted'?'excluded':reference?.status==='unsupported'?'unsupported':'missing';
 }
@@ -327,7 +332,10 @@ export class OfflineResourceService {
           const laterParents=parentHistory.map(item=>observedMs(item.requestStartedAt)).filter((value):value is number=>value!==undefined&&parentStart!==undefined&&value>parentStart).sort((a,b)=>a-b);
           const nextParentStart=laterParents[0];
           const interval=history.filter(item=>{const start=observedMs(item.requestStartedAt);return parentStart!==undefined&&start!==undefined&&start>parentStart&&(nextParentStart===undefined||start<nextParentStart);});
-          const versions=interval.filter(item=>{const observed=observedMs(item.availableObservedAt);return observed!==undefined&&targetAt!==undefined&&observed<targetAt;});
+          // Cache probes have no observed request start. Only a shared, explicit
+          // frame/loader/snapshot probe proves their CSS dependency relation.
+          // Never infer this for older archives or borrow a later URL version.
+          const versions=reference.source.cacheProbeId?history.filter(item=>sameCacheProbe(reference,item)):interval.filter(item=>{const observed=observedMs(item.availableObservedAt);return observed!==undefined&&targetAt!==undefined&&observed<targetAt;});
           const dependency=versions[0];
           if(versions.length>1){mapped.set(url,'about:blank');diagnostics.push({url:absolute,frameId:reference.frameId,position,status:'unsupported',reason:'same-url-css-dependency-version-ambiguous'});continue;}
           if(!dependency&&interval.some(item=>{const observed=observedMs(item.availableObservedAt);return observed!==undefined&&targetAt!==undefined&&observed>=targetAt;})){mapped.set(url,'about:blank');diagnostics.push({url:absolute,frameId:reference.frameId,position,status:'pending',reason:'css-dependency-response-not-yet-observed'});continue;}
