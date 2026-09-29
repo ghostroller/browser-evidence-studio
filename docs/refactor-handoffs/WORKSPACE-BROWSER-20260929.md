@@ -7,7 +7,7 @@
 - 可信 UI `browserCommand` 将 session、lease、page、target、generation 一并校验；人工新建/恢复不使用 Agent 授权入口。关闭最后一页保留人工控制和录制状态，保留“新标签”入口。最近关闭记录仅在当前会话内保留最多 20 个网址，不承诺网页 JS/表单恢复。
 - PageState 投影 Electron 的历史、加载、缩放、错误与查找状态。人工导航异步启动，不占用命令队列直到网络完成，停止加载只停止该页导航。网址、网络/证书、授权拒绝分开显示，重试保留 target 和环境。
 - 业务 WebContents 处理 Ctrl+L/T/W/Shift+T/R/F、缩放与 Esc。可信工具栏对工作区表单不抢 Ctrl+W/R/F；Ctrl+L/T 为明确全局浏览器动作。Ctrl+S/Esc 从业务页转交 AppShell 回调。右键复制文字/链接、粘贴、新受管标签使用原生菜单；延迟点击校验页面代际和控制权。没有外部程序执行入口。
-- alert/confirm/prompt 显示消息和明确确认/取消；授权/自动化拥有页面时要求先停止接管。beforeunload 继续使用已有安全关闭观察流程，不代人确认关闭。文件上传保留 Electron 原生文件选择器，没有新增隐藏文件选择接口。站点权限仍默认拒绝，拒绝原因进入可信工具栏。
+- alert/confirm/prompt 及导航 beforeunload 显示消息和明确确认/取消；授权/自动化拥有页面时要求先停止接管。关闭页面时的 beforeunload 继续使用已有安全关闭观察流程，不代人确认关闭。文件上传保留 Electron 原生文件选择器，没有新增隐藏文件选择接口。站点权限仍默认拒绝，拒绝原因进入可信工具栏。
 - 下载监听属于 session，未录制时也可下载、查看进度/结果、取消和显示文件位置。文件不会自动打开执行。录制开始时绑定下载证据 writer；超过 64 MiB 标记排除、保留本地文件。停录只结束证据关联，未完成下载继续运行，之后不能写进旧已封存 writer。
 - `addPage` 在 native 注册、target 等待、capture 启动与授权登记失败时清除本次资源，恢复旧选择；掩罩按最新 controller/locked 恢复。Agent 页初始化纳入 try，授权最后登记，失败不能留下获授权的孤儿页。openEnvironment 内部失败撤销本次 session/下载监听和 view；真实网站加载失败保留可重试错误页。
 
@@ -24,7 +24,7 @@
 
 - `npm run typecheck`：通过。
 - `npm run build`：通过；存在原有依赖 `use client` 和 Tailwind sourcemap 提示，没有依赖升级。该构建尚未接入主任务 AppShell，不能充当 W3 集成构建证据。
-- 浏览器命令、分配回滚、下载 service、toolbar component、既有 session 命令：35 项通过。
+- 浏览器命令、分配回滚、下载 service、toolbar component、既有 session 命令：36 项通过。最后复核修正了“已停止录制仍有 capture 对象”的检查状态范围，并将对应测试设为实际正在录制的检查状态；补测导航 beforeunload 不被静默忽略。
 - 既有 product-session-boundaries、navigation-readiness、capture-navigation、capture：18 项通过。
 - 初次受限运行因 worktree 的合成 output 写权限得到 EPERM，未发生业务断言失败；之后以限定目录提升执行，保留原测试输出，没有删除失败证据。
 
