@@ -1,6 +1,10 @@
 # 技术架构与协议
 
-状态：实现与产品主线纠偏进行中，更新于 2026-09-27。产品行为以 refactor/08-product-realignment.md 与 09-user-journey-acceptance.md 为准；实际已验证范围以 verification.md 为准。旧低层结果与新 U01–U06 旅程分别记录。
+状态：2026-09-29。当前产品契约为 docs/README 中的13/14，旧录放与 T1–T3 语义保留。新验证见本轮交接，历史长测不自动覆盖当前构建。
+
+工作区目录采用项目 materials/catalog.json sidecar：当前副本、目录 CAS 修订、生命周期标签和稳定版本号受现有 writer 锁保护。固定 revision/hash 与原件不改。复制和发布先持久化操作快照再写清单，重启重试恢复同 ID；manifest 已落盘后的草稿推进失败显式报告部分发布。实体按 ID 独立读取，不以加载列表充当关系数据库。
+
+WorkspaceManagement 在 workspace.json 内执行 clone→校验完整依赖→原子持久化→发布内存，保留操作回执及既有 partition。浏览器由现有 session lifecycle 管理，native view 初始化失败只回滚本次资源并追加失败/前台恢复事件。可信 preload 仅新增无载荷变更通知；UI 据此重新读取状态，避免导航代际滞后，旧轮询保留作补偿。网页不获得该桥。
 
 ## 1. 技术决策
 

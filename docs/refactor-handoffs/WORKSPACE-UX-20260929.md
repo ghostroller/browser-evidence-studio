@@ -28,3 +28,12 @@ W1由主任务负责资料领域和集中编辑；W2管理与浏览器可各一�
 实际定向组件回归 21/21，资料/作者服务回归 37/37，TypeScript 检查通过。初次旧界面测试失败保留在 output/workspace-renderer-first.log；重写后的异步交互测试曾失败，日志 workspace-components-*.log 保留，最终 fifth 为 21/21。此检查点尚不是 W3 桌面验收，也不替代新构建 T1–T3。
 
 W3 前补强：工作副本/存档使用持久操作回执恢复，目录写失败不发布内存；副本差异、版本备注、撤销未保存输入、跨页字段归属和简单 schema 参数表单已加入。定向 28 项及参数表单 2 项通过；其余旧测试首轮 482/492，通过适配后继续全量复核。当前生产 build 已生成，开始串行真实 Electron 验收。
+
+
+## W3 浏览器实际复核
+
+498 项服务/组件回归全量通过（workspace-full-second.log）。真实 Electron 前两轮分别发现导航状态轮询迟到、findInPage 的首次/续查参数相反，已修复主进程变更通知和参数映射；第三轮确认 Electron 原生不支持 prompt()，现界面明确提示，不冒充成功输入。原失败目录分别为 output/desktop-1790684629345、1790684732288、1790684835208。
+
+修后浏览器专项在 output/desktop-1790685008038 通过：原生历史/加载停止/网络失败重试，查找/缩放/快捷键，标签与 opener，alert/confirm、prompt 不支持提示及权限拒绝，无录制/录制中下载与取消，四处真实 view 初始化故障注入、第五处真实初始网络故障、检查模式拦截及停止可达。详细证据为 workspace-browser-detail.json；不是物理进程故障或独立可发现性证明。
+
+prompt 限制来源：[Electron 原生对话框实现](https://github.com/electron/electron/blob/main/lib/browser/api/web-contents.ts)。本轮保留 sandbox/contextIsolation，不通过替换网站 prompt 或宿主私有对话框钩子制造支持。

@@ -1,5 +1,13 @@
 # 本机 HTTP API
 
+## 工作区与管理服务（2026-09-29）
+
+以下是可信 UI 编排，不自动成为公开 HTTP 写路由。create/update/manageProject、create/update/manageProfile 和 settleManagementDependencies 使用 revision/operationId 与完整依赖；归档、停用、恢复保留身份与历史。空对象移除先核验无依赖。materialCatalog/manageMaterialCatalog、setWorkingMaterialDraft 和 copyMaterialDraft 管理 sidecar；workingMaterialDraft 在服务锁中返回稳定当前副本。materialEntity 返回精确对象及字段所属需求 ID，materialDraftDiff 比较副本与来源，materialDiff 包含 taskBrief。
+
+publishMaterialDraft 接受 operationId；materialPublicationStatus 返回 not-started/prepared/manifest-saved。重试只恢复该操作清单，不能把 manifest 已保存的失败当作一次全新发布。prepareMaterialArchive 读取真实录制状态，UI 显式结束所列录制后才固定。字段 examples 为可选附加例证，原 target 保持首例证语义；无元素注释为 bindingStatus=none，不编造引用。
+
+browserCommand 仅由可信 UI 发起，带 sessionId/leaseEpoch 及页面 pageId/targetId/generation。导航停止独立于录制/执行停止。标签、find/zoom、dialog 和 download 命令仍核对当前持有者；普通人工快捷键不绕过检查/Agent 锁。state.session 提供导航能力、加载错误、查找结果、缩放、待处理对话框和下载状态；studio:changed 只通知可信 UI 重读。workflowInputSchema 只从已登记脚本根安全读取有界 schema，支持的标量表单与高级 JSON 使用同一个 input。
+
 ## 环境、保存点与 session（2026-09-27 产品主线）
 
 HTTP 仍为 /v1。`state.session` 描述 sessionId/project/profile、可选 recordingId、页面与控制/导航代际；`active` 仅表示当前录制。可信 UI 可在无 Recording/EvidenceStore 时打开环境、人工准备并保留持久状态，再开始业务示范。seal 后 active=null，session 和实时页保留；续录建立新 full snapshot，不因请求 url 改掉现场。换项目/profile 前显式关闭 session。旧 profile.storageRef 保持原 `persist:bes-${projectId}-${profileId}`，不复制活动数据库。

@@ -412,6 +412,7 @@ export class Studio {
     page.on('framenavigated',onNavigation);removeObserver=()=>page.off('framenavigated',onNavigation);
     const capture=this.active===r?this.createCapture(this.active,Object.assign(identity,{page})):undefined;
     const p=Object.assign(identity,{view,page,capture,lastUrl:wc.getURL()}) as ManagedPage;ensure(!wc.isDestroyed(),'Business page closed before registration',409);registered=p;r.pages.set(p.pageId,p);if(activate)r.selectedPageId=p.pageId;const foregroundAt=Date.now();
+    page.on('pageerror',error=>{if(this.browser===owner&&owner.runtime.pages.get(p.pageId)===p&&String(error).includes('prompt')){this.browserNotice='当前 Electron 不支持网站 prompt() 输入对话框；未确认此请求，请使用站内表单或联系站点提供其他输入方式。';this.onChanged();}});
     page.on('dialog',dialog=>{p.dialog={id:randomUUID(),value:dialog};this.onChanged();});
     if(this.active===r){await capture!.start();ensure(r.pages.get(pageId)===p&&!wc.isDestroyed(),'Business page closed while capture was starting',409);await r.store!.appendEvent({type:'page-registered',source:'electron',pageId:p.pageId,data:{pageId:p.pageId,targetId:p.targetId,webContentsId:p.webContentsId,navigationGeneration:p.navigationGeneration,openerPageId,appInstanceId:this.instanceId,browserSessionId:this.browserSessionId}});registrationRecorded=true;if(activate){await this.recordForeground(r as ActiveRun,previousPageId||null,'page-created',foregroundAt);foregroundRecorded=true;}}
     ensure(this.browser===owner&&owner.runtime===r&&!r.ending&&!this.closing,'Browser session changed during page initialization',409);
@@ -482,7 +483,7 @@ export class Studio {
       case 'forward':ensure(wc.navigationHistory.canGoForward(),'没有下一页',409);wc.navigationHistory.goForward();break;
       case 'reload':this.loadHumanUrl(page,page.loadError?.url||page.lastUrl||wc.getURL());break;
       case 'stop':wc.stop();break;
-      case 'find':ensure(typeof body.text==='string'&&body.text.length>0&&body.text.length<=500,'请输入 1–500 字的查找文字');wc.findInPage(body.text,{forward:body.forward!==false,findNext:!!body.findNext});break;
+      case 'find':ensure(typeof body.text==='string'&&body.text.length>0&&body.text.length<=500,'请输入 1–500 字的查找文字');wc.findInPage(body.text,{forward:body.forward!==false,findNext:!body.findNext});break;
       case 'find-close':wc.stopFindInPage('clearSelection');page.find=undefined;break;
       case 'zoom':{ensure(typeof body.zoomFactor==='number'&&Number.isFinite(body.zoomFactor)&&body.zoomFactor>=.25&&body.zoomFactor<=3,'缩放范围是 25%–300%');const previous=wc.getZoomFactor();wc.setZoomFactor(body.zoomFactor);await this.pageAudit(r,{type:'page-zoom',source:'ui',pageId:page.pageId,navigationGeneration:page.navigationGeneration,data:{previous,zoomFactor:body.zoomFactor}});break;}
       case 'dialog':{const pending=page.dialog;ensure(pending&&pending.id===body.dialogId,'站点对话框已变化',409);if(body.accept)await pending.value.accept(body.text);else await pending.value.dismiss();if(page.dialog===pending)page.dialog=undefined;break;}

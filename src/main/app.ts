@@ -38,6 +38,7 @@ else app.whenReady().then(async()=>{
   const recoveryObserver=testPhase==='recovery-crash'?(await import('../../test/desktop/recovery-scenarios')).recoveryObserver(dataRoot,async(stage)=>{await lifecycle?.record('recovery-test-cut',{stage});},()=>{ensure(studio,'Synthetic recovery requires initialized Studio');return studio;}):undefined;
   const window=new StudioWindow();studio=new Studio(dataRoot,window,await endpoint(),recoveryObserver);
   await lifecycle.record('workspace-opening');await studio.init();await lifecycle.record('workspace-opened');
+  studio.onChanged=()=>{if(!quitting&&!window.window.isDestroyed())window.window.webContents.send('studio:changed');};
   const dispatch=makeDispatch(studio);api=await startApi({root:dataRoot,instanceId:studio.instanceId,dispatch});studio.connection={address:api.address,file:api.connectionFile};
   protocol.handle('bes-artifact',async request=>{try{
     const u=new URL(request.url),reader=studio!.reader(u.hostname),id=u.pathname.slice(1),metadata=await reader.artifactMetadata(id);

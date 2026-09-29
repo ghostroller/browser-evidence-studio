@@ -26,12 +26,13 @@ import { TaskAuthorizations } from './components/task-authorizations';
 import { sameReplayPosition, type HistoricalElementRef, type ReplayPosition, type ReplayState } from '@/contracts/recording';
 import type { SelectionRequest, SelectionReceipt } from './selection-session';
 
-declare global { interface Window { studio: { call(method: string, body?: unknown): Promise<any>; bounds(rect: unknown): void } } }
+declare global { interface Window { studio: { call(method: string, body?: unknown): Promise<any>; onChanged?(listener:()=>void):()=>void; bounds(rect: unknown): void } } }
 const EMPTY_ITEMS: any[] = [];
 const items = (value: any): any[] => Array.isArray(value) ? value : value?.items || EMPTY_ITEMS;
 const short = (value: unknown, length = 90) => { const text = typeof value === 'string' ? value : JSON.stringify(value); return text?.length > length ? text.slice(0, length) + '…' : text ?? '—'; };
 const time = (value: string | undefined) => value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
 export function App() {
+  const stateRequest=useRef(0);
   const materialTransition=useRef<(()=>Promise<boolean>)|null>(null);
   const [state, setState] = useState<any>({ projects: [], profiles: [], runs: [] });
   const [projectId, setProjectId] = useState('');
@@ -111,7 +112,7 @@ export function App() {
       ? '请等待当前执行、人工交接或报告保存结束；需要中止时使用“停止并接管”。'
       : materialRevisionId && !selectedMaterialRevision ? '所选固定资料版本未在当前列表，请刷新版本后再运行。'
       : busy ? '请等待当前操作完成。' : '';
-  const refresh = useCallback(async () => { const next = await window.studio.call('state'); setState(next); return next; }, []);
+  const refresh = useCallback(async () => {const request=++stateRequest.current;const next=await window.studio.call('state');if(stateRequest.current===request)setState(next);return next;},[]);
   const call = useCallback(async (method: string, body: any = {}, success = '') => {
     setBusy(method); setError('');
     try { const result = await window.studio.call(method, body); if (success) setNotice(success); await refresh(); return result; }
@@ -136,7 +137,7 @@ export function App() {
       : selection !== historySelection.current || selectedHistoryRun.current !== id)) return null;
     setHistory(result); setHistoryRunId(id); return result;
   }, []);
-  useEffect(() => { void refresh().catch(failure => setError(String(failure))); const timer = setInterval(() => void refresh().catch(failure => setError(String(failure))), 2000); return () => clearInterval(timer); }, [refresh]);
+  useEffect(()=>{let queued:ReturnType<typeof setTimeout>|undefined;const update=()=>{if(queued)return;queued=setTimeout(()=>{queued=undefined;void refresh().catch(failure=>setError(String(failure)));},30);};const unsubscribe=window.studio.onChanged?.(update);void refresh().catch(failure=>setError(String(failure)));const timer=setInterval(update,2000);return()=>{unsubscribe?.();clearInterval(timer);clearTimeout(queued);++stateRequest.current;};},[refresh]);
   useEffect(() => { if (!projectId && projects.length) setProjectId(projects[0].id); }, [projects, projectId]);
   useEffect(() => { setScriptDirectory(project?.scriptDirectory || ''); }, [project?.id, project?.scriptDirectory]);
   useEffect(() => { if (!profiles.some((entry: any) => entry.id === profileId)) setProfileId(profiles[0]?.id || ''); }, [profiles, profileId]);
