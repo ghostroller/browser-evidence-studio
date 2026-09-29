@@ -360,6 +360,7 @@ export class FileMaterialService implements MaterialService {
       try{receipt=await readJson(receiptFile,root) as TaskMaterialDraft;}
       catch(error){if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND')throw error;}
       if(receipt){
+        if(receipt.schemaVersion!==1||receipt.draftRevision!==0||typeof receipt.updatedAt!=='string')throw new MaterialError('INVALID_RECORD','Creation receipt is damaged.',409);
         if(receipt.projectId!==projectId||receipt.author!==author||receipt.baseRevisionId!==baseRevisionId||receipt.draftId!==`create-${operationId}`)throw new MaterialError('OPERATION_CONFLICT','Creation operation belongs to another request.',409);
         try{return await this.storedDraft(projectId,receipt.draftId,root,paths);}
         catch(error){if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND')throw error;}
@@ -376,7 +377,7 @@ export class FileMaterialService implements MaterialService {
     return draft;
   }
   async createDraft(projectId: string, author: MaterialAuthor, baseRevisionId?: string, operationId?:string): Promise<TaskMaterialDraft> {
-    authorOf(author);if(operationId)id(operationId,'operationId');
+    authorOf(author);if(operationId){id(operationId,'operationId');id(`create-${operationId}`,'created draftId');}
     return this.locked(projectId, (root, paths) => this.newDraft(projectId, author, root, paths, baseRevisionId,operationId));
   }
   getDraft(projectId: string, draftId: string): Promise<TaskMaterialDraft> {

@@ -97,7 +97,7 @@ export type DraftUpdateResult = { status: 'saved'; draft: TaskMaterialDraft } |
   { status: 'conflict'; current: TaskMaterialDraft; expectedDraftRevision: number };
 /** B owns implementation and input validation in src/materials; no original-recording writes. */
 export interface MaterialService {
-  createDraft(projectId: string, author: MaterialAuthor, baseRevisionId?: string): Promise<TaskMaterialDraft>;
+  createDraft(projectId: string, author: MaterialAuthor, baseRevisionId?: string, operationId?: string): Promise<TaskMaterialDraft>;
   getDraft(projectId: string, draftId: string): Promise<TaskMaterialDraft>;
   updateDraft(projectId: string, draftId: string, expectedDraftRevision: number, content: MaterialContent, author: MaterialAuthor): Promise<DraftUpdateResult>;
   publish(projectId: string, draftId: string, expectedDraftRevision: number, author: MaterialAuthor): Promise<TaskMaterialRevision>;
