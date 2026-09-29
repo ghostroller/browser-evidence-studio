@@ -327,28 +327,44 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const scrub = async (value: number) => { if (!stream) return; setScrubTime(null);
     try { const target: ReplayPosition = await call('resolveRecordingTime', { position: stream.first, sourceTimeMs: value }); await seek(target); }
     catch (failure) { setError(String(failure)); } };
-  return <div className="replay-workspace"><div className="replay-controls"><strong>历史回放 · 隔离视图</strong>
-    <NativeSelect aria-label="历史页面流" disabled={selecting} value={stream ? String(streams.indexOf(stream)) : ''} onChange={event => changeStream(Number(event.target.value))}>{streams.map((item, index) => <option key={streamId(item)} value={index}>{item.first.pageId.slice(0, 12)} · {item.first.documentId.slice(0, 12)} · {item.events} 事件</option>)}</NativeSelect>
-    {streamCursor && <Button disabled={selecting} onClick={() => void call('recordingStreams', { recordingId, cursor: streamCursor, limit: 50 }).then((page: { items: Stream[]; nextCursor?: string }) => { streamsRef.current=[...streamsRef.current,...page.items];setStreams(streamsRef.current); setStreamCursor(page.nextCursor || ''); }).catch(failure => setError(String(failure)))}>更多页面流</Button>}
-    {foreground?.nextCursor&&<Button disabled={selecting} onClick={()=>void call('recordingForeground',{recordingId,cursor:foreground.nextCursor,limit:100}).then((page:Foreground)=>{const merged={...page,status:'recorded' as const,items:[...foreground.items,...page.items]};foregroundRef.current=merged;setForeground(merged);}).catch(failure=>setError(String(failure)))}>更多前台切换</Button>}
+  const resourceLabel = host?.resources?.status === 'partial' ? '部分资源缺失' : host?.resources?.status === 'pending' ? '部分资源尚未可用' : host?.resources?.status === 'ready' ? '资源已就绪' : '资源读取中';
+  return <div className="replay-workspace">
+    <div className="replay-heading"><div><strong>历史回放</strong><span className="replay-readonly">只读 · 离线</span></div>
+      <div className="replay-heading-actions">{selecting && <Button className="replay-cancel-selection" onClick={onCancelSelection}>取消选择（Esc）</Button>}
+        <Button disabled={!host || seeking || selecting} onClick={() => { gapWait.current?.abort();playRef.current = false; setPlaying(false); onClose(); }}>返回实时页面</Button>
+      </div>
+    </div>
+    <div className="replay-controls" aria-label="回放控制">
     <Button disabled={!host || seeking || selecting} onClick={() => {if(playing){gapWait.current?.abort();setWaitingGapMs(0);playRef.current=false;setPlaying(false);const current=hostRef.current;if(current)void call('pauseReplay',{replayId:current.replayId}).then((next:Host)=>{if(mounted.current&&hostRef.current?.replayId===next.replayId)applyHost(next,seekToken.current);}).catch(failure=>setError(String(failure)));}else{playRef.current=true;setPlaying(true);}}}>{playing ? '暂停' : '播放'}</Button>
-    <NativeSelect aria-label="播放速度" value={speed} onChange={event => setSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></NativeSelect>
-    <label><input type="checkbox" aria-label="跳过空闲" checked={skipIdle} onChange={event=>{skipIdleRef.current=event.target.checked;gapWait.current?.abort();setWaitingGapMs(0);setSkipIdle(event.target.checked);}} />跳过空闲（超过 5 秒）</label>
-    {selecting && <Button className="replay-cancel-selection" onClick={onCancelSelection}>取消选择（Esc）</Button>}
-    <Button className="danger-quiet" disabled={!canStop} onClick={onStop}>停止并接管</Button>
-    <Button disabled={!host || seeking || selecting} onClick={() => { gapWait.current?.abort();playRef.current = false; setPlaying(false); onClose(); }}>返回实时页面</Button></div>
+      <label className="replay-speed">速度<NativeSelect aria-label="播放速度" value={speed} onChange={event => setSpeed(Number(event.target.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></NativeSelect></label>
+      <label className="replay-idle"><input type="checkbox" aria-label="跳过空闲" checked={skipIdle} onChange={event=>{skipIdleRef.current=event.target.checked;gapWait.current?.abort();setWaitingGapMs(0);setSkipIdle(event.target.checked);}} />跳过空闲</label>
+      {canStop && <Button className="danger-quiet" onClick={onStop}>停止并接管</Button>}
+    </div>
     {stream && <div className="replay-timeline"><input type="range" aria-label="历史时间轴" min={stream.first.sourceTimeMs} max={Math.max(stream.first.sourceTimeMs + 1, stream.last.sourceTimeMs)}
       disabled={selecting || seeking} value={scrubTime ?? position?.sourceTimeMs ?? stream.first.sourceTimeMs} onChange={event => setScrubTime(Number(event.target.value))}
       onPointerUp={event => void scrub(Number(event.currentTarget.value))} onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) void scrub(Number(event.currentTarget.value)); }} />
       <span>{position ? `${new Date(position.sourceTimeMs).toLocaleTimeString('zh-CN', { hour12: false })} · event #${position.eventSeq}` : '读取中'}</span>
       <Button disabled={!position || seeking || selecting} onClick={() => { const previous = [...positions].reverse().find(item => position && item.position.eventSeq < position.eventSeq); if (previous) void seek(previous.position); }}>上一步</Button>
       <Button disabled={!position || seeking || selecting} onClick={() => { const next = positions.find(item => position && item.position.eventSeq > position.eventSeq); if (next) void seek(next.position); else if (nextOrdinal !== undefined && stream) void loadPositions(stream, nextOrdinal); }}>下一步</Button></div>}
+
+    <div className="replay-health" role="status"><span>{seeking ? '正在定位' : selecting ? '选中历史元素后返回资料编辑' : waitingGapMs>0 ? `等待下一历史位置 · ${Math.round(waitingGapMs/1000)} 秒` : playing ? '播放中' : '已暂停'}</span>
+      {host?.resources && <span className={host.resources.status === 'partial' ? 'replay-warning' : ''}>{resourceLabel}{(host.resources.unavailableCount??0)>0 ? ' · '+host.resources.unavailableCount+' 项' : ''}</span>}
+      {host?.state?.reliability !== 'reliable' && <span className="replay-warning">{host?.state?.reliability==='gap'?'结构有缺口，不能绑定元素':host?.status==='failed'?'回放不可用':'正在核对历史结构'}</span>}
+    </div>
+    {(error || host?.selectionError || host?.status==='failed'&&host.error) && <p className="error-inline" role="alert">{error || host?.selectionError || host?.error}</p>}
+    <details className="replay-diagnostics"><summary>页面、事件与资源详情</summary><div className="replay-diagnostics-body">
+      <div className="replay-stream-controls"><label>历史页面<NativeSelect aria-label="历史页面流" disabled={selecting} value={stream ? String(streams.indexOf(stream)) : ''} onChange={event => changeStream(Number(event.target.value))}>{streams.map((item, index) => <option key={streamId(item)} value={index}>{item.first.pageId.slice(0, 12)} · {item.first.documentId.slice(0, 12)} · {item.events} 事件</option>)}</NativeSelect></label>
+    {streamCursor && <Button disabled={selecting} onClick={() => void call('recordingStreams', { recordingId, cursor: streamCursor, limit: 50 }).then((page: { items: Stream[]; nextCursor?: string }) => { streamsRef.current=[...streamsRef.current,...page.items];setStreams(streamsRef.current); setStreamCursor(page.nextCursor || ''); }).catch(failure => setError(String(failure)))}>更多页面流</Button>}
+    {foreground?.nextCursor&&<Button disabled={selecting} onClick={()=>void call('recordingForeground',{recordingId,cursor:foreground.nextCursor,limit:100}).then((page:Foreground)=>{const merged={...page,status:'recorded' as const,items:[...foreground.items,...page.items]};foregroundRef.current=merged;setForeground(merged);}).catch(failure=>setError(String(failure)))}>更多前台切换</Button>}
+</div>
     <div className="replay-status" role="status">{host?.state?.reliability === 'reliable' ? '历史结构可靠' : host?.state?.reliability === 'gap' ? '结构缺口：元素绑定不可用' : host?.state?.reliability === 'unsupported' ? '此位置不支持精确还原' : host?.status || '正在读取'}
       {selecting && <span> · 检查模式：选中历史元素后返回资料编辑</span>}{seeking && <span> · 正在定位</span>}{waitingGapMs>0&&<span> · 源时间空档 {Math.round(waitingGapMs/1000)} 秒，等待下一历史位置</span>}{foreground?.status==='legacy'&&streams.length>1&&<span> · 前台切换未记录，其他页面流需手动选择</span>}{foreground?.status==='recorded'&&!completeForeground(foreground)&&<span> · 前台切换记录未读完或不连续，跨页面连播暂停</span>}</div>
-    {host?.resources && <p className={host.resources.status === 'partial' ? 'error-inline' : 'hint'}>历史资源：{host.resources.status === 'partial' ? '部分缺失' : host.resources.status === 'ready' ? '已就绪' : host.resources.status === 'pending' ? '等待源响应' : '读取中'} · 拦截外部请求 {host.resources.blockedRequests} 次{(host.resources.pendingCount??0)>0 ? ` · ${host.resources.pendingCount} 项当时尚未可用` : ''}{(host.resources.unavailableCount??0)>0 ? ` · ${host.resources.unavailableCount} 项不可用` : ''}</p>}
-    {host?.resources?.failures.length ? <details><summary>历史资源读取失败</summary>{host.resources.failures.slice(0, 20).map((failure, index) => <p key={`${failure.resourceId || failure.name}-${index}`}>{failure.code || failure.name}：{failure.message}</p>)}</details> : null}
-    {(error || host?.error || host?.selectionError) && <p className="error-inline" role="alert">{error || host?.error || host?.selectionError}</p>}
+
+      {host?.resources && <p className="hint">历史资源：{resourceLabel} · 已阻止外部请求 {host.resources.blockedRequests} 次{(host.resources.pendingCount??0)>0 ? ' · '+host.resources.pendingCount+' 项当时尚未可用' : ''}。缺失资源可能影响图标、图片或排版；不会联网补取。</p>}
+      {host?.error && host.status!=='failed' && <p className="hint">{host.error}</p>}
+      {host?.resources?.failures.length ? <details><summary>资源读取记录（{host.resources.failures.length}）</summary>{host.resources.failures.slice(0, 20).map((failure, index) => <p key={(failure.resourceId || failure.name)+'-'+index}>{failure.code || failure.name}：{failure.message}</p>)}</details> : null}
     <div className="replay-sequence" aria-label="已加载历史事件">{positions.map(row => <Button key={`${row.position.streamEpoch}-${row.position.eventSeq}`} className={same(position, row.position) ? 'selected' : ''} disabled={seeking || selecting}
       onClick={() => void seek(row.position)}>#{row.position.eventSeq}</Button>)}{nextOrdinal !== undefined && stream && <Button disabled={selecting} onClick={() => void loadPositions(stream, nextOrdinal)}>后续事件</Button>}</div>
+    </div></details>
   </div>;
 }

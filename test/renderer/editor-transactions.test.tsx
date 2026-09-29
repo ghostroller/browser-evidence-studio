@@ -7,6 +7,7 @@ import { materialSummary } from '@/main/services/project-materials';
 
 afterEach(()=>{cleanup();localStorage.clear();delete (window as Partial<Window>).studio;});
 const click=async(name:string|RegExp)=>{
+ if(name instanceof RegExp&&name.source.startsWith("^Example")){const list=document.querySelector<HTMLDetailsElement>(".material-card-navigation");if(list&&!list.open)fireEvent.click(list.querySelector("summary")!);}
  const button=await screen.findByRole('button',{name});await waitFor(()=>{expect((button as HTMLButtonElement).disabled).toBe(false);expect(button.closest('[inert]')).toBeNull();});fireEvent.click(button);
  await waitFor(()=>expect(screen.queryByText(/^(保存资料|保存编辑快照|读取编辑对象|读取工作副本)$/)).toBeNull());
  if(name instanceof RegExp&&name.source.startsWith('^Example'))await waitFor(()=>expect(screen.getByRole('button',{name}).getAttribute('aria-pressed')).toBe('true'));
@@ -17,11 +18,11 @@ async function editCard(){await click('编辑保存点');return screen.findByLab
 async function publish(){await click('存档');await click('保存存档版本');await click('确认保存存档版本');}
 
 test('dirty same-card reselection reads the saved entity instead of the old list closure',async()=>{
- const f=await fixture();render(<Harness/>);await card();await editCard();fireEvent.change(screen.getByLabelText('标题'),{target:{value:'Renamed'}});fireEvent.click(screen.getByRole('button',{name:/^Example 1/}));
+ const f=await fixture();render(<Harness/>);await card();await editCard();fireEvent.change(screen.getByLabelText('标题'),{target:{value:'Renamed'}});fireEvent.click(document.querySelector('.material-card-navigation > summary')!);fireEvent.click(screen.getByRole('button',{name:/^Example 1/}));
  await waitFor(async()=>expect((await f.get()).content.checkpoints[0].title).toBe('Renamed'));await click('编辑保存点');expect((screen.getByLabelText('标题') as HTMLInputElement).value).toBe('Renamed');
 });
 test('copy first saves dirty edits, focuses independent copy and preserves original annotation',async()=>{
- const f=await fixture();render(<Harness/>);await card();await editCard();fireEvent.change(screen.getByLabelText('说明'),{target:{value:'Keep original'}});fireEvent.click(screen.getByText('更多操作'));await click('复制保存点');
+ const f=await fixture();render(<Harness/>);await card();await editCard();fireEvent.change(screen.getByLabelText('说明'),{target:{value:'Keep original'}});await click('返回摘要');fireEvent.click(screen.getByText('更多操作'));await click('复制保存点');
  await waitFor(()=>expect((screen.getByLabelText('标题') as HTMLInputElement).value).toBe('Example 1 副本'));fireEvent.change(screen.getByLabelText('标题'),{target:{value:'Copy name'}});await click('保存修改');
  await waitFor(async()=>{const value=await f.get();expect(value.content.checkpoints).toHaveLength(3);expect(value.content.checkpoints[0]).toMatchObject({title:'Example 1',notes:'Keep original'});expect(value.content.checkpoints[2]).toMatchObject({title:'Copy name',derivedFrom:'card-0'});expect(value.content.checkpoints[2].annotationIds[0]).not.toBe('note');expect(value.content.annotations[0].text).toBe('Original note');});
 });

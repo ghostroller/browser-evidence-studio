@@ -278,7 +278,7 @@ export async function runUiScenarios(studio: Studio): Promise<void> {
     assert.deepEqual(await readReplay(), pausedReplay, 'Paused playback must stop recorded DOM mutation while site scripts remain disabled');
     assert.equal(replay.state.status, 'ready', 'Paused ReplayHost keeps its source position');
     await captureUi('replay.png', `!!document.querySelector('.replay-workspace') && document.querySelector('.replay-controls')?.textContent.includes('播放') && !!document.querySelector('.replay-timeline')`);
-    await click('返回实时页面', `document.querySelector('.replay-controls')`);
+    await click('返回实时页面', `document.querySelector('.replay-heading')`);
     await waitFor(() => evaluate<boolean>(`!document.querySelector('.replay-workspace')`), Boolean, 'replay workspace removed on close');
     await waitFor(() => Promise.resolve((studio as any).replayHost.active), value => !value, 'native replayer and sandbox iframe destroyed on close');
     if(studio.window.window.isMinimized())studio.window.window.restore();

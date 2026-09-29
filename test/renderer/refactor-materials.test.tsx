@@ -8,6 +8,7 @@ import { Harness, fixture, target, deferred } from './material-harness';
 
 afterEach(()=>{cleanup();localStorage.clear();delete (window as Partial<Window>).studio;});
 const click=async(name:string|RegExp)=>{
+ if(name instanceof RegExp&&name.source.startsWith('^Example')){const list=document.querySelector<HTMLDetailsElement>('.material-card-navigation');if(list&&!list.open)fireEvent.click(list.querySelector('summary')!); }
  const button=await screen.findByRole('button',{name});await waitFor(()=>{expect((button as HTMLButtonElement).disabled).toBe(false);expect(button.closest('[inert]')).toBeNull();});fireEvent.click(button);
  await waitFor(()=>expect(screen.queryByText(/^(保存资料|保存编辑快照|读取编辑对象|读取工作副本)$/)).toBeNull());
  if(name instanceof RegExp&&name.source.startsWith('^Example'))await waitFor(()=>expect(screen.getByRole('button',{name}).getAttribute('aria-pressed')).toBe('true'));
@@ -89,4 +90,23 @@ test('filtering a second recording is only a projection and the fixed version re
  render(<Harness/>);await screen.findByRole('option',{name:'recording-two'});await screen.findByRole('button',{name:/^Example 2/});fireEvent.change(screen.getByLabelText('来源录制筛选'),{target:{value:'recording-two'}});
  expect(screen.queryByRole('button',{name:/^Example 1/})).toBeNull();expect(screen.getByRole('button',{name:/^Example 2/})).toBeTruthy();
  const saved=await f.get(),fixed=await f.materials.service.publish('project',saved.draftId,saved.draftRevision,'human');expect(fixed.content.recordingRefs).toEqual(['recording','recording-two']);expect(fixed.content.checkpoints).toHaveLength(2);
+});
+
+test('focused annotation editing collapses navigation and returns to the same saved card',async()=>{
+ const f=await fixture();render(<Harness/>);await click(/^Example 1/);await click('添加注释');
+ await waitFor(()=>expect(document.querySelector<HTMLDetailsElement>('.material-card-navigation')?.open).toBe(false));
+ expect(screen.queryByRole('button',{name:/^Paid amount/})).toBeNull();
+ expect(screen.getByRole('button',{name:'查看来源'})).toBeTruthy();
+ fireEvent.change(screen.getByLabelText('注释'),{target:{value:'A focused note'}});await click('返回摘要');
+ await waitFor(()=>expect(screen.queryByLabelText('编辑注释')).toBeNull());
+ expect((await f.get()).content.annotations.some(item=>item.text==='A focused note'&&item.checkpointId==='card-0')).toBe(true);
+ expect(document.querySelector<HTMLDetailsElement>('.material-card-navigation')?.open).toBe(true);
+ expect(screen.getByRole('button',{name:/^Example 1/}).getAttribute('aria-pressed')).toBe('true');
+ expect(screen.getByRole('button',{name:/^Paid amount/})).toBeTruthy();
+});
+test('failed save when leaving a focused editor retains the input and editor',async()=>{
+ const f=await fixture();render(<Harness/>);await click(/^Example 1/);await click('编辑保存点');
+ fireEvent.change(screen.getByLabelText('说明'),{target:{value:'Unsaved explanation'}});f.fail();await click('返回摘要');
+ await screen.findByText(/disk unavailable/);expect((screen.getByLabelText('说明') as HTMLTextAreaElement).value).toBe('Unsaved explanation');
+ expect(screen.getByLabelText('编辑保存点')).toBeTruthy();expect((await f.get()).content.checkpoints[0].notes).toBe('');
 });

@@ -59,7 +59,7 @@ export async function runNativeInputScenarios(studio:Studio){
       const frame=await replay.webContents.executeJavaScript(`(()=>{const f=document.querySelector('#replay iframe'),r=f.getBoundingClientRect();return {top:r.top,height:r.height,viewport:innerHeight,bodyTextLength:f.contentDocument.body.innerText.length}})()`);
       assert(frame.top<frame.viewport/4&&frame.bodyTextLength>50,JSON.stringify(frame));
       if(i===0)await captureUiFrame(studio,'native-react-replay.png');
-      await ui.executeJavaScript(`Array.from(document.querySelectorAll('.replay-controls button')).find(button=>button.textContent.trim()==='返回实时页面').click()`);
+      await ui.executeJavaScript(`Array.from(document.querySelectorAll('.replay-heading button')).find(button=>button.textContent.trim()==='返回实时页面').click()`);
       await wait(()=>!(studio.replayHost as any).active&&front.view.getVisible(),'React return to live page');
       if(i===0||i===4)await captureUiFrame(studio,`native-react-live-restored-${i+1}.png`);
     }
