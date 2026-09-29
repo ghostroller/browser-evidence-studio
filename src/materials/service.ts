@@ -353,18 +353,31 @@ export class FileMaterialService implements MaterialService {
       }
     }
   }
-  private async newDraft(projectId: string, author: MaterialAuthor, root: string, paths: ProjectPaths, baseRevisionId?: string): Promise<TaskMaterialDraft> {
+  private async newDraft(projectId: string, author: MaterialAuthor, root: string, paths: ProjectPaths, baseRevisionId?: string, operationId?:string): Promise<TaskMaterialDraft> {
+    let receipt:TaskMaterialDraft|undefined;
+    const receiptFile=operationId?path.join(paths.material,`create-${operationId}.receipt`):undefined;
+    if(receiptFile){
+      try{receipt=await readJson(receiptFile,root) as TaskMaterialDraft;}
+      catch(error){if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND')throw error;}
+      if(receipt){
+        if(receipt.projectId!==projectId||receipt.author!==author||receipt.baseRevisionId!==baseRevisionId||receipt.draftId!==`create-${operationId}`)throw new MaterialError('OPERATION_CONFLICT','Creation operation belongs to another request.',409);
+        try{return await this.storedDraft(projectId,receipt.draftId,root,paths);}
+        catch(error){if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND')throw error;}
+        validateContent(receipt.content);await createJson(path.join(paths.drafts,`${receipt.draftId}.json`),receipt);return receipt;
+      }
+    }
     const base = baseRevisionId === undefined ? undefined : await this.storedRevision(projectId, baseRevisionId, root, paths);
     const workspace = await readJson(path.join(root, 'workspace.json'), root) as { projects: Array<{ id: string; objective?: string }> };
-    const draft: TaskMaterialDraft = { schemaVersion: 1, projectId, draftId: randomUUID(), draftRevision: 0,
+    const draft: TaskMaterialDraft = { schemaVersion: 1, projectId, draftId: operationId?`create-${operationId}`:randomUUID(), draftRevision: 0,
       ...(base ? { baseRevisionId: base.revisionId } : {}), author, updatedAt: new Date().toISOString(),
       content: clone(base?.content ?? { ...EMPTY, taskBrief: { objective: workspace.projects.find(p => p.id === projectId)?.objective ?? '', scope: '' } }) };
+    if(receiptFile)await atomicJson(receiptFile,draft);
     await createJson(path.join(paths.drafts, `${draft.draftId}.json`), draft);
     return draft;
   }
-  async createDraft(projectId: string, author: MaterialAuthor, baseRevisionId?: string): Promise<TaskMaterialDraft> {
-    authorOf(author);
-    return this.locked(projectId, (root, paths) => this.newDraft(projectId, author, root, paths, baseRevisionId));
+  async createDraft(projectId: string, author: MaterialAuthor, baseRevisionId?: string, operationId?:string): Promise<TaskMaterialDraft> {
+    authorOf(author);if(operationId)id(operationId,'operationId');
+    return this.locked(projectId, (root, paths) => this.newDraft(projectId, author, root, paths, baseRevisionId,operationId));
   }
   getDraft(projectId: string, draftId: string): Promise<TaskMaterialDraft> {
     return this.withProject(projectId, (root, paths) => this.storedDraft(projectId, draftId, root, paths));

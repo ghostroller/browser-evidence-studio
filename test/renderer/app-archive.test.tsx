@@ -98,6 +98,25 @@ afterEach(() => {
   delete (window as Partial<Window>).studio;
 });
 
+test('quick project creation retries the same operation after a lost response',async()=>{
+  stubLayout();let saved:any,first=true;const receipts=new Map<string,any>();
+  const call=vi.fn(async(method:string,body:any={})=>{
+    if(method==='state')return {projects:saved?[saved]:[],profiles:[],runs:[]};
+    if(method==='presentation')return undefined;
+    if(method==='createProject'){
+      if(!receipts.has(body.operationId)){saved={id:'project-1',name:body.name,objective:body.objective};receipts.set(body.operationId,saved);}
+      if(first){first=false;throw new Error('reply lost');}return receipts.get(body.operationId);
+    }
+    return emptyWorkspace(method);
+  });window.studio={call,bounds:vi.fn()};
+  render(<ThemeProvider initial={{theme:'light',layout:{}}}><App/></ThemeProvider>);
+  fireEvent.click(screen.getByRole('button',{name:'新建项目'}));fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'Synthetic retry'}});
+  fireEvent.click(screen.getByRole('button',{name:'创建项目'}));await screen.findAllByText('reply lost');
+  expect((screen.getByLabelText('项目名称') as HTMLInputElement).value).toBe('Synthetic retry');
+  fireEvent.click(screen.getByRole('button',{name:'创建项目'}));await waitFor(()=>expect(screen.queryByLabelText('项目名称')).toBeNull());
+  const attempts=call.mock.calls.filter(([method])=>method==='createProject');expect(attempts).toHaveLength(2);expect(attempts[0][1].operationId).toBeTruthy();expect(attempts[1][1].operationId).toBe(attempts[0][1].operationId);expect(receipts.size).toBe(1);
+});
+
 test('a readable sealed run offers explicit trusted index repair with its inspected writer fingerprint', async () => {
   stubLayout();
   const call = vi.fn(async (method: string) => {

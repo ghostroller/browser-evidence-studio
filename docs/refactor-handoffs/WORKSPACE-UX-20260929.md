@@ -52,6 +52,8 @@ prompt 限制来源：[Electron 原生对话框实现](https://github.com/electr
 
 停止补修定向7项全部通过（workspace-session-stop-tests-second.log）：真实方法的pending连接、disconnect、页面分配与rollback等待；并发停止共用一次静默；旧session拒绝；替代会话不能被旧回执解锁，且新会话停止不会复用旧会话promise；停止时关闭会话明确拒绝。typecheck通过。
 
+停止补修后的全量 77 文件 / 507 项通过（workspace-full-stop-final.log）。后续仅补普通新建/派生副本回执，以及快捷项目/环境创建同输入重试ID；目录+编辑器+App 25项、快捷创建丢回执7项（有重叠）及typecheck通过。新增副本 manifest 写失败后可在新服务实例恢复同一ID，重试不覆盖后来的人工编辑。
+
 ## IA01–IA30 分层表（独立报告合入前检查点）
 
 S=真实文件服务/单元，C=真实服务驱动组件或宿主边界组件，E=新构建真实 Electron，I=另一个操作者按业务目标复走。组件使用合成 fixture 不冒充从空根操作；E 中故障注入会单列。I 正在独立空根进行，操作者曾负责管理模块，不能称完全陌生用户盲测。

@@ -481,9 +481,11 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
     const scope = projectId, token = ++selectionRequest.current;
     ++writeRequest.current; pendingRef.current = true;
     setPending('新建草稿'); setError('');
-    try { const created: Draft = await call('createMaterialDraft',baseRevisionId?{baseRevisionId}:{});
+    const operationKey=`bes.create.${projectId}.${baseRevisionId??'empty'}`;
+    try { const operationId=localStorage.getItem(operationKey)||crypto.randomUUID();localStorage.setItem(operationKey,operationId);
+      const created: Draft = await call('createMaterialDraft',{...(baseRevisionId?{baseRevisionId}:{}),operationId});
       if (scopeRef.current !== scope || selectionRequest.current !== token) return;
-      if(!ownsSession())return;pendingRef.current=false;await call('setWorkingMaterialDraft',{draftId:created.draftId});await openDraft(created.draftId);await refreshLists();onEditWorkspace?.();
+      if(!ownsSession())return;pendingRef.current=false;await call('setWorkingMaterialDraft',{draftId:created.draftId});await openDraft(created.draftId);await refreshLists();localStorage.removeItem(operationKey);onEditWorkspace?.();
     } catch (failure) { if (scopeRef.current === scope && selectionRequest.current === token) setError(String(failure)); }
     finally { if (scopeRef.current === scope && selectionRequest.current === token) { pendingRef.current = false; setPending(''); } }
   };

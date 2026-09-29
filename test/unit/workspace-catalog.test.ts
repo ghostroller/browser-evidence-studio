@@ -44,6 +44,15 @@ it('reports brief-only changes without changing the previous fixed content', asy
 
 
 afterEach(()=>vi.restoreAllMocks());
+it('new workcopy creation recovers its prepared identity after write failure and restart',async()=>{
+ const link=fs.link.bind(fs);vi.spyOn(fs,'link').mockImplementation(async(a,b)=>{if(String(b).endsWith('create-new-copy.json'))throw Object.assign(new Error('create failed'),{code:'EIO'});return link(a,b);});
+ await expect(service.createDraft('project','human',undefined,'new-copy')).rejects.toThrow('create failed');vi.restoreAllMocks();
+ const restart=new FileMaterialService(root),created=await restart.createDraft('project','human',undefined,'new-copy');
+ await restart.updateDraft('project',created.draftId,0,{...created.content,taskBrief:{objective:'Later edit',scope:''}},'human');
+ expect((await restart.createDraft('project','human',undefined,'new-copy')).content.taskBrief?.objective).toBe('Later edit');
+ expect((await restart.listDrafts('project',{limit:100,maxBytes:28000})).items).toHaveLength(1);
+ await expect(restart.createDraft('project','agent',undefined,'new-copy')).rejects.toMatchObject({code:'OPERATION_CONFLICT'});
+});
 it('directory replacement failure leaves memory and disk unchanged and retry survives restart',async()=>{
  const draft=await service.workingDraft('project'),before=await service.workspaceCatalog('project');
  vi.spyOn(fs,'rename').mockImplementationOnce(async()=>{throw Object.assign(new Error('disk write failed'),{code:'EIO'});});

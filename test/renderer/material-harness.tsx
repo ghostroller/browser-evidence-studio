@@ -34,7 +34,7 @@ export async function fixture(options:{cards?:number;empty?:boolean}={}) {
     if(method==='publishMaterialDraft'){const value=await service.publish(projectId,body.draftId,body.expectedDraftRevision,'human',body.operationId);fixed.push(value);return materialSummary(value);}
     if(method==='materialRevision')return materialSummary(await service.revision(projectId,body.revisionId,body.contentHash));
     if(method==='materialDiff')return service.diff(projectId,body.fromRevisionId,body.toRevisionId,{limit:100,maxBytes:28672,cursor:body.cursor});
-    if(method==='createMaterialDraft')return materialSummary(await service.createDraft(projectId,'human',body.baseRevisionId));
+    if(method==='createMaterialDraft')return materialSummary(await service.createDraft(projectId,'human',body.baseRevisionId,body.operationId));
     if(method==='setWorkingMaterialDraft')return materialSummary(await service.setWorkingDraft(projectId,body.draftId));
     if(method==='copyMaterialDraft')return materialSummary(await service.copyDraft(projectId,body.draftId,body.expectedDraftRevision,body.operationId));
     if(method==='historicalNode')return {tagName:'span',text:{status:'present',value:'12.00'}};

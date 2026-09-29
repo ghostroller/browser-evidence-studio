@@ -6,6 +6,10 @@
 
 publishMaterialDraft 接受 operationId；materialPublicationStatus 返回 not-started/prepared/manifest-saved。重试只恢复该操作清单，不能把 manifest 已保存的失败当作一次全新发布。prepareMaterialArchive 读取真实录制状态，UI 显式结束所列录制后才固定。字段 examples 为可选附加例证，原 target 保持首例证语义；无元素注释为 bindingStatus=none，不编造引用。
 
+createMaterialDraft 的可选 operationId 同样使用预先持久化的创建回执；新建/派生的 UI 在创建、设置当前、打开成功前保留该 ID，重试不能生成第二个副本。回执按项目、作者和 baseRevisionId 匹配。快捷项目/环境创建失败时保留同输入的 operationId。
+
+可信 UI 的 stopRunner 发送当前 sessionId，并在有录制或启动验收时同时发送 runId/validationId。过期身份拒绝；没有录制时仍撤销浏览器操作 gate、待连接和页面创建任务，等待静默后才交还 human。同会话并发停止共用等待，替代会话不共用旧任务；停止期间不能关闭该会话。
+
 browserCommand 仅由可信 UI 发起，带 sessionId/leaseEpoch 及页面 pageId/targetId/generation。导航停止独立于录制/执行停止。标签、find/zoom、dialog 和 download 命令仍核对当前持有者；普通人工快捷键不绕过检查/Agent 锁。state.session 提供导航能力、加载错误、查找结果、缩放、待处理对话框和下载状态；studio:changed 只通知可信 UI 重读。workflowInputSchema 只从已登记脚本根安全读取有界 schema，支持的标量表单与高级 JSON 使用同一个 input。
 
 ## 环境、保存点与 session（2026-09-27 产品主线）

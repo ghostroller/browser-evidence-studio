@@ -79,7 +79,7 @@ export async function dispatchProject(studio: Studio, method: string, body: any,
         if (body.kind === 'revision') ensure(typeof body.contentHash === 'string', 'Fixed revision contentHash is required');
         return service.pageCollection(body.projectId, { kind: body.kind, id: body.kind === 'draft' ? body.draftId : body.revisionId, expectedHash: body.contentHash }, body.collection, budget);
       }
-      case 'createMaterialDraft': return materialSummary(await service.createDraft(body.projectId, source === 'api' ? 'agent' : 'human', body.baseRevisionId));
+      case 'createMaterialDraft': return materialSummary(await service.createDraft(body.projectId, source === 'api' ? 'agent' : 'human', body.baseRevisionId,body.operationId));
       case 'editMaterialDraft': {
         const result = await studio.materials.edit(body.projectId, body.draftId, body.expectedDraftRevision, body.edits, source);
         if (result.status === 'saved') studio.tasks.publish(body.projectId, 'material-draft-saved', { draftId: body.draftId, draftRevision: String(result.draft!.draftRevision) });
