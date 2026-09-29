@@ -37,3 +37,5 @@ W3 前补强：工作副本/存档使用持久操作回执恢复，目录写失�
 修后浏览器专项在 output/desktop-1790685008038 通过：原生历史/加载停止/网络失败重试，查找/缩放/快捷键，标签与 opener，alert/confirm、prompt 不支持提示及权限拒绝，无录制/录制中下载与取消，四处真实 view 初始化故障注入、第五处真实初始网络故障、检查模式拦截及停止可达。详细证据为 workspace-browser-detail.json；不是物理进程故障或独立可发现性证明。
 
 prompt 限制来源：[Electron 原生对话框实现](https://github.com/electron/electron/blob/main/lib/browser/api/web-contents.ts)。本轮保留 sandbox/contextIsolation，不通过替换网站 prompt 或宿主私有对话框钩子制造支持。
+
+数值旅程首轮 `output/desktop-1790685115189` 在映射确认前失败。真实窗口显示执行分栏挤占全部高度，映射区降为零高；现将实现页改为统一主滚动区，测试同时增加 elementFromPoint 命中校验，禁止点击被裁切控件。27 项相关组件回归及类型检查通过，生产构建 fifth 成功；继续串行复跑。
