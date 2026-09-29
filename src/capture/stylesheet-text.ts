@@ -42,7 +42,7 @@ export class StylesheetTextCapture {
     if(matches.length!==1)throw new Error(matches.length?'renderer-stylesheet-version-ambiguous':'renderer-stylesheet-unavailable');
     const sheet=matches[0],version=sheet.version;
     if(this.loader(frameId)!==loaderId||started!==undefined&&version!==0)throw new Error('renderer-stylesheet-scope-changed');
-    const {text}=await this.cdp.send('CSS.getStyleSheetText',{styleSheetId:sheet.id});
+    const {text}=await this.cdp.send('CSS.getStyleSheetText',{styleSheetId:sheet.id},{timeout:5000});
     if(this.loader(frameId)!==loaderId||this.sheets.get(sheet.id)!==sheet||sheet.version!==version)throw new Error('renderer-stylesheet-scope-changed');
     if(text.length>RESOURCE_MAX_BYTES||Buffer.byteLength(text)>RESOURCE_MAX_BYTES)throw new Error('resource-byte-budget');
     return {data:Buffer.from(text,'utf8'),styleSheetId:sheet.id};
