@@ -53,11 +53,11 @@ export function ManagedBrowserToolbar({session,call,refresh,disabled=false,onSav
       <Button size="sm" variant="outline" disabled={!canUse} onClick={()=>void command('new')}>新标签</Button>
       <Button size="sm" variant="ghost" disabled={!canUse||!session.closedPageCount} onClick={()=>void command('reopen')} title="恢复网址及环境，不恢复未保存的网页表单">恢复关闭的标签</Button>
     </div>
-    <div className="flex min-w-0 items-center gap-1">
+    <div className="flex min-w-0 flex-wrap items-center gap-1">
       <Button size="sm" variant="outline" aria-label="后退" disabled={!canUse||!page?.canGoBack} onClick={()=>void command('back')}>←</Button>
       <Button size="sm" variant="outline" aria-label="前进" disabled={!canUse||!page?.canGoForward} onClick={()=>void command('forward')}>→</Button>
       <Button size="sm" variant="outline" disabled={!canUse||!page} onClick={()=>void command(page?.loading?'stop':'reload')}>{page?.loading?'停止加载':'刷新'}</Button>
-      <form className="flex min-w-0 flex-1 gap-1" onSubmit={event=>{event.preventDefault();setEditing(false);void command('navigate',{url});}}>
+      <form className="flex min-w-48 flex-1 gap-1" onSubmit={event=>{event.preventDefault();setEditing(false);void command('navigate',{url});}}>
         <Input ref={addressRef} aria-label="网页地址" value={url} disabled={!canUse||!page} onFocus={()=>setEditing(true)} onChange={event=>setUrl(event.target.value)} />
         <Button size="sm" variant="outline" type="submit" disabled={!canUse||!page}>前往</Button>
       </form>
@@ -68,7 +68,7 @@ export function ManagedBrowserToolbar({session,call,refresh,disabled=false,onSav
       <Button size="sm" variant="ghost" onClick={()=>setDownloadsOpen(!downloadsOpen)}>下载 {session.downloads.length||''}</Button>
     </div>
     {!session.pages.length&&<p>当前没有标签。点击“新标签”继续使用同一登录环境。</p>}
-    {findOpen&&<form className="flex items-center gap-2" onSubmit={e=>{e.preventDefault();void command('find',{text:query});}}>
+    {findOpen&&<form className="flex flex-wrap items-center gap-2" onSubmit={e=>{e.preventDefault();void command('find',{text:query});}}>
       <Input ref={findRef} className="max-w-60" aria-label="页内查找文字" value={query} onChange={e=>setQuery(e.target.value)} />
       <Button size="sm" disabled={!canUse||!query}>查找</Button><Button type="button" size="sm" variant="outline" disabled={!canUse||!query} onClick={()=>void command('find',{text:query,findNext:true,forward:false})}>上一处</Button><Button type="button" size="sm" variant="outline" disabled={!canUse||!query} onClick={()=>void command('find',{text:query,findNext:true})}>下一处</Button>
       <span aria-live="polite">{page?.find?`${page.find.activeMatchOrdinal} / ${page.find.matches}`:''}</span><Button type="button" variant="ghost" size="sm" onClick={()=>{setFindOpen(false);void command('find-close');}}>关闭查找</Button>

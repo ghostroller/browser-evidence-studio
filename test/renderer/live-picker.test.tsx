@@ -12,7 +12,7 @@ vi.stubGlobal('cancelAnimationFrame', (timer: number) => clearTimeout(timer));
 
 const page = { pageId: 'page-one', generation: 3, url: 'https://example.test/current', title: 'Current page', inspecting: false };
 const active = { id: 'run-one', projectId: 'project-one', profileId: 'profile-one', controller: 'human', locked: false, execution: 'ready', capture: 'recording', pages: [page], selectedPageId: page.pageId, selection: null };
-const base = { projects: [{ id: 'project-one', name: 'Project' }], profiles: [{ id: 'profile-one', projectId: 'project-one', name: 'Profile' }], runs: [], active, session: { ...active, pages: [page] } };
+const base = { projects: [{ id: 'project-one', name: 'Project' }], profiles: [{ id: 'profile-one', projectId: 'project-one', name: 'Profile' }], runs: [], active, session: { ...active, sessionId:'session-one',leaseEpoch:1,downloads:[],closedPageCount:0,pages: [page] } };
 
 afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
 

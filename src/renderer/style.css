@@ -476,3 +476,7 @@
 .material-workbench input, .material-workbench textarea, .material-workbench select { max-width: 100%; }
 .material-workbench small, .material-workbench p { overflow-wrap: anywhere; }
 .material-workbench [aria-pressed="true"] { background: var(--accent); }
+
+.workspace { display: flex; flex-direction: column; }
+.workspace > [role="status"] { flex-shrink: 0; margin: 0; padding: 4px 12px; }
+.workspace > .split-body { flex: 1; min-height: 0; }

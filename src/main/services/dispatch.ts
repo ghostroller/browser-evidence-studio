@@ -1,7 +1,8 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import type { Studio } from './studio';
 import { ensure } from '@/shared/errors';
-import { loadWorkflow } from '@/runner/fingerprint';
+import path from 'node:path';
+import { loadWorkflow, resolveRegisteredFile } from '@/runner/fingerprint';
 import { inspectRunRecovery, recoverRun, recoverRunIndexes } from './run-recovery';
 import { dispatchProject, PROJECT_METHODS } from './project-dispatch';
 const READ=new Set(['state','projects','project','profiles','workflows','runs','run','pages','snapshot','checkpoints','summary','gaps','events','artifacts','artifact','artifactContent','handoffs','validations','validation','validationStartGrant','reviews','history','replay']);
@@ -82,6 +83,15 @@ export function makeDispatch(studio:Studio){
       case 'browserCommand':return studio.browserCommand(body);
       case 'updateProfile':return studio.updateProfile(body);case 'manageProject':return studio.manageProject(body);case 'manageProfile':return studio.manageProfile(body);case 'managementDependencies':return studio.managementDependencies(body);case 'settleManagementDependencies':return studio.settleManagementDependencies(body);
       case 'createProject':return studio.createProject(body);case 'updateProject':return studio.updateProject(body);case 'createProfile':return studio.createProfile(body);case 'startRun':ensure(source==='ui','Browser session creation requires the trusted client',403);return studio.startRun(body);
+      case 'workflowInputSchema':{
+        ensure(source==='ui','Input forms require the trusted client',403);
+        const project=studio.projects.find(p=>p.id===body.projectId);ensure(project,'Unknown project',404);
+        if(!project.scriptDirectory)return {schema:null};
+        const loaded=await loadWorkflow(project.scriptDirectory);if(!loaded.manifest.inputSchema)return {schema:null};
+        const file=await resolveRegisteredFile(project.scriptDirectory,path.resolve(path.dirname(loaded.manifestPath),loaded.manifest.inputSchema));
+        ensure((await stat(file)).size<=262144,'Input schema is too large for the form',413);
+        return {schema:JSON.parse(await readFile(file,'utf8'))};
+      }
       case 'workflows':{const p=studio.projects.find(p=>p.id===body.projectId);ensure(p,'Unknown project',404);return {items:p.scriptDirectory?[{directory:p.scriptDirectory,manifest:(await loadWorkflow(p.scriptDirectory)).manifest}]:[]};}
       case 'registerWorkflow':{const p=studio.projects.find(p=>p.id===body.projectId);ensure(p?.scriptDirectory,'Register directory in the client UI first',409);ensure(!body.directory||body.directory===p.scriptDirectory,'Directory does not match registration',403);return (await loadWorkflow(p.scriptDirectory)).manifest;}
       case 'pages':return {items:studio.state().session?.pages??[]};

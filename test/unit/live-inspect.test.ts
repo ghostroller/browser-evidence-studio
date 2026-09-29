@@ -9,12 +9,13 @@ test('a new live inspection clears its previous selection only after mode is ena
   const dispatch = makeDispatch(studio as never);
 
   await dispatch('inspect', { enabled: true });
-  expect(inspect).toHaveBeenCalledWith(true);
+  expect(inspect).toHaveBeenCalledWith(true, undefined);
   expect(run.selection).toBeUndefined();
 
   run.selection = old;
   await dispatch('inspect', { enabled: false });
-  expect(run.selection).toBe(old);
+  expect(run.selection).toEqual({cancelled:true,selectionId:undefined});
+  run.selection=old;
 
   inspect.mockRejectedValueOnce(new Error('observer unavailable'));
   await expect(dispatch('inspect', { enabled: true })).rejects.toThrow('observer unavailable');

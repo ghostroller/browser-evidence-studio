@@ -93,6 +93,8 @@ export class FileMaterialService implements MaterialService {
         id(key, 'catalog identity');
         if (!isRecord(entry) || typeof entry.name !== 'string' || typeof entry.hidden !== 'boolean' || entry.displayNumber !== undefined && (!Number.isSafeInteger(entry.displayNumber) || Number(entry.displayNumber) < 1)) throw new MaterialError('INVALID_CATALOG', 'Material directory entry is damaged.', 500);
       }
+      const numbers=Object.values(value.revisions).map(entry=>(entry as Record<string,unknown>).displayNumber);
+      if(numbers.some(number=>number===undefined)||new Set(numbers).size!==numbers.length)throw new MaterialError('INVALID_CATALOG','Version display numbers are missing or duplicated.',500);
       if (value.workingDraftId !== undefined) id(value.workingDraftId, 'workingDraftId');
       return value as unknown as MaterialCatalog;
     } catch (error) {
@@ -161,22 +163,29 @@ export class FileMaterialService implements MaterialService {
       await this.saveCatalog(paths, catalog); return { ...catalog, catalogRevision: catalog.catalogRevision + 1 };
     });
   }
-  async copyDraft(projectId: string, draftId: string, expectedDraftRevision: number, operationId: string) {
-    return this.locked(projectId, async (root, paths) => {
-      id(operationId, 'operationId');
-      const receiptFile = path.join(paths.material, `copy-${operationId}.receipt`);
-      try {
-        const receipt = await readJson(receiptFile, root) as { sourceId: string; revision: number; draftId: string };
-        if (receipt.sourceId !== draftId || receipt.revision !== expectedDraftRevision) throw new MaterialError('OPERATION_CONFLICT', 'Copy operation belongs to another source.', 409);
-        return this.storedDraft(projectId, receipt.draftId, root, paths);
-      } catch (error) { if (!(error instanceof MaterialError) || error.code !== 'NOT_FOUND') throw error; }
-      const source = await this.storedDraft(projectId, draftId, root, paths);
-      if (source.draftRevision !== expectedDraftRevision) throw new MaterialConflictError(source, expectedDraftRevision);
-      // Stable operation-derived identity lets a failed receipt retry recover the same copy.
-      const copied = { ...clone(source), draftId: `copy-${operationId}`, draftRevision: 0, author: 'human' as const, updatedAt: new Date().toISOString() };
-      try { await createJson(path.join(paths.drafts, `${copied.draftId}.json`), copied); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-      await atomicJson(receiptFile, { sourceId: draftId, revision: expectedDraftRevision, draftId: copied.draftId });
-      return this.storedDraft(projectId, copied.draftId, root, paths);
+  async copyDraft(projectId:string,draftId:string,expectedDraftRevision:number,operationId:string){
+    return this.locked(projectId,async(root,paths)=>{
+      id(operationId,'operationId');revisionNumber(expectedDraftRevision);
+      const receiptFile=path.join(paths.material,`copy-${operationId}.receipt`);
+      let receipt:{sourceId:string;revision:number;draftId:string;copy?:TaskMaterialDraft}|undefined;
+      try{receipt=await readJson(receiptFile,root) as typeof receipt;}
+      catch(error){if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND')throw error;}
+      if(receipt){
+        if(receipt.sourceId!==draftId||receipt.revision!==expectedDraftRevision)throw new MaterialError('OPERATION_CONFLICT','Copy operation belongs to another source.',409);
+        try{return await this.storedDraft(projectId,receipt.draftId,root,paths);}
+        catch(error){if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND'||!receipt.copy)throw error;}
+      }else{
+        const source=await this.storedDraft(projectId,draftId,root,paths);
+        if(source.draftRevision!==expectedDraftRevision)throw new MaterialConflictError(source,expectedDraftRevision);
+        const copy={...clone(source),draftId:`copy-${operationId}`,draftRevision:0,author:'human' as const,updatedAt:new Date().toISOString()};
+        receipt={sourceId:draftId,revision:expectedDraftRevision,draftId:copy.draftId,copy};
+        // Persist the source snapshot before allocating a copy. Lost replies and
+        // failed manifest writes recover this exact operation after restart.
+        await atomicJson(receiptFile,receipt);
+      }
+      if(!receipt.copy||receipt.copy.projectId!==projectId||receipt.copy.draftId!==receipt.draftId)throw new MaterialError('INVALID_RECORD','Copy receipt is damaged.',409);
+      await createJson(path.join(paths.drafts,`${receipt.draftId}.json`),receipt.copy);
+      return this.storedDraft(projectId,receipt.draftId,root,paths);
     });
   }
   async workingDraft(projectId: string): Promise<TaskMaterialDraft> {
@@ -215,7 +224,8 @@ export class FileMaterialService implements MaterialService {
     const material = source.kind === 'draft' ? await this.getDraft(projectId, source.id) : await this.revision(projectId, source.id, source.expectedHash);
     const item = material.content[collection].find(value => value.id === entityId);
     if (!item) throw new MaterialError('NOT_FOUND', 'Material entity does not exist.', 404);
-    return { item, draftRevision: 'draftRevision' in material ? material.draftRevision : undefined, contentHash: 'contentHash' in material ? material.contentHash : undefined };
+    const ownerRequirementIds=collection==='fields'?material.content.requirements.filter(value=>value.fieldIds.includes(entityId)).map(value=>value.id):undefined;
+    return { item, ownerRequirementIds, draftRevision: 'draftRevision' in material ? material.draftRevision : undefined, contentHash: 'contentHash' in material ? material.contentHash : undefined };
   }
   async recordingUsage(projectId: string, recordingId: string) {
     id(recordingId, 'recordingId');
@@ -514,7 +524,7 @@ export class FileMaterialService implements MaterialService {
       }
       const key = (entry: DraftSummary | RevisionSummary) => 'draftId' in entry ? entry.draftId : entry.revisionId;
       const date = (entry: DraftSummary | RevisionSummary) => entry.status === 'available' ? ('updatedAt' in entry ? entry.updatedAt : entry.createdAt) : '';
-      entries.sort((a, b) => date(b).localeCompare(date(a)) || key(b).localeCompare(key(a)));
+      entries.sort((a,b)=>date(b).localeCompare(date(a))||(kind==='revision'?Number('displayNumber' in b?b.displayNumber:0)-Number('displayNumber' in a?a.displayNumber:0):0)||key(b).localeCompare(key(a)));
       const query = createHash('sha256').update(JSON.stringify([projectId, kind, catalog.catalogRevision, entries])).digest('hex');
       let offset = 0;
       if (cursor !== undefined) {
@@ -541,12 +551,17 @@ export class FileMaterialService implements MaterialService {
   }
 
   async diff(projectId: string, fromRevisionId: string, toRevisionId: string, budget: ReadBudget): Promise<BoundedPage<MaterialDifference>> {
-    const { maxBytes, limit, cursor } = budget;
-    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1024 || maxBytes > 1024 * 1024 || !Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
-      throw new MaterialError('INVALID_BUDGET', 'Diff budget is outside supported limits.');
-    }
-    const [before, after] = await Promise.all([this.revision(projectId, fromRevisionId), this.revision(projectId, toRevisionId)]);
-    const query = createHash('sha256').update(`${projectId}:${before.revisionId}:${before.contentHash}:${after.revisionId}:${after.contentHash}`).digest('hex');
+    const [before,after]=await Promise.all([this.revision(projectId,fromRevisionId),this.revision(projectId,toRevisionId)]);
+    return this.differencePage(before.content,after.content,`${projectId}:${before.revisionId}:${before.contentHash}:${after.revisionId}:${after.contentHash}`,budget);
+  }
+  async draftDiff(projectId:string,draftId:string,budget:ReadBudget){
+    const draft=await this.getDraft(projectId,draftId),before=draft.baseRevisionId?(await this.revision(projectId,draft.baseRevisionId)).content:EMPTY;
+    return this.differencePage(before,draft.content,`${projectId}:${draftId}:${draft.draftRevision}:${materialContentHash(draft.content)}`,budget);
+  }
+  private differencePage(before:MaterialContent,after:MaterialContent,identity:string,budget:ReadBudget):BoundedPage<MaterialDifference>{
+    const {maxBytes,limit,cursor}=budget;
+    if(!Number.isSafeInteger(maxBytes)||maxBytes<1024||maxBytes>1024*1024||!Number.isSafeInteger(limit)||limit<1||limit>500)throw new MaterialError('INVALID_BUDGET','Diff budget is outside supported limits.');
+    const query=createHash('sha256').update(identity).digest('hex');
     let offset = 0;
     if (cursor !== undefined) {
       if (cursor.length > 4096) throw new MaterialError('INVALID_CURSOR', 'Diff cursor is too long.');
@@ -555,7 +570,7 @@ export class FileMaterialService implements MaterialService {
       if (!isRecord(parsed) || parsed.query !== query || !Number.isSafeInteger(parsed.offset) || Number(parsed.offset) < 0) throw new MaterialError('INVALID_CURSOR', 'Diff cursor does not match this revision pair.');
       offset = parsed.offset as number;
     }
-    const all = differences(before.content, after.content);
+    const all = differences(before, after);
     if (offset > all.length) throw new MaterialError('INVALID_CURSOR', 'Diff cursor is past the end.');
     const items: MaterialDifference[] = [];
     for (let n = offset; n < all.length && items.length < limit; n++) {
