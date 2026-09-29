@@ -123,10 +123,12 @@ export class CaptureCoordinator {
   async start() {
     this.cdp=await this.page.createCDPSession();
     const cdp=this.cdp as any;
+    this.stylesheets=new StylesheetTextCapture(this.cdp,frame=>this.frameLoaders.get(frame));
+    let frameRevision=0;
     cdp.on('Runtime.executionContextCreated',({context}:any)=>{ if(context.name===this.world){const frameId=context.auxData?.frameId,loaderId=this.frameLoaders.get(frameId);this.contexts.set(context.id,frameId);if(loaderId)this.contextDocuments.set(context.id,{frameId,loaderId});} });
     cdp.on('Runtime.executionContextDestroyed',({executionContextId}:any)=>{this.contexts.delete(executionContextId);this.contextDocuments.delete(executionContextId);this.fullSnapshots.delete(executionContextId);});
     cdp.on('Runtime.executionContextsCleared',()=>{this.contexts.clear();this.contextDocuments.clear();this.fullSnapshots.clear();});
-    cdp.on('Page.frameNavigated',({frame}:any)=>{ if(!frame.parentId){ this.frameLoaders.clear();this.frameId=frame.id;this.pendingMainBaseline=true; if(this.trackNavigationGeneration)this.identity.navigationGeneration++; this.inspectionEnabled=false; }if(this.frameLoaders.has(frame.id)||this.frameLoaders.size<256)this.frameLoaders.set(frame.id,frame.loaderId); if(!this.paused) this.task(()=>this.event('navigation',{frameId:frame.id,url:frame.url,loaderId:frame.loaderId,parentId:frame.parentId})); });
+    cdp.on('Page.frameNavigated',({frame}:any)=>{ frameRevision++;if(!frame.parentId){ this.frameLoaders.clear();this.frameId=frame.id;this.pendingMainBaseline=true; if(this.trackNavigationGeneration)this.identity.navigationGeneration++; this.inspectionEnabled=false; }if(this.frameLoaders.has(frame.id)||this.frameLoaders.size<256)this.frameLoaders.set(frame.id,frame.loaderId); if(!this.paused) this.task(()=>this.event('navigation',{frameId:frame.id,url:frame.url,loaderId:frame.loaderId,parentId:frame.parentId})); });
     cdp.on('Page.frameDetached',({frameId}:any)=>{this.frameLoaders.delete(frameId);});
     cdp.on('Runtime.exceptionThrown',(event:any)=>{if(!this.paused) this.task(()=>this.event('page-error',event));});
     cdp.on('Runtime.consoleAPICalled',(event:any)=>{if(!this.paused)this.task(()=>this.event('console',{type:event.type,args:event.args.map((x:any)=>({type:x.type,value:x.value,description:x.description?.slice(0,4000)}))}));});
@@ -225,6 +227,16 @@ export class CaptureCoordinator {
     cdp.on('Network.webSocketCreated',(e:any)=>{if(!this.paused)this.task(()=>this.event('gap',{reason:'WebSocket payload completeness unsupported',...e}));});
     cdp.on('Disconnected',()=>{if(!this.stopped){this.fail('Capture CDP disconnected');const unfinished=this.requests.reset();this.task(async()=>{await this.event('gap',{reason:'capture CDP disconnected'});await this.unfinished(unfinished,'capture-disconnected-in-flight');});}});
     await cdp.send('Runtime.enable'); await cdp.send('Page.enable');
+    // Network callbacks and the auto-injected recorder can run before the
+    // corresponding enable/install command returns. Their resource reader must
+    // already have an initialized frame scope and enabled CSS domain.
+    for(let attempt=0;attempt<3;attempt++){
+      const revision=frameRevision,{frameTree}=await this.cdp.send('Page.getFrameTree');
+      if(revision!==frameRevision){if(attempt===2)throw new Error('Initial capture frame changed repeatedly');continue;}
+      this.frameId=frameTree.frame.id;this.frameLoaders.clear();
+      const register=(tree:typeof frameTree)=>{if(this.frameLoaders.size>=256)return;this.frameLoaders.set(tree.frame.id,tree.frame.loaderId);for(const child of tree.childFrames??[])register(child);};register(frameTree);break;
+    }
+    await this.stylesheets.start();
     await cdp.send('Network.enable',{maxTotalBufferSize:64*1024*1024,maxResourceBufferSize:RESPONSE_CDP_BUFFER_BYTES,maxPostDataSize:BODY_LIMIT});
     await cdp.send('Runtime.addBinding',{name:this.binding,executionContextName:this.world});
     // rrweb itself creates transient helper iframes. Recording every new frame
@@ -233,9 +245,7 @@ export class CaptureCoordinator {
     const config={binding:this.binding,recordingId:this.store.manifest.id,pageId:this.identity.pageId,checkoutEveryNms:30000,checkoutEveryNth:500};
     const script = `(function(){if(window!==window.top)return;\n${instrumentRecorder(recorder)}\n;const urlPrivacy=(${credentialUrl.toString()});(${installSourceRecorder.toString()})(${JSON.stringify(config)},urlPrivacy);(${observe.toString()})(${JSON.stringify(this.binding)},urlPrivacy);})();`;
     this.scriptId=(await cdp.send('Page.addScriptToEvaluateOnNewDocument',{source:script,worldName:this.world})).identifier;
-    const {frameTree}=await this.cdp.send('Page.getFrameTree'); this.frameId=frameTree.frame.id;
-    const registerFrame=(tree:typeof frameTree)=>{if(this.frameLoaders.size>=256)return;this.frameLoaders.set(tree.frame.id,tree.frame.loaderId);for(const child of tree.childFrames??[])registerFrame(child);};registerFrame(frameTree);
-    this.stylesheets=new StylesheetTextCapture(this.cdp,frame=>this.frameLoaders.get(frame));await this.stylesheets.start();
+    if(!this.frameId)throw new Error('Initial capture frame is unavailable');
     const {executionContextId}=await cdp.send('Page.createIsolatedWorld',{frameId:this.frameId,worldName:this.world});
     this.contexts.set(executionContextId,this.frameId!);
     const document=this.currentDocument();if(document)this.contextDocuments.set(executionContextId,document);
@@ -371,7 +381,7 @@ export class CaptureCoordinator {
         }
       }
     }
-    const wasPaused=this.paused;this.stopped=true;this.inspectionEnabled=false;
+    const wasPaused=this.paused;this.stopped=true;this.inspectionEnabled=false;this.stylesheets?.finishWaiting();
     // Accepted body descriptors still need the capture CDP connection. Stop
     // accepting new events first, drain durable reads, then detach the observer.
     await this.flush();
