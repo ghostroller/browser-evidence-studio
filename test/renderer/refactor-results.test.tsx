@@ -1,10 +1,11 @@
 /** @vitest-environment jsdom */
+import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ResultCenter } from '@/renderer/components/result-center';
 
-afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
+afterEach(() => { cleanup(); clearTestWorkbenchClient(); });
 
 test('C19: fixed requirement examples and actual verification sources navigate to distinct identities',async()=>{
   const position={recordingId:'example-run',pageId:'p',documentId:'d',streamEpoch:'e',sourceTimeMs:10,eventSeq:3};
@@ -20,7 +21,7 @@ test('C19: fixed requirement examples and actual verification sources navigate t
     if(method==='historicalNode')return {ref:body.target};
     throw new Error(method);
   });
-  window.studio={call,bounds:vi.fn()};render(<ResultCenter projectId="project" executionId="x" onOpenSource={open}/>);
+  setTestWorkbenchClient({call,bounds:vi.fn()});render(<ResultCenter projectId="project" executionId="x" onOpenSource={open}/>);
   fireEvent.click(await screen.findByRole('button',{name:'r · fail'}));
   expect(await screen.findByText('逐条核对到账元')).toBeTruthy();
   expect(screen.getByText(/业务范围尚缺证明/)).toBeTruthy();
@@ -44,7 +45,7 @@ test('an interrupted corrupt dataset stays diagnosed while committed sibling bat
     if(method==='datasetBatches')return {items:[{batchId:'committed',contentHash:'hash',recordCount:2,durableAt:'now'}]};
     throw new Error(method);
   });
-  window.studio={call,bounds:vi.fn()};
+  setTestWorkbenchClient({call,bounds:vi.fn()});
   render(<ResultCenter projectId="project-one" executionId="execution-one"/>);
   await waitFor(()=>expect(screen.getByText(/invalid-attempt/)).toBeTruthy());
   const bad=screen.getByText('bad').closest('.result-row')!;
@@ -75,7 +76,7 @@ test('assesses an explicitly selected dataset attempt and keeps machine and huma
     if (method === 'reviewExecution') return { id: 'review-one' };
     throw new Error(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   render(<ResultCenter projectId="project-one" executionId="execution-one" />);
   await waitFor(() => expect(screen.getByText('one entity failed')).toBeTruthy());
   fireEvent.click(screen.getAllByRole('button', { name: '用于验收' })[1]);
@@ -105,7 +106,7 @@ test('late dataset, batch and record responses stay with their exact execution a
     if (method === 'datasetRecords') return body.batchId === 'new-batch' ? oldRecords.promise : { items: [] };
     throw new Error(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   const view = render(<ResultCenter projectId="project-one" executionId="execution-one" />);
   await waitFor(() => expect(screen.getAllByRole('button', { name: '查看数据' })).toHaveLength(2));
   fireEvent.click(screen.getAllByRole('button', { name: '查看数据' })[0]);
@@ -136,7 +137,7 @@ test('reopens a saved fixed report and ignores a late report from a different se
     if (method === 'assessExecution') return { reportId: 'new-report' };
     throw new Error(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   render(<ResultCenter projectId="project-one" executionId="execution-one" />);
   await waitFor(() => expect(screen.getByRole('button', { name: /saved-report/ })).toBeTruthy());
   fireEvent.click(screen.getByRole('button', { name: /saved-report/ }));

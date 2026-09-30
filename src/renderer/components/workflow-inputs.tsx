@@ -1,3 +1,4 @@
+import { useWorkbenchClient } from '../lib/workbench-client';
 import React,{useEffect,useState} from 'react';
 import {Input} from './ui/input';
 import {Textarea} from './ui/textarea';
@@ -6,8 +7,9 @@ import {Label} from './ui/label';
 
 /** Plain scalar schemas get ordinary controls; complex schemas retain exact JSON. */
 export function WorkflowInputs({projectId,directory,value,onChange}:{projectId:string;directory?:string;value:string;onChange(value:string):void}){
+  const client = useWorkbenchClient();
  const [schema,setSchema]=useState<any>(null),[error,setError]=useState('');
- useEffect(()=>{let alive=true;setSchema(null);setError('');if(projectId&&directory)void window.studio.call('workflowInputSchema',{projectId}).then(result=>{if(alive)setSchema(result.schema);}).catch(error=>{if(alive)setError(String(error));});return()=>{alive=false;};},[projectId,directory]);
+ useEffect(()=>{let alive=true;setSchema(null);setError('');if(projectId&&directory)void client.call('workflowInputSchema',{projectId}).then(result=>{if(alive)setSchema(result.schema);}).catch(error=>{if(alive)setError(String(error));});return()=>{alive=false;};},[projectId,directory]);
  let input:any;try{input=JSON.parse(value);}catch{}
  const entries=Object.entries(schema?.properties??{}) as [string,any][];
  const supported=schema?.type==='object'&&entries.length>0&&entries.length<=50&&entries.every(([,property])=>property&&['string','number','integer','boolean'].includes(property.type)&&!property.oneOf&&!property.anyOf&&!property.$ref);

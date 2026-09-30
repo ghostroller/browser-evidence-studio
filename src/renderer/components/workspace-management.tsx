@@ -1,3 +1,5 @@
+import { useWorkbenchClient } from '../lib/workbench-client';
+import type { WorkbenchInput, WorkbenchMethod } from '@/contracts/workbench';
 import React, { useEffect, useRef, useState } from 'react';
 import type { ManagementDependencies, Profile, Project } from '@/main/services/workspace-management';
 import { Button } from './ui/button';
@@ -14,6 +16,7 @@ interface Confirmation { kind: 'project' | 'profile' | 'close'; action: 'archive
 const status = (profile: Profile) => ({ unknown: '未验证', verified: '已验证', expired: '检查未通过或已过期' })[profile.loginStatus];
 /** Trusted UI commands only. The selected management row is independent of the live session. */
 export function WorkspaceManagementPanel({ state, projectId, onSelectProject, onRefresh, onError }: WorkspaceManagementProps) {
+  const client = useWorkbenchClient();
   const [search, setSearch] = useState(''), [showInactive, setShowInactive] = useState(false);
   const [selected, setSelected] = useState(projectId), [profileId, setProfileId] = useState('');
   const [projectName, setProjectName] = useState(''), [objective, setObjective] = useState('');
@@ -36,11 +39,11 @@ export function WorkspaceManagementPanel({ state, projectId, onSelectProject, on
   useEffect(() => { if (projectBaseline.current?.id !== project?.id || !projectDirty) loadProject(project); }, [project?.id, project?.revision, project?.name, project?.objective]);
   useEffect(() => { if (profileBaseline.current?.id !== profile?.id || !profileDirty) loadProfile(profile); }, [profile?.id, profile?.revision]);
   const choose = (action: () => void) => { if (projectDirty || profileDirty) { setFailure('有未保存的管理输入，请先保存或明确撤销输入，再切换对象。'); return; } action(); };
-  const call = async (method: string, body: Record<string, unknown>, durable = true) => {
+  const call = async <M extends WorkbenchMethod,>(method: M, body: WorkbenchInput<M>, durable = true) => {
     const fingerprint = JSON.stringify([method, body]);
     let operationId = operationIds.current.get(fingerprint);
     if (durable && !operationId) { operationId = crypto.randomUUID(); operationIds.current.set(fingerprint, operationId); }
-    const result = await window.studio.call(method, durable ? { ...body, operationId } : body);
+    const result = await client.call(method, durable ? { ...body, operationId } : body);
     operationIds.current.delete(fingerprint); return result;
   };
   const perform = async (operation: () => Promise<void>) => {
@@ -57,7 +60,9 @@ export function WorkspaceManagementPanel({ state, projectId, onSelectProject, on
   const confirmLifecycle = (settle: boolean) => perform(async () => {
     const plan = confirmation; if (!plan) return;
     if (settle || plan.kind === 'close') await call('settleManagementDependencies', { projectId: plan.projectId, ...(plan.kind !== 'project' ? { profileId: plan.id } : {}), expectedSessionId: plan.report.sessionId ?? null, authorizationIds: plan.report.dependencies.filter(item => item.kind === 'authorization' && item.active).map(item => item.id) }, false);
-    if (plan.kind !== 'close') await call(plan.kind === 'project' ? 'manageProject' : 'manageProfile', { projectId: plan.projectId, ...(plan.kind === 'profile' ? { profileId: plan.id } : {}), action: plan.action, expectedRevision: plan.revision, ...(plan.action === 'delete' ? { confirmEmptyDelete: true } : {}) });
+    const body = { projectId: plan.projectId, expectedRevision: plan.revision, ...(plan.action === 'delete' ? { confirmEmptyDelete: true } : {}) };
+    if (plan.kind === 'project' && (plan.action === 'archive' || plan.action === 'delete')) await call('manageProject', { ...body, action: plan.action });
+    if (plan.kind === 'profile' && (plan.action === 'disable' || plan.action === 'delete')) await call('manageProfile', { ...body, profileId: plan.id, action: plan.action });
     setConfirmation(null); if (plan.action === 'delete') { if (plan.kind === 'project') setSelected(''); else setProfileId(''); }
     await refreshed(plan.kind === 'close' ? '已停止任务并关闭环境；原始录制与登录数据保留。' : '管理状态已保存；历史资料保持可读。');
   });

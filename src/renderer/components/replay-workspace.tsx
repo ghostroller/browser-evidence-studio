@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useWorkbenchClient, scopedWorkbenchCall } from '../lib/workbench-client';
+import React, { useCallback, useMemo, useEffect, useRef, useState } from 'react';
 import type { HistoricalElementRef, ReplayPosition, ReplayState } from '@/contracts/recording';
 import { Button } from './ui/button';
 import { NativeSelect } from './ui/native-select';
@@ -34,6 +35,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   projectId: string; recordingId: string; requestedPosition?: ReplayPosition | null; selecting: boolean;
   canStop: boolean; onPosition(position: ReplayPosition, state?: ReplayState): void; onTarget(target: HistoricalElementRef,replayId:string,generation:number): void; onSelectionReady(replayId:string,generation:number):void; onCancelSelection(): void; onStop(): void; onClose(): void; onError?(message: string): void;
 }) {
+  const client = useWorkbenchClient();
   const [streams, setStreams] = useState<Stream[]>([]);
   const [streamCursor, setStreamCursor] = useState('');
   const [stream, setStream] = useState<Stream | null>(null);
@@ -73,7 +75,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   selectingRef.current = selecting;
   const speedRef = useRef(speed);
   speedRef.current = speed;
-  const call = useCallback((method: string, body: Record<string, unknown> = {}) => window.studio.call(method, { projectId, ...body }), [projectId]);
+  const call = useMemo(() => scopedWorkbenchCall(client, { projectId }), [client, projectId]);
   const closeNative = useCallback((replayId: string) => {
     void call('closeReplay', { replayId }).catch(failure => {
       if (String(failure).includes('Replay view is no longer active')) return;
@@ -103,7 +105,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
     try {
       const next: Host = current
         ? await call('seekReplay', { replayId: current.replayId, position: target })
-        : await call('openReplay', { position: target, replayId: openingId });
+        : await call('openReplay', { position: target, replayId: openingId! });
       if (!mounted.current || token !== seekToken.current) {
         if (opened) closeNative(next.replayId);
         return;

@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useWorkbenchClient, scopedWorkbenchCall } from '../lib/workbench-client';
+import React, { useCallback, useMemo, useEffect, useRef, useState } from 'react';
 import type { DatasetIdentity } from '@/contracts/execution';
 import type { ValidatedRequirement } from '@/validator/types';
 import { sameReplayPosition, type HistoricalTarget, type ReplayPosition } from '@/contracts/recording';
@@ -22,6 +23,7 @@ const coverageText = (value: ValidatedRequirement['businessCoverage']) => value 
 
 /** Reads C's actual attempts and F's fixed report through E's bounded facade. */
 export function ResultCenter({ projectId, executionId, onOpenSource }: { projectId: string; executionId: string; onOpenSource?(location: ResultSourceLocation): void }) {
+  const client = useWorkbenchClient();
   const [execution, setExecution] = useState<any>(null);
   const [steps, setSteps] = useState<Page<Step>>(empty);
   const [datasets, setDatasets] = useState<Page<Dataset>>(empty);
@@ -57,8 +59,8 @@ export function ResultCenter({ projectId, executionId, onOpenSource }: { project
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   const current = (expectedScope: string) => scopeRef.current === expectedScope;
-  const call = useCallback((method: string, body: Record<string, unknown> = {}) => window.studio.call(method, { projectId, executionId, ...body }), [projectId, executionId]);
-  const readItems = useCallback(async <T,>(collection: 'steps' | 'datasets', cursor?: string): Promise<Page<T>> =>
+  const call = useMemo(() => scopedWorkbenchCall(client, { projectId, executionId }), [client, projectId, executionId]);
+  const readItems = useCallback(async <C extends 'steps' | 'datasets',>(collection: C, cursor?: string) =>
     call('executionItems', { collection, limit: 30, maxBytes: 24576, ...(cursor ? { cursor } : {}) }), [call]);
   useEffect(() => {
     const token = ++request.current;
@@ -67,7 +69,7 @@ export function ResultCenter({ projectId, executionId, onOpenSource }: { project
     setLoadedScope(''); setExecution(null); setSteps(empty()); setDatasets(empty()); setSelected({});
     setActiveDataset(null); setBatches(empty()); setBatch(null); setRecords(empty());
     setAssessment(null); setAssessedSelection(''); setReport(null); setSavedReports(empty()); setRequirements(empty()); setReportDatasets(empty()); setError(''); setNotice(''); setPending('');
-    void Promise.all([call('execution'), readItems<Step>('steps'), readItems<Dataset>('datasets'), call('executionReports', { limit: 20, maxBytes: 24576 })]).then(([head, stepPage, datasetPage, saved]) => {
+    void Promise.all([call('execution'), readItems('steps'), readItems('datasets'), call('executionReports', { limit: 20, maxBytes: 24576 })]).then(([head, stepPage, datasetPage, saved]) => {
       if (token !== request.current || !current(scope)) return;
       setExecution(head); setSteps(stepPage); setDatasets(datasetPage); setSavedReports(saved); setLoadedScope(scope);
     }).catch(failure => { if (token === request.current && current(scope)) { setError(String(failure)); setLoadedScope(scope); } });
@@ -78,7 +80,7 @@ export function ResultCenter({ projectId, executionId, onOpenSource }: { project
     let cancelled = false;
     const token = request.current;
     const timer = setInterval(() => {
-      void Promise.all([call('execution'), readItems<Step>('steps'), readItems<Dataset>('datasets')]).then(([head, stepPage, datasetPage]) => {
+      void Promise.all([call('execution'), readItems('steps'), readItems('datasets')]).then(([head, stepPage, datasetPage]) => {
         if (cancelled || token !== request.current || !current(scope)) return;
         setExecution(head); setSteps(stepPage); setDatasets(datasetPage);
       }).catch(failure => { if (!cancelled && token === request.current && current(scope)) setError(String(failure)); });
@@ -160,10 +162,10 @@ export function ResultCenter({ projectId, executionId, onOpenSource }: { project
     const token = request.current;
     try {
       if (collection === 'steps') {
-        const page = await readItems<Step>('steps', cursor);
+        const page = await readItems('steps', cursor);
         if (current(scope) && token === request.current) setSteps(previous => previous.nextCursor === cursor ? { ...page, items: [...previous.items, ...page.items] } : previous);
       } else {
-        const page = await readItems<Dataset>('datasets', cursor);
+        const page = await readItems('datasets', cursor);
         if (current(scope) && token === request.current) setDatasets(previous => previous.nextCursor === cursor ? { ...page, items: [...previous.items, ...page.items] } : previous);
       }
     } catch (failure) { if (current(scope) && token === request.current) setError(String(failure)); }
@@ -185,10 +187,16 @@ export function ResultCenter({ projectId, executionId, onOpenSource }: { project
   const moreReport = async (collection: 'requirements' | 'datasets', cursor: string) => {
     const reportId = reportRef.current, token = reportRequest.current;
     if (!reportId) return;
-    try { const page = await call('executionReportItems', { reportId, collection, cursor, limit: collection === 'requirements' ? 20 : 30, maxBytes: 24576 });
-      if (!current(scope) || token !== reportRequest.current || reportRef.current !== reportId) return;
-      if (collection === 'requirements') setRequirements(previous => previous.nextCursor === cursor ? { ...page, items: [...previous.items, ...page.items] } : previous);
-      else setReportDatasets(previous => previous.nextCursor === cursor ? { ...page, items: [...previous.items, ...page.items] } : previous);
+    try {
+      if (collection === 'requirements') {
+        const page = await call('executionReportItems', { reportId, collection, cursor, limit: 20, maxBytes: 24576 });
+        if (!current(scope) || token !== reportRequest.current || reportRef.current !== reportId) return;
+        setRequirements(previous => previous.nextCursor === cursor ? { ...page, items: [...previous.items, ...page.items] } : previous);
+      } else {
+        const page = await call('executionReportItems', { reportId, collection, cursor, limit: 30, maxBytes: 24576 });
+        if (!current(scope) || token !== reportRequest.current || reportRef.current !== reportId) return;
+        setReportDatasets(previous => previous.nextCursor === cursor ? { ...page, items: [...previous.items, ...page.items] } : previous);
+      }
     } catch (failure) { if (current(scope) && token === reportRequest.current && reportRef.current === reportId) setError(String(failure)); }
   };
   const openSource = async (location: ResultSourceLocation) => {

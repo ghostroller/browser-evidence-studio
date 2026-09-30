@@ -1,13 +1,14 @@
 /** @vitest-environment jsdom */
+import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
 
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ThemeProvider, usePreferences } from '@/renderer/components/theme-provider';
 
 afterEach(() => {
   cleanup();
-  delete (window as Partial<Window>).studio;
+  clearTestWorkbenchClient();
 });
 
 function LayoutControls() {
@@ -25,7 +26,7 @@ test('serializes layout writes before resetting preferences', async () => {
   const call = vi.fn((_method: string, _body?: unknown) => new Promise<void>(resolve => {
     releases.push(resolve);
   }));
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><LayoutControls /></ThemeProvider>);
 
   fireEvent.click(screen.getByRole('button', { name: '保存工作台宽度' }));

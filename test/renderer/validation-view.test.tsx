@@ -1,7 +1,8 @@
 /** @vitest-environment jsdom */
+import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
 
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ValidationView } from '@/renderer/components/evidence-view';
 
@@ -44,7 +45,7 @@ function deferred<T>() {
 
 afterEach(() => {
   cleanup();
-  delete (window as Partial<Window>).studio;
+  clearTestWorkbenchClient();
 });
 
 test.each([
@@ -57,7 +58,7 @@ test.each([
     if (method === 'history') return history(runId, 'foreign checkpoint', 'foreign-screenshot', returnedProjectId, returnedRunId);
     throw new Error(`Unexpected studio method: ${method}`);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
 
   render(<ValidationView record={record} onReview={vi.fn()} checkpoints={[]} runs={[demoRun(runId)]} />);
   fireEvent.change(screen.getByRole('combobox', { name: '同项目人工示范' }), { target: { value: runId } });
@@ -78,7 +79,7 @@ test('keeps the newer demonstration when older history returns last', async () =
     if (method === 'history' && body.runId === 'demo-second') return second.promise;
     throw new Error(`Unexpected studio method: ${method}`);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
 
   render(<ValidationView record={record} onReview={vi.fn()} checkpoints={[]} runs={[demoRun('demo-first'), demoRun('demo-second')]} />);
   const selector = screen.getByRole<HTMLSelectElement>('combobox', { name: '同项目人工示范' });
@@ -115,7 +116,7 @@ test('finds comparison checkpoints after the bounded first history page', async 
     }
     throw new Error(`Unexpected studio method: ${method}`);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
 
   render(<ValidationView record={record} onReview={vi.fn()} checkpoints={[{ key: 'earlier', title: 'early actual' }]}
     checkpointCursor="actual-next" runs={[demoRun('demo-late')]} />);
@@ -138,7 +139,7 @@ test('reports incomplete checkpoint reads without claiming a requirement is unco
     if (method === 'checkpoints' && body.runId === validationRunId) throw new Error('index temporarily unavailable');
     throw new Error(`Unexpected studio method: ${method}`);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
 
   render(<ValidationView record={record} onReview={vi.fn()} checkpoints={[]} checkpointCursor="actual-next" runs={[demoRun('demo-current')]} />);
   fireEvent.change(screen.getByRole('combobox', { name: '同项目人工示范' }), { target: { value: 'demo-current' } });

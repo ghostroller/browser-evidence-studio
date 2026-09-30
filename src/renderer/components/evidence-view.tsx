@@ -1,3 +1,5 @@
+import { useWorkbenchClient } from '../lib/workbench-client';
+import type { WorkbenchClient } from '@/contracts/workbench';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { StatusBadge } from './status-badge';
 import { Button } from './ui/button';
@@ -50,6 +52,7 @@ export function RunRecoveryView({ runId, active, onRecovered, onOpen }: {
   onRecovered(): Promise<any>;
   onOpen(): Promise<any>;
 }) {
+  const client = useWorkbenchClient();
   const [data, setData] = useState<any>(null);
   const [pending, setPending] = useState('');
   const [error, setError] = useState('');
@@ -59,7 +62,7 @@ export function RunRecoveryView({ runId, active, onRecovered, onOpen }: {
     const current = ++request.current;
     setPending('inspect'); setError(''); setData(null);
     try {
-      const result = await window.studio.call('inspectRunRecovery', { runId });
+      const result = await client.call('inspectRunRecovery', { runId });
       if (current === request.current) setData(result);
     } catch (failure) {
       if (current === request.current) setError(String(failure));
@@ -71,7 +74,7 @@ export function RunRecoveryView({ runId, active, onRecovered, onOpen }: {
   const recover = async () => {
     setPending('recover'); setError('');
     try {
-      await window.studio.call('recoverRun', { runId, expectedFingerprint: data.inspection.lockFingerprint });
+      await client.call('recoverRun', { runId, expectedFingerprint: data.inspection.lockFingerprint });
       setRecovered('archive');
       await onRecovered();
     } catch (failure) {
@@ -81,7 +84,7 @@ export function RunRecoveryView({ runId, active, onRecovered, onOpen }: {
   const recoverIndexes = async () => {
     setPending('indexes'); setError('');
     try {
-      await window.studio.call('recoverRunIndexes', { runId, expectedFingerprint: data.inspection.lockFingerprint });
+      await client.call('recoverRunIndexes', { runId, expectedFingerprint: data.inspection.lockFingerprint });
       setRecovered('indexes');
       await onRecovered();
       await inspect();
@@ -175,7 +178,7 @@ export function ArtifactView({ value, onRead }: { value: any; onRead: (id: strin
 
 type CheckpointSearch = { matches: any[]; complete: boolean; issue: string };
 
-async function findCheckpoints(runId: string, firstPage: any[], firstCursor: string | undefined, keys: string[], current: () => boolean): Promise<CheckpointSearch> {
+async function findCheckpoints(client: WorkbenchClient, runId: string, firstPage: any[], firstCursor: string | undefined, keys: string[], current: () => boolean): Promise<CheckpointSearch> {
   const wanted = new Set(keys);
   const matches = firstPage.filter(checkpoint => wanted.has(checkpoint.key));
   for (const checkpoint of matches) wanted.delete(checkpoint.key);
@@ -185,7 +188,7 @@ async function findCheckpoints(runId: string, firstPage: any[], firstCursor: str
   while (cursor && wanted.size && current()) {
     if (seen.has(cursor)) return { matches, complete: false, issue: '保存点游标重复，后续材料尚未读完。' };
     seen.add(cursor);
-    const page = await window.studio.call('checkpoints', { runId, cursor, limit: 100, maxBytes: 32768 });
+    const page = await client.call('checkpoints', { runId, cursor, limit: 100, maxBytes: 32768 });
     if (!current()) break;
     if (!page || !Array.isArray(page.items)) return { matches, complete: false, issue: '保存点返回内容无法读取，无法确认此 key 是否有匹配材料。' };
     for (const checkpoint of items(page)) {
@@ -205,6 +208,7 @@ export function ValidationView({ record, onReview, checkpoints, checkpointCursor
   historyError?: string;
   runs: any[];
 }) {
+  const client = useWorkbenchClient();
   const [verdict, setVerdict] = useState('accept');
   const [reason, setReason] = useState('');
   const [scope, setScope] = useState('all');
@@ -228,7 +232,7 @@ export function ValidationView({ record, onReview, checkpoints, checkpointCursor
     const request = ++reviewRequest.current;
     setReviewLoading(true); setReviewError('');
     try {
-      const page = await window.studio.call('reviews', { id: record.id, limit: 20, maxBytes: 32768, ...(cursor ? { cursor } : {}) });
+      const page = await client.call('reviews', { id: record.id, limit: 20, maxBytes: 32768, ...(cursor ? { cursor } : {}) });
       if (request === reviewRequest.current) setReviewPage(page);
     } catch (error) {
       if (request === reviewRequest.current) setReviewError(String(error));
@@ -245,7 +249,7 @@ export function ValidationView({ record, onReview, checkpoints, checkpointCursor
       setActualSearch({ matches: checkpoints.filter(checkpoint => keys.includes(checkpoint.key)), complete: false, issue: `保存点读取失败：${historyError}` });
     } else {
       setActualSearch({ matches: checkpoints.filter(checkpoint => keys.includes(checkpoint.key)), complete: false, issue: '' });
-      void findCheckpoints(record.runId, checkpoints, checkpointCursor, keys, current).then(result => {
+      void findCheckpoints(client, record.runId, checkpoints, checkpointCursor, keys, current).then(result => {
         if (current()) setActualSearch(result);
       }).catch(error => {
         if (current()) setActualSearch({ matches: checkpoints.filter(checkpoint => keys.includes(checkpoint.key)), complete: false, issue: `保存点读取失败：${String(error)}` });
@@ -258,12 +262,12 @@ export function ValidationView({ record, onReview, checkpoints, checkpointCursor
     setDemoCheckpoints([]);
     setDemoSearch({ matches: [], complete: false, issue: '' });
     if (demoId && demonstrations.some(run => run.id === demoId)) {
-      void window.studio.call('history', { runId: demoId }).then(async data => {
+      void client.call('history', { runId: demoId }).then(async data => {
         if (request !== demoRequest.current) return;
         if (data.summary?.run?.projectId !== record.projectId || data.summary?.run?.id !== demoId) throw new Error('示范不属于当前验收项目，未加载对照材料。');
         const first = items(data.checkpoints);
         setDemoCheckpoints(first);
-        const result = await findCheckpoints(demoId, first, data.checkpoints?.nextCursor, JSON.parse(keysSignature) as string[], () => request === demoRequest.current);
+        const result = await findCheckpoints(client, demoId, first, data.checkpoints?.nextCursor, JSON.parse(keysSignature) as string[], () => request === demoRequest.current);
         if (request === demoRequest.current) setDemoSearch(result);
       }).catch(error => {
         if (request !== demoRequest.current) return;

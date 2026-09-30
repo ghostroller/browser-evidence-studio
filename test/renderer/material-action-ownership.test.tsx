@@ -1,10 +1,11 @@
 /** @vitest-environment jsdom */
+import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { MaterialWorkbench } from '@/renderer/components/material-workbench';
 
-afterEach(() => { cleanup(); localStorage.clear(); delete (window as Partial<Window>).studio; });
+afterEach(() => { cleanup(); localStorage.clear(); clearTestWorkbenchClient(); });
 
 function fixture() {
   let rejectRename!: (error: Error) => void;
@@ -24,7 +25,7 @@ function fixture() {
       default: throw new Error(`Unexpected call: ${method}`);
     }
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   const element = (projectId: string) => <MaterialWorkbench projectId={projectId} view="archives" onOpenReplay={vi.fn()} onSelectTarget={vi.fn()} />;
   const view = render(element('first'));
   const ready = async (project: string) => {

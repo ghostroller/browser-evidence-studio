@@ -1,3 +1,4 @@
+import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
 import React, { useState } from 'react';
 import { vi } from 'vitest';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
@@ -45,7 +46,7 @@ export async function fixture(options:{cards?:number;empty?:boolean}={}) {
     if(method==='prepareMaterialArchive')return service.prepareArchive(projectId,body.draftId);
     if(method==='state')return {runs:[{id:'recording',status:'sealed'}]};
     throw new Error(method);
-  });window.studio={call,bounds:vi.fn()};
+  });setTestWorkbenchClient({call,bounds:vi.fn()});
   return {root,materials,draft,call,fixed,fail:()=>{failEdit=true;},get:()=>materials.service.getDraft('project',draft.draftId)};
 }
 export function Harness(props:Partial<React.ComponentProps<typeof MaterialWorkbench>>={}) {

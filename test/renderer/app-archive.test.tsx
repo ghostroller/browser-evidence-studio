@@ -1,7 +1,8 @@
 /** @vitest-environment jsdom */
+import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
 
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { App } from '@/renderer/app';
 import { ThemeProvider } from '@/renderer/components/theme-provider';
@@ -81,7 +82,7 @@ test('urgent stop remains available during an unrelated pending request and targ
     if (method === 'stopRunner') return { stopped: true };
     return emptyWorkspace(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
   fireEvent.mouseDown(screen.getByRole('tab', { name: '实现与结果' }), { button: 0, ctrlKey: false });
   await waitFor(() => expect((screen.getByRole('button', { name: '保存当前登录环境' }) as HTMLButtonElement).disabled).toBe(false));
@@ -99,7 +100,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   localStorage.clear();
-  delete (window as Partial<Window>).studio;
+  clearTestWorkbenchClient();
 });
 
 test('quick project creation retries the same operation after a lost response',async()=>{
@@ -112,7 +113,7 @@ test('quick project creation retries the same operation after a lost response',a
       if(first){first=false;throw new Error('reply lost');}return receipts.get(body.operationId);
     }
     return emptyWorkspace(method);
-  });window.studio={call,bounds:vi.fn()};
+  });setTestWorkbenchClient({call,bounds:vi.fn()});
   render(<ThemeProvider initial={{theme:'light',layout:{}}}><App/></ThemeProvider>);
   fireEvent.click(screen.getByRole('button',{name:'新建项目'}));fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'Synthetic retry'}});
   fireEvent.click(screen.getByRole('button',{name:'创建项目'}));await screen.findAllByText('reply lost');
@@ -133,9 +134,9 @@ test('first management project stays unused across modal close; explicit selecti
     if(method==='materialDrafts')return materials.listDrafts(body.projectId,body);
     if(method==='materialRevisions')return materials.listRevisions(body.projectId,body);
     return emptyWorkspace(method);
-  });window.studio={call,bounds:vi.fn()};
+  });setTestWorkbenchClient({call,bounds:vi.fn()});
   render(<ThemeProvider initial={{theme:'light',layout:{}}}><App/></ThemeProvider>);
-  await waitFor(()=>expect(call).toHaveBeenCalledWith('state'));
+  await waitFor(()=>expect(call).toHaveBeenCalledWith('state', {}));
   fireEvent.click(screen.getByRole('button',{name:'项目与环境管理'}));
   const dialog=within(await screen.findByRole('dialog'));
   fireEvent.click(dialog.getByRole('button',{name:'新建项目'}));fireEvent.change(dialog.getByLabelText('项目名称'),{target:{value:'Unused first project'}});
@@ -169,7 +170,7 @@ test('a readable sealed run offers explicit trusted index repair with its inspec
     if (method === 'recoverRunIndexes') return { runId: runA, replay: {}, resources: {} };
     return emptyWorkspace(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
 
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
   await showRecordingArchive();
@@ -193,7 +194,7 @@ test('a late history response cannot replace the selected archive or redirect ar
     if (method === 'artifact') return { id: (body as { id: string }).id, value: 'B material' };
     return emptyWorkspace(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
 
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
   await showRecordingArchive();
@@ -235,7 +236,7 @@ test('an old artifact response cannot appear in a newly opened archive', async (
     }
     return emptyWorkspace(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
 
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
   await showRecordingArchive();
@@ -275,7 +276,7 @@ test('a delayed artifact from checkpoint A cannot appear under checkpoint B in t
     }
     return emptyWorkspace(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
 
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
   await showRecordingArchive();
@@ -314,7 +315,7 @@ test('changing a timeline range clears its cursor and discards a pending old-ran
     }
     return emptyWorkspace(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
 
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
   await showRecordingArchive();
@@ -337,4 +338,24 @@ test('changing a timeline range clears its cursor and discards a pending old-ran
   fireEvent.click(within(dialog).getByRole('button', { name: '读取范围' }));
   await waitFor(() => expect(within(dialog).getByText('fresh-event')).toBeTruthy());
   expect(call).toHaveBeenCalledWith('events', { runId: runA, fromSequence: 10, toSequence: 20, cursor: undefined, limit: 50, maxBytes: 16000 });
+});
+
+test.each([false, true])('injected client refreshes and unsubscribes without a preload global (StrictMode=%s)', async strict => {
+  stubLayout();
+  const call = vi.fn(async (method: string) => method === 'state' ? { projects: [], profiles: [], runs: [] } : {});
+  const unsubscribe = vi.fn();
+  let changed!: () => void;
+  const onChanged = vi.fn((listener: () => void) => { changed = listener; return unsubscribe; });
+  setTestWorkbenchClient({ call, bounds: vi.fn(), onChanged });
+  expect(window.studio).toBeUndefined();
+  const app = <ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>;
+  const view = render(app, { reactStrictMode: strict });
+  const mounts = strict ? 2 : 1;
+  await waitFor(() => expect(call.mock.calls.filter(([method]) => method === 'state')).toHaveLength(mounts));
+  expect(onChanged).toHaveBeenCalledTimes(mounts);
+  expect(unsubscribe).toHaveBeenCalledTimes(mounts - 1);
+  act(() => { changed(); changed(); });
+  await waitFor(() => expect(call.mock.calls.filter(([method]) => method === 'state')).toHaveLength(mounts + 1));
+  view.unmount();
+  expect(unsubscribe).toHaveBeenCalledTimes(mounts);
 });

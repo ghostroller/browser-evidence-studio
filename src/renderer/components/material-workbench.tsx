@@ -1,4 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import type { DraftSummary, RevisionSummary, MaterialEdit, MaterialEntityCollection } from '@/contracts/workbench-project';
+import { useWorkbenchClient, scopedWorkbenchCall } from '../lib/workbench-client';
+import React, { useCallback, useMemo, useEffect, useRef, useState } from 'react';
 import type { CheckpointCard, MaterialAnnotation, MaterialField, MaterialRequirement } from '@/contracts/materials';
 import { sameReplayPosition, type HistoricalTarget, type ReplayPosition } from '@/contracts/recording';
 import type { WorkspaceView } from '@/contracts/workspace';
@@ -15,15 +17,7 @@ type Collection = 'requirements' | 'fields' | 'checkpoints' | 'annotations' | 'r
 type Page<T> = { items: T[]; nextCursor?: string; outputTruncated: boolean };
 type Draft = { name?: string; hidden?: boolean; current?: boolean; taskBrief?: { objective: string; scope: string }; draftId: string; draftRevision: number; baseRevisionId?: string; status?: string; counts?: Record<string, number> };
 type Revision = { displayNumber?: number; name?: string; revisionId: string; contentHash: string; status?: string; createdAt?: string };
-type Edit = { operation: 'upsert'; collection: Exclude<Collection, 'recordingRefs'>; item: unknown }
-  | { operation: 'remove'; collection: Exclude<Collection, 'recordingRefs'>; id: string }
-  | { operation:'field-binding';fieldId:string;binding:{kind:'keep'|'clear'}|{kind:'set';target:HistoricalTarget;checkpointId:string;annotationId?:string} }
-  | { operation: 'task-brief'; taskBrief: { objective: string; scope: string } }
-  | { operation: 'add-field-example'; fieldId: string; example: import('@/contracts/materials').FieldExample }
-  | { operation: 'remove-field-example'; fieldId: string; exampleId: string }
-  | { operation: 'recordings'; recordingRefs: string[] }
-  | { operation: 'copy-checkpoint' | 'remove-checkpoint'; checkpointId: string }
-  | { operation: 'move-checkpoint'; checkpointId: string; position: ReplayPosition };
+type Edit = MaterialEdit;
 const COLLECTIONS: Collection[] = ['requirements', 'fields', 'checkpoints', 'annotations', 'recordingRefs'];
 const empty = (): Record<Collection, Page<any>> => ({ requirements: { items: [], outputTruncated: false }, fields: { items: [], outputTruncated: false },
   checkpoints: { items: [], outputTruncated: false }, annotations: { items: [], outputTruncated: false }, recordingRefs: { items: [], outputTruncated: false } });
@@ -39,8 +33,9 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   live?:boolean; liveScope?:{pageId:string;generation:number;leaseEpoch:number}; liveSelection?:any; onLiveSelect?(selectionId:string):Promise<void>; onCancelLive?():Promise<void>; onPublished?(id:string):void;
   onOpenReplay(position: ReplayPosition): void; onSelectTarget(request: SelectionRequest): void;
 }) {
-  const [drafts, setDrafts] = useState<Page<Draft>>({ items: [], outputTruncated: false });
-  const [revisions, setRevisions] = useState<Page<Revision>>({ items: [], outputTruncated: false });
+  const client = useWorkbenchClient();
+  const [drafts, setDrafts] = useState<Page<DraftSummary>>({ items: [], outputTruncated: false });
+  const [revisions, setRevisions] = useState<Page<RevisionSummary>>({ items: [], outputTruncated: false });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [pages, setPages] = useState(empty);
   const entityCache = useRef<Record<string, Record<string, any>>>({});
@@ -146,7 +141,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
     setFieldPolicy('any-evidenced'); setFieldValueType(''); setSourceProofJson(''); setFieldTarget(null); setFieldCheckpointId('');setFieldAnnotationId('');
     setAnnotationId(''); setAnnotationTarget(null); setAnnotationText(''); setInterpretation('observed'); setConflict(null); setNotice('');
   };
-  const call = useCallback((method: string, body: Record<string, unknown> = {}) => window.studio.call(method, { projectId, ...body }), [projectId]);
+  const call = useMemo(() => scopedWorkbenchCall(client, { projectId }), [client, projectId]);
   const refreshLists = useCallback(async () => {
     if(!ownsSession())return;
     const token = ++listRequest.current;
@@ -263,7 +258,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
     }catch(failure){if(ownsSession())setError(String(failure));}
     finally{changingEditor.current=false;if(ownsSession())setPending('');}
   };
-  const readEntity = async <T,>(collection: Collection, id: string): Promise<T> => {
+  const readEntity = async <T,>(collection: MaterialEntityCollection, id: string): Promise<T> => {
     const selected=draftRef.current, token=selectionRequest.current;
     if(!selected)throw new Error('工作副本尚未准备');
     const value=await call('materialEntity',{kind:'draft',draftId:selected.draftId,collection,entityId:id});
@@ -428,14 +423,14 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
       let result=previous?await call('authoringOperation',request):null;if(!current())return;
       if(result?.stage==='source-expired'||result?.stage==='interrupted'){setRetryCapture({...request,stage:result.stage});setError(result.reason||'原采集已中断或来源过期；请重新选择，已保存原件仍保留。');return;}
       if(result?.stage==='acquiring'||result?.stage==='unknown'){setRetryCapture({...request,stage:result.stage});setError(result.reason||'采集结果尚未确认；请查询操作状态，不会再次采集。');return;}
-      if(request.paused){if(result?.stage==='receipt-saved')result=await call('captureAndAuthor',request);if(!current())return;setRetryCapture({...request,stage:result?.stage??'unknown',recovered:result?.stage==='associated'?result:undefined});if(result?.draft){draftRef.current=result.draft;setDraft(result.draft);await Promise.all(COLLECTIONS.map(collection=>loadCollection(result.draft,collection,token)));}if(current())setNotice('已查询原操作；当前输入保留。已保存的样例可显式绑定到当前字段。');return;}
+      if(request.paused){if(result?.stage==='receipt-saved')result=await call('captureAndAuthor',request);if(!current())return;setRetryCapture({...request,stage:result?.stage??'unknown',recovered:result?.stage==='associated'?result:undefined});if(result?.draft){const associatedDraft=result.draft;draftRef.current=associatedDraft;setDraft(associatedDraft);await Promise.all(COLLECTIONS.map(collection=>loadCollection(associatedDraft,collection,token)));}if(current())setNotice('已查询原操作；当前输入保留。已保存的样例可显式绑定到当前字段。');return;}
       if(result?.stage!=='associated')result=await call('captureAndAuthor',request);if(!current())return;
-      if(result.status==='partial'){setRetryCapture({...request,stage:result.stage??(result.receiptId?'receipt-saved':'unknown')});setError([result.reason,result.error].filter(Boolean).join(' '));return;}setRetryCapture(null);
+      if(result.status!=='saved'){setRetryCapture({...request,stage:result.stage});setError([result.reason,result.error].filter(Boolean).join(' '));return;}setRetryCapture(null);
       draftRef.current=result.draft;setDraft(result.draft);
       await Promise.all(COLLECTIONS.map(collection=>loadCollection(result.draft,collection,token)));if(!current())return;
       await refreshLists();if(!current())return;
       setCardId(result.card.id);setTitle(result.card.title);setNotes(result.card.notes);setKind(result.card.kind);setCardRequirementIds(result.card.requirementIds);setNewCardRequirement('');setAnnotationId('');setAnnotationTarget(null);setAnnotationText('');
-      if(request.purpose==='field'||request.selection){setEditor('field');setFieldId(request.fieldId??'');markDirty('field');setFieldTarget(result.target);setFieldCheckpointId(result.card.id);setBindingAction('set');setFieldAnnotationId('');if(!fieldDataset)setFieldDataset('records');}
+      if(request.purpose==='field'||request.selection){setEditor('field');setFieldId(request.fieldId??'');markDirty('field');setFieldTarget(result.target ?? null);setFieldCheckpointId(result.card.id);setBindingAction('set');setFieldAnnotationId('');if(!fieldDataset)setFieldDataset('records');}
       setNotice(request.selection?'已固化点击时刻；这是新的现场示例，旧保存点未移动。':'已保存原始材料并关联同一张可编辑保存点。');
     }catch(failure){if(current()){
       const request=retryCapture.current;
@@ -534,7 +529,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
       if(fixed.revisionId!==item.revisionId||fixed.contentHash!==item.contentHash)throw new Error('固定版本身份或内容 hash 不匹配。');
       const collections=await Promise.all(COLLECTIONS.map(async collection=>[collection,await call('materialCollection',{kind:'revision',revisionId:item.revisionId,contentHash:item.contentHash,collection,limit:50,maxBytes:24576})] as const));
       if(scopeRef.current!==scope||revisionRequest.current!==token)return;
-      setViewedRevision({...fixed,displayNumber:item.displayNumber});setViewedPages(Object.fromEntries(collections) as Record<Collection,Page<any>>);
+      setViewedRevision({...fixed,displayNumber:item.displayNumber});setViewedPages({ ...empty(), ...Object.fromEntries(collections) });
     }catch(failure){if(scopeRef.current===scope&&revisionRequest.current===token)setError(`固定版本读取失败：${String(failure)}`);}
   };
   const moreRevisionCollection=async(collection:Collection,cursor:string)=>{
@@ -547,10 +542,10 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
   const moreList = async (kind: 'drafts' | 'revisions', cursor: string) => {
     const scope = projectId, token = listRequest.current;
     try { if (kind === 'drafts') {
-      const page: Page<Draft> = await call('materialDrafts', { cursor, limit: 50, maxBytes: 24576 });
+      const page: Page<DraftSummary> = await call('materialDrafts', { cursor, limit: 50, maxBytes: 24576 });
       if (scopeRef.current === scope && listRequest.current === token) setDrafts(previous => previous.nextCursor === cursor ? { ...page, items: [...previous.items, ...page.items] } : previous);
     } else {
-      const page: Page<Revision> = await call('materialRevisions', { cursor, limit: 50, maxBytes: 24576 });
+      const page: Page<RevisionSummary> = await call('materialRevisions', { cursor, limit: 50, maxBytes: 24576 });
       if (scopeRef.current === scope && listRequest.current === token) setRevisions(previous => previous.nextCursor === cursor ? { ...page, items: [...previous.items, ...page.items] } : previous);
     } } catch (failure) { if (scopeRef.current === scope && listRequest.current === token) setError(String(failure)); }
   };
@@ -569,7 +564,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
     const current=await call('materialCatalog');
     if(!ownsSession())return;
     const normalized={...patch,...(patch.name===undefined?{}:{name:patch.name.trim()})};
-    if(Object.entries(normalized).every(([key,value])=>(current[kind]?.[id]?.[key]??(key==='hidden'?false:''))===value))return;
+    if(Object.entries(normalized).every(([key,value])=>(current[kind]?.[id]?.[key as keyof typeof normalized]??(key==='hidden'?false:''))===value))return;
     setError('');const updated=await call('manageMaterialCatalog',{kind,id,expectedCatalogRevision:current.catalogRevision,...normalized});
     if(!ownsSession())return;setCatalog(updated);await refreshLists();setNotice('目录信息已保存。');
   });
@@ -613,11 +608,11 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
       {archiveTab==='revisions'&&<>
         <Button disabled={!draft||!!pending} onClick={()=>run(prepareArchive)}>{publication.current?'恢复上次存档操作':'保存存档版本'}</Button>
         {archivePrompt&&<section role="region" aria-label="确认存档范围"><h3>固定当前工作副本</h3><p>保存点、字段、注释、任务目标与引用录制将成为一致快照。</p><Label>版本名称<Input value={archiveName} onChange={event=>setArchiveName(event.target.value)}/></Label>{archiveImpact.length>0&&<p>以下录制尚未结束：{archiveImpact.join('、')}。结束后保留浏览页面。</p>}<Button disabled={!!pending} onClick={()=>run(confirmArchive)}>{archiveImpact.length?'结束这段录制并保存版本（保留页面）':'确认保存存档版本'}</Button><Button onClick={()=>setArchivePrompt(false)}>返回继续编辑</Button></section>}
-        {revisions.items.filter(item=>showRemoved||!catalog?.revisions?.[item.revisionId]?.hidden).map(item=><section className="material-revision" key={item.revisionId}><strong>V{item.displayNumber??'—'} {catalog?.revisions?.[item.revisionId]?.name}</strong><span>{item.createdAt?new Date(item.createdAt).toLocaleString():item.status}</span><small>{item.revisionId} · {item.contentHash?.slice(0,12)}</small><div className="material-actions"><Button disabled={item.status==='unavailable'||!!pending} onClick={()=>run(()=>viewRevision(item))}>查看固定版本</Button><Button disabled={!!pending} onClick={()=>run(()=>manage('revisions',item.revisionId,{hidden:!catalog?.revisions?.[item.revisionId]?.hidden}))}>{catalog?.revisions?.[item.revisionId]?.hidden?'恢复版本':'隐藏版本'}</Button></div></section>)}
+        {revisions.items.filter(item=>showRemoved||!catalog?.revisions?.[item.revisionId]?.hidden).map(item=><section className="material-revision" key={item.revisionId}><strong>V{('displayNumber' in item?item.displayNumber:undefined)??'—'} {catalog?.revisions?.[item.revisionId]?.name}</strong><span>{'createdAt' in item&&item.createdAt?new Date(item.createdAt).toLocaleString():item.status}</span><small>{item.revisionId} · {'contentHash' in item?item.contentHash.slice(0,12):undefined}</small><div className="material-actions"><Button disabled={item.status==='unavailable'||!!pending} onClick={()=>{if(item.status==='available')run(()=>viewRevision(item));}}>查看固定版本</Button><Button disabled={!!pending} onClick={()=>run(()=>manage('revisions',item.revisionId,{hidden:!catalog?.revisions?.[item.revisionId]?.hidden}))}>{catalog?.revisions?.[item.revisionId]?.hidden?'恢复版本':'隐藏版本'}</Button></div></section>)}
         {revisions.nextCursor&&<Button onClick={()=>run(()=>moreList('revisions',revisions.nextCursor!))}>更多版本</Button>}
         {viewedRevision&&<section aria-label="固定版本只读"><h3>存档 V{viewedRevision.displayNumber??'—'} · 只读</h3><p>hash {viewedRevision.contentHash}</p><p>{(viewedRevision as any).taskBrief?.objective}</p><Button disabled={!!pending} onClick={()=>run(()=>createDraft(viewedRevision.revisionId))}>基于此版继续编辑</Button><Button onClick={()=>{setViewedRevision(null);onEditWorkspace?.();}}>返回当前工作副本</Button><Label>版本备注<Input defaultValue={catalog?.revisions?.[viewedRevision.revisionId]?.note??''} key={viewedRevision.revisionId+'note'} onBlur={event=>run(()=>manage('revisions',viewedRevision.revisionId,{note:event.target.value}))}/></Label><Label>版本标签<Input defaultValue={catalog?.revisions?.[viewedRevision.revisionId]?.name??''} key={viewedRevision.revisionId} onBlur={event=>run(()=>manage('revisions',viewedRevision.revisionId,{name:event.target.value}))}/></Label><Label>比较起始版本<NativeSelect value={compareFrom} onChange={event=>setCompareFrom(event.target.value)}><option value="">选择版本</option>{revisions.items.filter(item=>item.status!=='unavailable').map(item=><option key={item.revisionId} value={item.revisionId}>V{item.displayNumber}</option>)}</NativeSelect></Label><Button disabled={!compareFrom} onClick={()=>run(async()=>{let cursor:string|undefined;const result:any[]=[];do{const page=await call('materialDiff',{fromRevisionId:compareFrom,toRevisionId:viewedRevision.revisionId,cursor,limit:100,maxBytes:28672});result.push(...page.items);cursor=page.nextCursor;}while(cursor);setDifferences(result);})}>比较版本</Button>{differences.map((item,index)=><p key={index}>{item.collection} · {item.id} · {item.change} · {item.changedFields.join('、')}</p>)}{COLLECTIONS.map(collection=><div key={collection}><h4>{{requirements:'需求',fields:'字段',checkpoints:'保存点',annotations:'注释',recordingRefs:'来源录制'}[collection]}</h4>{viewedPages[collection].items.map((item:any,index:number)=><div key={item.id??index}><p>{collection==='recordingRefs'?item:item.description??item.title??item.name??item.text??item.id}</p>{collection==='checkpoints'&&<Button onClick={()=>onOpenReplay(item.anchor)}>查看来源</Button>}</div>)}{viewedPages[collection].nextCursor&&<Button onClick={()=>run(()=>moreRevisionCollection(collection,viewedPages[collection].nextCursor!))}>更多{collection}</Button>}</div>)}</section>}
       </>}
-      {archiveTab==='drafts'&&<>{differences.map((item,index)=><p key={index}>{item.collection} · {item.id} · {item.change} · {item.changedFields.join('、')}</p>)}<Button disabled={!!pending} onClick={()=>run(()=>createDraft())}>新建工作副本</Button>{drafts.items.filter(item=>showRemoved||!catalog?.drafts?.[item.draftId]?.hidden).map(item=><section key={item.draftId}><strong>{catalog?.drafts?.[item.draftId]?.name||'其他工作副本'} {catalog?.workingDraftId===item.draftId?'· 当前':''}</strong><p>来源版本 {item.baseRevisionId??'从空白开始'} · 修订 {item.draftRevision}</p><Button disabled={!!pending} onClick={()=>run(async()=>{if(!await saveEditor())return;let cursor:string|undefined;const values:any[]=[];do{const page=await call('materialDraftDiff',{draftId:item.draftId,cursor,limit:100,maxBytes:28672});values.push(...page.items);cursor=page.nextCursor;}while(cursor);setDifferences(values);setNotice('此工作副本相对来源版本的变更（空白副本相对空资料）。');})}>查看副本差异</Button><Label>副本名称<Input defaultValue={catalog?.drafts?.[item.draftId]?.name??''} onBlur={event=>run(()=>manage('drafts',item.draftId,{name:event.target.value}))}/></Label><Button disabled={!!pending||item.status==='unavailable'||catalog?.drafts?.[item.draftId]?.hidden} onClick={()=>switchDraft(item.draftId)}>设为当前并编辑</Button><Button disabled={!!pending} onClick={()=>run(()=>copyWorkingDraft(item.draftId))}>复制工作副本</Button><Button disabled={!!pending||catalog?.workingDraftId===item.draftId} onClick={()=>run(()=>manage('drafts',item.draftId,{hidden:!catalog?.drafts?.[item.draftId]?.hidden}))}>{catalog?.drafts?.[item.draftId]?.hidden?'恢复副本':'移除副本'}</Button></section>)}{drafts.nextCursor&&<Button onClick={()=>run(()=>moreList('drafts',drafts.nextCursor!))}>更多工作副本</Button>}</>}
+      {archiveTab==='drafts'&&<>{differences.map((item,index)=><p key={index}>{item.collection} · {item.id} · {item.change} · {item.changedFields.join('、')}</p>)}<Button disabled={!!pending} onClick={()=>run(()=>createDraft())}>新建工作副本</Button>{drafts.items.filter(item=>showRemoved||!catalog?.drafts?.[item.draftId]?.hidden).map(item=><section key={item.draftId}><strong>{catalog?.drafts?.[item.draftId]?.name||'其他工作副本'} {catalog?.workingDraftId===item.draftId?'· 当前':''}</strong><p>来源版本 {('baseRevisionId' in item?item.baseRevisionId:undefined)??'从空白开始'} · 修订 {'draftRevision' in item?item.draftRevision:undefined}</p><Button disabled={!!pending} onClick={()=>run(async()=>{if(!await saveEditor())return;let cursor:string|undefined;const values:any[]=[];do{const page=await call('materialDraftDiff',{draftId:item.draftId,cursor,limit:100,maxBytes:28672});values.push(...page.items);cursor=page.nextCursor;}while(cursor);setDifferences(values);setNotice('此工作副本相对来源版本的变更（空白副本相对空资料）。');})}>查看副本差异</Button><Label>副本名称<Input defaultValue={catalog?.drafts?.[item.draftId]?.name??''} onBlur={event=>run(()=>manage('drafts',item.draftId,{name:event.target.value}))}/></Label><Button disabled={!!pending||item.status==='unavailable'||catalog?.drafts?.[item.draftId]?.hidden} onClick={()=>switchDraft(item.draftId)}>设为当前并编辑</Button><Button disabled={!!pending} onClick={()=>run(()=>copyWorkingDraft(item.draftId))}>复制工作副本</Button><Button disabled={!!pending||catalog?.workingDraftId===item.draftId} onClick={()=>run(()=>manage('drafts',item.draftId,{hidden:!catalog?.drafts?.[item.draftId]?.hidden}))}>{catalog?.drafts?.[item.draftId]?.hidden?'恢复副本':'移除副本'}</Button></section>)}{drafts.nextCursor&&<Button onClick={()=>run(()=>moreList('drafts',drafts.nextCursor!))}>更多工作副本</Button>}</>}
     </>:viewedRevision?<div><p>正在查看固定版本；内容只读。</p><Button onClick={()=>{setViewedRevision(null);onEditWorkspace?.();}}>返回当前工作副本</Button><Button onClick={()=>run(()=>createDraft(viewedRevision.revisionId))}>基于此版继续编辑</Button></div>:!draft?<p>正在准备工作副本。</p>:<>
       <div className="material-actions material-save-actions"><Button disabled={!!pending||!!liveIntent||locksEditor(retryCapture.current)} onClick={()=>run(()=>saveEditor())}>保存修改</Button>{pending&&<span role="status">{pending}</span>}<Button disabled={!!pending||!dirty.current.size} onClick={()=>setDiscardPrompt(true)}>撤销未保存输入</Button></div>{discardPrompt&&<p role="alert">恢复服务器已保存的工作副本，放弃当前未保存输入？<Button onClick={()=>run(async()=>{if(!draft)return;localStorage.removeItem(`bes.editor.${projectId}.${draft.draftId}`);setDiscardPrompt(false);await openDraft(draft.draftId);})}>确认撤销输入</Button><Button onClick={()=>setDiscardPrompt(false)}>保留输入</Button></p>}
       {view==='implementation'?<section><h3>任务目标</h3><p>{draft.taskBrief?.objective||'未填写任务目标'}</p><Button onClick={()=>run(prepareMapping)}>读取实现器映射</Button>{mapping&&<div role="status"><h4>实现映射待确认</h4>{mapping.fields.map((field:any)=><p key={field.name}><strong>{field.dataset} / {field.name}</strong>：{field.description}<br/>输出 {field.outputPath}；来源要求 {field.sourcePolicy}<br/>值类型 {field.valueType||'未指定'}；需求示例 {field.example||'未绑定'}<br/>{field.verification}</p>)}{mapping.issues?.map((issue:string,index:number)=><p key={index}>{issue}</p>)}<Button disabled={mapping.compatible===false} onClick={()=>run(confirmMapping)}>确认映射并保存工作副本</Button></div>}</section>:<div inert={!!pending||!!liveIntent||locksEditor(retryCapture.current)}>
@@ -651,6 +646,7 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
 }
 
 function SourceTargetPreview({ projectId, target }: { projectId: string; target: HistoricalTarget }) {
+  const client = useWorkbenchClient();
   const [node, setNode] = useState<any>(null);
   const [locators, setLocators] = useState<any[]>([]);
   const [error, setError] = useState('');
@@ -661,8 +657,8 @@ function SourceTargetPreview({ projectId, target }: { projectId: string; target:
     setNode(null); setLocators([]); setError('');
     if (target.kind !== 'dom-node') return;
     void Promise.all([
-      window.studio.call('historicalNode', { projectId, target, maxBytes: 24576, limit: 10 }),
-      window.studio.call('historicalLocators', { projectId, target, maxBytes: 24576, limit: 10 }),
+      client.call('historicalNode', { projectId, target, maxBytes: 24576, limit: 10 }),
+      client.call('historicalLocators', { projectId, target, maxBytes: 24576, limit: 10 }),
     ]).then(([source, candidates]) => {
       if (current === token.current) { setNode(source); setLocators(candidates.items || []); }
     }).catch(failure => { if (current === token.current) setError(String(failure)); });

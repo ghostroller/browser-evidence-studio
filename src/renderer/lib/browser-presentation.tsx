@@ -1,3 +1,4 @@
+import { requireNativePresentation, useWorkbenchClient } from './workbench-client';
 import React, { createContext, useCallback, useContext, useLayoutEffect, useRef } from 'react';
 
 const LayoutContext = createContext<{ start(): void; finish(): void } | null>(null);
@@ -6,6 +7,7 @@ export function BrowserPresentation({ browserBox, revision, overlay, children, o
   browserBox: React.RefObject<HTMLDivElement | null>; revision: number; overlay: string | null;
   children: React.ReactNode; onError(message: string): void;
 }) {
+  const client = useWorkbenchClient();
   const dragFrame = useRef(0);
   const resizeFrame = useRef(0);
   const releaseFrame = useRef(0);
@@ -14,11 +16,15 @@ export function BrowserPresentation({ browserBox, revision, overlay, children, o
   const onErrorRef = useRef(onError); onErrorRef.current = onError;
   const report = useCallback(() => {
     const rect = browserBox.current?.getBoundingClientRect();
-    if (rect) window.studio.bounds({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
-  }, [browserBox]);
+    if (rect) {
+      try { requireNativePresentation(client).bounds({ x: rect.x, y: rect.y, width: rect.width, height: rect.height }); }
+      catch (failure) { onErrorRef.current(String(failure)); }
+    }
+  }, [browserBox, client]);
   const presentation = useCallback((reason: 'overlay' | 'layout', hidden: boolean) => {
-    void window.studio.call('presentation', { reason, hidden }).catch(failure => onErrorRef.current(String(failure)));
-  }, []);
+    try { void requireNativePresentation(client).set({ reason, hidden }).catch(failure => onErrorRef.current(String(failure))); }
+    catch (failure) { onErrorRef.current(String(failure)); }
+  }, [client]);
   const finish = useCallback(() => {
     if (!dragging.current) return;
     dragging.current = false;

@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
+import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
 import React, { useState } from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import { WorkspaceManagement, type WorkspaceManagementHost } from '@/main/servic
 import { WorkspaceManagementPanel } from '@/renderer/components/workspace-management';
 import { FileMaterialService } from '@/materials/service';
 
-afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
+afterEach(() => { cleanup(); clearTestWorkbenchClient(); });
 async function fixture() {
   await mkdir('output/workspace-management-ui', { recursive: true }); const root = await mkdtemp(path.resolve('output/workspace-management-ui/case-'));
   let failWrite = false;
@@ -26,7 +27,7 @@ async function fixture() {
     if (['createProject', 'updateProject', 'createProfile', 'updateProfile', 'manageProject', 'manageProfile', 'managementDependencies'].includes(method)) return (service as any)[method](body);
     if (method === 'settleManagementDependencies') { expect(body.expectedSessionId).toBe(session?.sessionId); session = null; return {}; }
     throw new Error(`Unhandled visible command: ${method}`);
-  }); window.studio = { call, bounds: vi.fn() };
+  }); setTestWorkbenchClient({ call, bounds: vi.fn() });
   function Harness() {
     const [snapshot, setSnapshot] = useState({ projects: host.projects, profiles: host.profiles, session });
     const [projectId, setProjectId] = useState(a.id);

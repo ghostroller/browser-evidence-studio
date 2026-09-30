@@ -1,3 +1,4 @@
+import { useWorkbenchClient } from '../lib/workbench-client';
 import React, { useEffect, useRef, useState } from 'react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -22,6 +23,7 @@ function origin(url: string): string { try { const parsed = new URL(url); return
 export function TaskAuthorizations({ projectId, session, active, project, onChanged }: {
   projectId: string; session?: any; active?: any; project?: any; onChanged(): Promise<unknown>;
 }) {
+  const client = useWorkbenchClient();
   const [capabilities, setCapabilities] = useState<Capability[]>(['materials-read', 'history-read', 'results-read']);
   const [minutes, setMinutes] = useState('2');
   const [operations, setOperations] = useState('20');
@@ -56,7 +58,7 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
   const load = async () => {
     const token = ++request.current, scope = projectId;
     if (!scope) { setGrants([]); return; }
-    try { const result = await window.studio.call('taskAuthorizations', { projectId: scope });
+    try { const result = await client.call('taskAuthorizations', { projectId: scope });
       if (token === request.current && scopeRef.current === scope) { setGrants(result.items || []); setInstanceId(result.instanceId || ''); } }
     catch (failure) { if (token === request.current && scopeRef.current === scope) setError(String(failure)); }
   };
@@ -69,9 +71,9 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
     const token = ++revisionRequest.current;
     setRevisions([]); setRevisionCursor(undefined); setRevisionId('');
     if (!projectId) return;
-    void window.studio.call('materialRevisions', { projectId, limit: 50, maxBytes: 24576 }).then(page => {
+    void client.call('materialRevisions', { projectId, limit: 50, maxBytes: 24576 }).then(page => {
       if (token !== revisionRequest.current) return;
-      const available = (page.items || []).filter((item: FixedRevision) => item.status === 'available');
+      const available = (page.items || []).filter((item) => item.status === 'available');
       setRevisions(available); setRevisionCursor(page.nextCursor);
       setRevisionId(available[0]?.revisionId || '');
     }).catch(failure => { if (token === revisionRequest.current) setError(`固定资料版本读取失败：${String(failure)}`); });
@@ -86,7 +88,7 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
     if (!canIssue || pending) return;
     const scope = projectId, token = request.current;
     setPending('创建授权'); setError(''); setNotice('');
-    try { const result: Grant = await window.studio.call('authorizeTask', {
+    try { const result: Grant = await client.call('authorizeTask', {
       projectId: scope, capabilities, durationMs, maxOperations,
       ...(browser ? { sessionId, profileId, leaseEpoch: lease, pageIds, origins } : {}),
     });
@@ -100,7 +102,7 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
     const scope = projectId;
     if (pending || grant.projectId !== scope || grant.status !== 'active') return;
     setPending('撤销授权'); setError('');
-    try { await window.studio.call('revokeTask', { projectId: scope, authorizationId: grant.authorizationId });
+    try { await client.call('revokeTask', { projectId: scope, authorizationId: grant.authorizationId });
       if (scopeRef.current !== scope) return;
       setNotice(`已撤销 ${grant.authorizationId}。`); await load(); await onChanged();
     } catch (failure) { if (scopeRef.current === scope) setError(String(failure)); }
@@ -112,7 +114,7 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
     const scope = projectId;
     setPending('准备交接'); setError(''); setNotice('');
     try {
-      const result = await window.studio.call('exportFixedTaskHandoff', {
+      const result = await client.call('exportFixedTaskHandoff', {
         projectId: scope, revisionId: fixedRevision.revisionId,
         contentHash: fixedRevision.contentHash, authorizationId: grant.authorizationId,
       });
@@ -125,9 +127,9 @@ export function TaskAuthorizations({ projectId, session, active, project, onChan
     const scope = projectId, token = revisionRequest.current;
     setPending('读取更多版本'); setError('');
     try {
-      const page = await window.studio.call('materialRevisions', { projectId: scope, cursor: revisionCursor, limit: 50, maxBytes: 24576 });
+      const page = await client.call('materialRevisions', { projectId: scope, cursor: revisionCursor, limit: 50, maxBytes: 24576 });
       if (scopeRef.current !== scope || revisionRequest.current !== token) return;
-      setRevisions(current => [...current, ...(page.items || []).filter((item: FixedRevision) => item.status === 'available')]);
+      setRevisions(current => [...current, ...(page.items || []).filter((item) => item.status === 'available')]);
       setRevisionCursor(page.nextCursor);
     } catch (failure) { if (scopeRef.current === scope && revisionRequest.current === token) setError(String(failure)); }
     finally { if (scopeRef.current === scope && revisionRequest.current === token) setPending(''); }

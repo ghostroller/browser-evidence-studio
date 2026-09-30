@@ -1,12 +1,13 @@
 /** @vitest-environment jsdom */
+import { clearTestWorkbenchClient } from './workbench-test-client';
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Harness, fixture, target, deferred } from './material-harness';
 
-afterEach(()=>{cleanup();localStorage.clear();delete (window as Partial<Window>).studio;});
+afterEach(()=>{cleanup();localStorage.clear();clearTestWorkbenchClient();});
 const click=async(name:string|RegExp)=>{
  if(name instanceof RegExp&&name.source.startsWith('^Example')){const list=document.querySelector<HTMLDetailsElement>('.material-card-navigation');if(list&&!list.open)fireEvent.click(list.querySelector('summary')!); }
  const button=await screen.findByRole('button',{name});await waitFor(()=>{expect((button as HTMLButtonElement).disabled).toBe(false);expect(button.closest('[inert]')).toBeNull();});fireEvent.click(button);
@@ -15,6 +16,13 @@ const click=async(name:string|RegExp)=>{
  if(name==='工作区')await screen.findByRole('button',{name:'保存修改'});
 };
 async function archive(){await click('存档');await click('保存存档版本');await click('确认保存存档版本');}
+
+async function waitForWorkspaceReady() {
+ // Directory rows can arrive before working-draft bootstrap. A disabled-button
+ // fireEvent would never exercise the blur-to-click queue this test covers.
+ const save = await screen.findByRole('button', { name: '保存修改' });
+ await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false));
+}
 
 test('workspace exposes checkpoint creation without draft/version management and separate archive units',async()=>{
  await fixture();render(<Harness/>);await screen.findByRole('button',{name:'保存修改'});expect(screen.queryByRole('button',{name:'新建工作副本'})).toBeNull();expect(screen.queryByRole('button',{name:'保存存档版本'})).toBeNull();expect(screen.getByRole('button',{name:'新增保存点'})).toBeTruthy();await click('存档');expect(screen.getByRole('button',{name:'资料版本'})).toBeTruthy();expect(screen.getByRole('button',{name:'原始录制'})).toBeTruthy();expect(screen.getByRole('button',{name:'工作副本'})).toBeTruthy();
@@ -46,13 +54,13 @@ test('workcopy directory rename and current pointer survive component remount',a
 
 test('blur rename completes before copy, and refocusing an unchanged name does not write again',async()=>{
  const f=await fixture(),gate=deferred<void>(),service=f.materials.service,manage=service.manageCatalog.bind(service);
- render(<Harness/>);await click('存档');await click('工作副本');const input=await screen.findByLabelText('副本名称');
+ render(<Harness/>);await waitForWorkspaceReady();await click('存档');await click('工作副本');const input=await screen.findByLabelText('副本名称');
  const copy=vi.spyOn(service,'copyDraft');vi.spyOn(service,'manageCatalog').mockImplementationOnce(async(...args)=>{await gate.promise;return manage(...args);});
  fireEvent.change(input,{target:{value:'Alternative'}});fireEvent.blur(input);
- await waitFor(()=>expect(service.manageCatalog).toHaveBeenCalledTimes(1));fireEvent.click(screen.getByRole('button',{name:'复制工作副本'}));
+ await waitFor(()=>expect(service.manageCatalog).toHaveBeenCalledTimes(1));const copyButton=screen.getByRole('button',{name:'复制工作副本'});expect((copyButton as HTMLButtonElement).disabled).toBe(false);fireEvent.click(copyButton);
  await act(async()=>{});expect(copy).not.toHaveBeenCalled();await act(async()=>gate.resolve());
  await screen.findByText('已复制工作副本；可设为当前后继续编辑。');await screen.findByDisplayValue('Alternative 副本');
- expect((await service.listDrafts('project',{limit:100,maxBytes:28000})).items).toHaveLength(2);
+ expect(copy).toHaveBeenCalledTimes(1);expect((await service.listDrafts('project',{limit:100,maxBytes:28000})).items).toHaveLength(2);
  expect((await service.workspaceCatalog('project')).workingDraftId).toBe(f.draft.draftId);
  const before=(await service.workspaceCatalog('project')).catalogRevision;
  fireEvent.focus(screen.getByDisplayValue('Alternative'));fireEvent.blur(screen.getByDisplayValue('Alternative'));
@@ -61,10 +69,10 @@ test('blur rename completes before copy, and refocusing an unchanged name does n
 
 test('failed blur rename blocks the queued copy and leaves input available for an explicit retry',async()=>{
  const f=await fixture(),gate=deferred<void>(),service=f.materials.service;
- render(<Harness/>);await click('存档');await click('工作副本');const input=await screen.findByLabelText('副本名称');
+ render(<Harness/>);await waitForWorkspaceReady();await click('存档');await click('工作副本');const input=await screen.findByLabelText('副本名称');
  const copy=vi.spyOn(service,'copyDraft');vi.spyOn(service,'manageCatalog').mockImplementationOnce(async()=>{await gate.promise;throw new Error('rename unavailable');});
  fireEvent.change(input,{target:{value:'Retained input'}});fireEvent.blur(input);
- await waitFor(()=>expect(service.manageCatalog).toHaveBeenCalledTimes(1));fireEvent.click(screen.getByRole('button',{name:'复制工作副本'}));
+ await waitFor(()=>expect(service.manageCatalog).toHaveBeenCalledTimes(1));const copyButton=screen.getByRole('button',{name:'复制工作副本'});expect((copyButton as HTMLButtonElement).disabled).toBe(false);fireEvent.click(copyButton);
  await act(async()=>gate.resolve());await screen.findByText('Error: rename unavailable');expect(copy).not.toHaveBeenCalled();
  expect((input as HTMLInputElement).value).toBe('Retained input');expect((await service.listDrafts('project',{limit:100,maxBytes:28000})).items).toHaveLength(1);
  fireEvent.blur(input);fireEvent.click(screen.getByRole('button',{name:'复制工作副本'}));

@@ -1,3 +1,4 @@
+import { useWorkbenchClient, scopedWorkbenchCall } from '../lib/workbench-client';
 import React, { useEffect, useRef, useState } from 'react';
 import type { MaterialCatalog } from '@/contracts/workspace';
 import { Button } from './ui/button';
@@ -6,10 +7,11 @@ import { Label } from './ui/label';
 
 interface RunEntry {id:string;status:string;createdAt?:string;kind?:string}
 export function RecordingArchive({projectId,runs,onReplay,onDiagnostic,onRecovery}:{projectId:string;runs:RunEntry[];onReplay(id:string):Promise<unknown>;onDiagnostic(id:string):Promise<unknown>;onRecovery(id:string):void}) {
+  const client = useWorkbenchClient();
   const [catalog,setCatalog]=useState<MaterialCatalog|null>(null),[search,setSearch]=useState(''),[removed,setRemoved]=useState(false),[error,setError]=useState('');
-  const [usage,setUsage]=useState<Record<string,{revisions:Array<{revisionId:string;displayNumber:number;cards:number}>;drafts:Array<{draftId:string;name:string;cards:number}>}>>({});
+  const [usage,setUsage]=useState<Record<string,{revisions:Array<{revisionId:string;displayNumber?:number;cards:number}>;drafts:Array<{draftId:string;name:string;cards:number}>}>>({});
   const scope=useRef(projectId);scope.current=projectId;
-  const call=(method:string,body:Record<string,unknown>={})=>window.studio.call(method,{projectId,...body});
+  const call = scopedWorkbenchCall(client, { projectId });
   useEffect(()=>{let cancelled=false;setCatalog(null);setUsage({});void call('materialCatalog').then(value=>{if(!cancelled)setCatalog(value);}).catch(failure=>{if(!cancelled)setError(String(failure));});return()=>{cancelled=true;};},[projectId]);
   const run=(action:()=>Promise<unknown>)=>{void action().catch(failure=>setError(String(failure)));};
   const manage=async(id:string,patch:{hidden?:boolean;name?:string;note?:string})=>{if(!catalog)return;const updated=await call('manageMaterialCatalog',{kind:'recordings',id,expectedCatalogRevision:catalog.catalogRevision,...patch});if(scope.current===projectId)setCatalog(updated);};

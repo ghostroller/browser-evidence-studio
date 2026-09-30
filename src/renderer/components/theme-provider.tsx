@@ -1,3 +1,4 @@
+import { useWorkbenchClient } from '../lib/workbench-client';
 import React, { createContext, useContext, useRef, useState } from 'react';
 
 export type Preferences = { theme: 'light' | 'dark'; layout: Record<string, number[]> };
@@ -10,6 +11,7 @@ const PreferenceContext = createContext<{
 } | null>(null);
 
 export function ThemeProvider({ initial, children }: { initial: Preferences; children: React.ReactNode }) {
+  const client = useWorkbenchClient();
   const [preferences, setPreferences] = useState(initial);
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState('');
@@ -17,19 +19,19 @@ export function ThemeProvider({ initial, children }: { initial: Preferences; chi
   const saveLayout = (key: string, values: number[]) => {
     // Serialize only preference writes; never put them behind capture/runner operations.
     writes.current = writes.current.then(async () => {
-      await window.studio.call('uiPreferences', { layout: { [key]: values } });
+      await client.call('uiPreferences', { layout: { [key]: values } });
       setPreferences(current => ({ ...current, layout: { ...current.layout, [key]: values } }));
     }).catch(failure => setError(`布局偏好未保存：${String(failure)}`));
   };
   const setTheme = async (theme: Preferences['theme']) => {
-    await window.studio.call('uiPreferences', { theme });
+    await client.call('uiPreferences', { theme });
     document.documentElement.classList.toggle('dark', theme === 'dark');
     document.documentElement.style.colorScheme = theme;
     setPreferences(current => ({ ...current, theme }));
   };
   const resetLayout = async () => {
     await writes.current;
-    await window.studio.call('uiPreferences', { layout: {} });
+    await client.call('uiPreferences', { layout: {} });
     setPreferences(current => ({ ...current, layout: {} })); setRevision(current => current + 1);
   };
   return <PreferenceContext.Provider value={{ preferences, revision, error, setTheme, saveLayout, resetLayout, clearError: () => setError('') }}>{children}</PreferenceContext.Provider>;

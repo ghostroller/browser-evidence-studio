@@ -1,10 +1,11 @@
 /** @vitest-environment jsdom */
+import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { TaskAuthorizations } from '@/renderer/components/task-authorizations';
 
-afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
+afterEach(() => { cleanup(); clearTestWorkbenchClient(); });
 
 test('issues an offline history/material grant without a browser session and revokes it explicitly', async () => {
   let grant: any;
@@ -15,7 +16,7 @@ test('issues an offline history/material grant without a browser session and rev
     if (method === 'revokeTask') { grant = { ...grant, status: 'revoked', reason: 'Revoked by human' }; return grant; }
     throw new Error(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   render(<TaskAuthorizations projectId="project-one" onChanged={vi.fn(async () => undefined)} />);
   fireEvent.click(screen.getByRole('button', { name: '授予这次任务' }));
   await waitFor(() => expect(call).toHaveBeenCalledWith('authorizeTask', {
@@ -34,7 +35,7 @@ test('live browser grant requires the current human lease and exact page and ori
     if (method === 'authorizeTask') return { ...body, authorizationId: 'grant-live', status: 'active', expiresAt: '2030-01-01T00:00:00Z', remainingOperations: 20, maxOperations: 20 };
     throw new Error(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   const session = { sessionId: 'session-one', selectedPageId: 'page-one', pages: [{ pageId: 'page-one', targetId: 'target-one', url: 'https://example.test/orders', title: 'Orders' }] };
   const props = { projectId: 'project-one', session, project: { scriptDirectory: 'D:\\workflow' }, onChanged: vi.fn(async () => undefined) };
   const view = render(<TaskAuthorizations {...props} />);

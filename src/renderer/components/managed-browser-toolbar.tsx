@@ -4,7 +4,7 @@ import { Button } from './ui/button';
 import { Input } from './ui/input';
 
 export interface ManagedBrowserToolbarProps {
-  session:BrowserSessionStatus|null;call:(method:string,body?:unknown)=>Promise<unknown>;refresh:()=>void|Promise<unknown>;
+  session:BrowserSessionStatus|null;call:(method:'browserCommand',body:BrowserCommand)=>Promise<unknown>;refresh:()=>void|Promise<unknown>;
   disabled?:boolean;onSave?:()=>void;onCancel?:()=>void;
 }
 /** A projection of the current session; command receipts never replace context. */

@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
+import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
 import React from 'react';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ReplayWorkspace } from '@/renderer/components/replay-workspace';
 import type { ReplayPosition } from '@/contracts/recording';
@@ -9,7 +10,7 @@ const at = (eventSeq: number): ReplayPosition => ({ recordingId: 'run-one', page
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(complete => { resolve = complete; }); return { promise, resolve }; }
 const host = (position: ReplayPosition, generation: number) => ({ replayId: 'replay-one', projectId: 'project-one', generation, status: 'ready', selecting: false, selectionSequence: 0,
   position, state: { position, reliability: 'reliable', gaps: [], viewport: { width: 800, height: 600, deviceScaleFactor: 1 } } });
-afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
+afterEach(() => { cleanup(); clearTestWorkbenchClient(); });
 
 test('opens the first complete snapshot when a stream begins with a meta event', async () => {
   const call = vi.fn(async (method: string, body: any) => {
@@ -21,7 +22,7 @@ test('opens the first complete snapshot when a stream begins with a meta event',
     if (method === 'closeReplay') return { ...host(at(1), 1), status: 'closed' };
     throw new Error(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={at(0)} selecting={false} canStop={false}
     onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
   await waitFor(() => expect(call).toHaveBeenCalledWith('openReplay', expect.objectContaining({ position: at(1) })));
@@ -44,7 +45,7 @@ test('ordinary archive opening uses the most recent source document instead of h
     if(method==='closeReplay')return {...host(recentLast,1),status:'closed'};
     throw new Error(method);
   });
-  window.studio={call,bounds:vi.fn()};
+  setTestWorkbenchClient({call,bounds:vi.fn()});
   render(<ReplayWorkspace projectId="project-one" recordingId="run-one" selecting={false} canStop={false}
     onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
   await waitFor(()=>expect(call).toHaveBeenCalledWith('openReplay',expect.objectContaining({position:recent})));
@@ -66,7 +67,7 @@ test('first source snapshot after the initial page of positions can still open',
     if(method==='closeReplay')return {...host(baseline,1),status:'closed'};
     throw new Error(method);
   });
-  window.studio={call,bounds:vi.fn()};
+  setTestWorkbenchClient({call,bounds:vi.fn()});
   render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={at(0)} selecting={false} canStop={false}
     onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
   await waitFor(()=>expect(call).toHaveBeenCalledWith('recordingPositions',expect.objectContaining({ordinal:100})));
@@ -83,7 +84,7 @@ test('closes a native replay host that opens after the workspace unmounts', asyn
     if (method === 'closeReplay') return { ...host(at(1), 1), status: 'closed' };
     throw new Error(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   const view = render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={at(1)} selecting={false} canStop={false}
     onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
   await waitFor(() => expect(call).toHaveBeenCalledWith('openReplay', expect.anything()));
@@ -109,7 +110,7 @@ test('playback delegates a bounded continuous segment to the native host without
     if (method === 'closeReplay') return { ...current, status: 'closed' };
     throw new Error(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={positions[0]} selecting={false} canStop={false}
     onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
   await waitFor(() => expect(screen.getByText(/event #1/)).toBeTruthy());
@@ -136,7 +137,7 @@ test('continuous playback crosses a full snapshot boundary and resumes the next 
     if (method === 'closeReplay') return { ...current, status: 'closed' };
     throw new Error(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={at(1)} selecting={false} canStop={false}
     onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
   await waitFor(() => expect(screen.getByText(/event #1/)).toBeTruthy());
@@ -163,7 +164,7 @@ test('a full snapshot boundary keeps its source-time gap until the user skips id
     if(method==='closeReplay')return {...current,status:'closed'};
     throw new Error(method);
   });
-  window.studio={call,bounds:vi.fn()};
+  setTestWorkbenchClient({call,bounds:vi.fn()});
   render(<ReplayWorkspace projectId="project-one" recordingId="run-one" selecting={false} canStop={false}
     onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
   await waitFor(()=>expect(screen.getByText(/event #1/)).toBeTruthy());
@@ -193,7 +194,7 @@ test('explicit idle skip crosses a long same-stream gap without changing source 
     if(method==='closeReplay')return {...current,status:'closed'};
     throw new Error(method);
   });
-  window.studio={call,bounds:vi.fn()};
+  setTestWorkbenchClient({call,bounds:vi.fn()});
   const onPosition=vi.fn();
   render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={first} selecting={false} canStop={false}
     onPosition={onPosition} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
@@ -223,7 +224,7 @@ test('pausing during a source-time boundary wait prevents the later seek',async(
     if(method==='closeReplay')return {...current,status:'closed'};
     throw new Error(method);
   });
-  window.studio={call,bounds:vi.fn()};
+  setTestWorkbenchClient({call,bounds:vi.fn()});
   render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={first} selecting={false} canStop={false}
     onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
   await waitFor(()=>expect(screen.getByText(/event #1/)).toBeTruthy());
@@ -257,7 +258,7 @@ test('recorded foreground transition follows the selected page and retains its s
     if(method==='closeReplay')return {...current,status:'closed'};
     throw new Error(method);
   });
-  window.studio={call,bounds:vi.fn()};
+  setTestWorkbenchClient({call,bounds:vi.fn()});
   const onPosition=vi.fn();
   render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={first} selecting={false} canStop={false}
     onPosition={onPosition} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
@@ -289,7 +290,7 @@ test('an older playing status cannot replace a completed pause in the same gener
     if(method==='closeReplay')return {...current,status:'closed'};
     throw new Error(method);
   });
-  window.studio={call,bounds:vi.fn()};
+  setTestWorkbenchClient({call,bounds:vi.fn()});
   const onPosition=vi.fn();
   render(<ReplayWorkspace projectId="project-one" recordingId="run-one" requestedPosition={at(1)} selecting={false} canStop={false}
     onPosition={onPosition} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()} />);
@@ -319,7 +320,7 @@ test('an older seek response cannot replace a newer exact event position', async
     if (method === 'closeReplay') return { ...current, status: 'closed' };
     throw new Error(method);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   const onPosition = vi.fn();
   const props = { projectId: 'project-one', recordingId: 'run-one', selecting: false, canStop: false, onPosition, onTarget: vi.fn(), onSelectionReady:vi.fn(), onCancelSelection: vi.fn(), onStop: vi.fn(), onClose: vi.fn() };
   const view = render(<ReplayWorkspace {...props} requestedPosition={at(1)} />);

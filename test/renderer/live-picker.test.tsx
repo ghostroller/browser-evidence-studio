@@ -1,7 +1,8 @@
 /** @vitest-environment jsdom */
+import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
 
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { App } from '@/renderer/app';
 import { ThemeProvider } from '@/renderer/components/theme-provider';
@@ -14,7 +15,7 @@ const page = { pageId: 'page-one', generation: 3, url: 'https://example.test/cur
 const active = { id: 'run-one', projectId: 'project-one', profileId: 'profile-one', controller: 'human', locked: false, execution: 'ready', capture: 'recording', pages: [page], selectedPageId: page.pageId, selection: null };
 const base = { projects: [{ id: 'project-one', name: 'Project' }], profiles: [{ id: 'profile-one', projectId: 'project-one', name: 'Profile' }], runs: [], active, session: { ...active, sessionId:'session-one',leaseEpoch:1,downloads:[],closedPageCount:0,pages: [page] } };
 
-afterEach(() => { cleanup(); delete (window as Partial<Window>).studio; });
+afterEach(() => { cleanup(); clearTestWorkbenchClient(); });
 
 test('live picker requires human control and shows only a selection from the current page generation', async () => {
   let current: any = structuredClone(base);
@@ -33,7 +34,7 @@ test('live picker requires human control and shows only a selection from the cur
     }
     throw new Error(`Unexpected method: ${method}`);
   });
-  window.studio = { call, bounds: vi.fn() };
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
 
   const start = await screen.findByRole('button', { name: '选取元素（实时页）' });

@@ -1,11 +1,12 @@
 /** @vitest-environment jsdom */
+import { clearTestWorkbenchClient } from './workbench-test-client';
 import React from 'react';
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { Harness, fixture, deferred, position, target } from './material-harness';
 import { materialSummary } from '@/main/services/project-materials';
 
-afterEach(()=>{cleanup();localStorage.clear();delete (window as Partial<Window>).studio;});
+afterEach(()=>{cleanup();localStorage.clear();clearTestWorkbenchClient();});
 const click=async(name:string|RegExp)=>{
  if(name instanceof RegExp&&name.source.startsWith("^Example")){const list=document.querySelector<HTMLDetailsElement>(".material-card-navigation");if(list&&!list.open)fireEvent.click(list.querySelector("summary")!);}
  const button=await screen.findByRole('button',{name});await waitFor(()=>{expect((button as HTMLButtonElement).disabled).toBe(false);expect(button.closest('[inert]')).toBeNull();});fireEvent.click(button);
