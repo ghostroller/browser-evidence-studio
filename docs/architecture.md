@@ -10,9 +10,9 @@ WorkspaceManagement 在 workspace.json 内执行 clone→校验完整依赖→�
 
 B1采用同一React入口及共享项目表单／MaterialWorkbench／ResultCenter，宿主差异集中在类型化client和显式能力。Electron继续通过唯一bridge adapter走可信IPC；浏览器通过独立、按instance/project/grant约束的HTTP/SSE端口读取真实服务，不伪造完整Studio.state，不复用业务Agent token成为可信UI。
 
-当前后端仍是Electron companion。浏览器已扩展的资料编辑与只读结果各有窄方法契约和有界投影，现有Studio、采集和原生回放保持原路径。新结果读取去除宿主路径及原始异常，固定报告继续检查完整执行绑定和内容hash；业务值不是任意文本脱敏器的输出。Browser权限不包含执行启动、报告生成、人工评判或旧原生历史节点调用。
+当前后端仍是Electron companion。浏览器已扩展的资料编辑与只读结果各有窄方法契约和有界投影，现有Studio、采集和原生回放保持原路径。新结果读取去除宿主路径及原始异常，固定报告继续检查完整执行绑定和内容hash；业务值不是任意文本脱敏器的输出。Browser权限不包含执行启动、报告生成、人工评判或旧原生历史节点调用；B2另建明确回放授权与SourceModel选取端口。
 
-这一步不迁移旧profile的partition/storageRef，不改变Electron对话框交互。共享Web回放／元素选择为B2，纯Node服务与独立Chromium provider为B3；它们有各自安全设计和验收门槛，不能从B1的接口或测试数推定已完成。当前源码、实际验收和后续依赖以 [重构计划](browser-first-refactor-plan.md)为准，运行入口见 [环境](environment.md#浏览器工作台的隔离合成入口)。
+这一步不迁移旧profile的partition/storageRef，不改变Electron对话框交互。B2将可信controller／呈现／选取核心抽为双宿主共用，Web壳使用不同loopback origin及无脚本的录制子iframe，Native保留既有独立partition／bes-resource。控制消息的source/origin/replay/generation/command与编辑器selection所有权共同限制迟到选取；原始数据仍由同一SourceModel核验。纯Node服务与独立Chromium provider为B3，尚未实施；B2实际通过与未测范围单列，不能从接口数推定完成。当前源码、实际验收和后续依赖以 [重构计划](browser-first-refactor-plan.md)为准，运行入口见 [环境](environment.md#浏览器工作台的隔离合成入口)。
 
 ## 1. 技术决策
 

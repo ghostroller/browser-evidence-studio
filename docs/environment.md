@@ -76,7 +76,7 @@ agent 的固定发现入口是仓库下的 **`output/dev/latest.json`**。先读
 
 同目录的 `launch.json` 记录实际浏览器／后端地址、实例、两个子进程、源码HEAD／dirty及主进程bundle hash；不含票据。源码dirty须结合测试源码清单解释，不能只凭HEAD把未提交构建当作干净版本。`status: ready` 表示当次启动检查完成，不是永久存活证明；独立核对进程与生命周期。终端输出未由此launcher自动保存，需要日志时由测试运行器显式捕获且避免泄露凭据。
 
-浏览器页面与 Electron 共享项目表单、资料编辑器及结果中心。Vite 支持前端 HMR；main/preload 修改仍需重建并重启。Browser grant 与能力范围见 [API](api.md#浏览器工作台连接b12026-09-30)。Web历史回放／节点选择和独立Node／Chromium provider尚不由此入口提供。实际通过、失败和未验部分见 [当前重构计划](browser-first-refactor-plan.md)。
+浏览器页面与 Electron 共享项目表单、资料编辑器及结果中心。Vite 支持前端 HMR；main/preload 修改仍需重建并重启。Browser grant 与能力范围见 [API](api.md#浏览器工作台连接b12026-09-30)。B2在同一synthetic launcher中另外启动不同origin的固定回放文档服务，discovery／launch.json增加无凭据replayOrigin；选择显式project-replay后可读取sealed来源回放。必须用新main/preload构建重启，旧launcher没有该端口。独立Node／Chromium provider尚不由此入口提供。实际通过、失败和未验部分见 [当前重构计划](browser-first-refactor-plan.md)。
 
 ## ESM 与 Vite 构建边界
 

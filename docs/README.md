@@ -6,7 +6,7 @@
 
 - [共享设计页面正文](sources/browser-first-shared-design-body.md)与[来源说明](sources/browser-first-shared-design-source-notes.md)：保留共享页正文及获取记录；三份现有 Library 源材料已按原字节导入，含完整 F01–F14。
 - [dot 环境工具链验证补充](dot-environment-toolchain-validation.md)：当前 Electron 集成路径、临时 HTTP/SSE 拆分探针、真实公开 SPA、版本身份、安全边界和可复用测试入口。工具链可行不等于浏览器版已实现或产品验收通过。
-- [浏览器优先重构计划](browser-first-refactor-plan.md)：当前阶段与下一步的规划入口，细化 B0–B4 的依赖、交付、验收与迁移边界；已完成B1.1–B1.4的受限合成资料／只读结果纵向，下一步按收益与安全边界决定B2。
+- [浏览器优先重构计划](browser-first-refactor-plan.md)：当前阶段与下一步的规划入口，细化 B0–B4 的依赖、交付、验收与迁移边界；已完成B1.1–B1.4及B2指定合成纵向，下一步按收益／兼容性与生命周期风险决定B3。
 - [B1.1 实现与实际验收](refactor-handoffs/BROWSER-FIRST-B11-20260930.md)：类型化 client／Electron adapter 的源码、构建与通过范围；同时保留原生 focus 失败及未测部分。
 - [B1.2a 传输核心与验证](refactor-handoffs/BROWSER-FIRST-B12A-20260930.md)：隔离 session／dispatch／HTTP／SSE 的纯内存测试及安全反例复验；记录该历史切片尚未接应用的范围。
 - [B1.2b 真实合成浏览器纵向](refactor-handoffs/BROWSER-FIRST-B12B-20260930.md)：已实现 `npm run start:workbench`、真实 UI 配对、共享项目元数据表单与磁盘／SSE／Electron 回读；含构建、实际通过与保留失败。记录该历史节点的受限 metadata 页面；后续资料纵向见 B1.3。
@@ -14,6 +14,8 @@
 - [B1.3 真实资料编辑与发布](refactor-handoffs/BROWSER-FIRST-B13-20260930.md)：同一编辑组件、显式资料范围、已封存来源、保存点／字段／注释／复制／唯一固定版／派生新当前副本及两端回读；含丢回执与冲突证据。后续只读结果与并发实例等证据见B1.4。
 
 - [B1.4 只读结果与验收](refactor-handoffs/BROWSER-FIRST-B14-20260930.md)：同一结果组件、真实执行／批次／报告、错误恢复、双实例及最终Native冒烟；区分业务报告inconclusive、读取功能通过和仍未覆盖范围。
+
+- [B2设计与实施记录](refactor-handoffs/BROWSER-FIRST-B2-20260930.md)：共享离线DOM回放、精确节点绑定／固定版／两端回读及真实三态验收；保留opaque失败、离屏缺陷修复和未测边界。
 
 本轮先让共享工作台具备低成本的真实 UI 反馈，再按阶段证据扩展受保护的浏览器连接、共享回放与独立 Node/Chromium provider。保留现有 Electron 路径，不因架构重构擅自更改下列产品语义或旧 profile 数据。
 

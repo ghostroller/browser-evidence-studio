@@ -9,10 +9,15 @@
 - `project-metadata`：项目摘要读取与名称／简介修改
 - `project-materials`：增加真实资料编辑／发布、目录和同项目 sealed 来源读取；初始化工作副本／目录修补仍是写语义
 - `project-workbench`：显式增加同项目只读执行结果；旧 metadata／materials 会话不静默升级
+- `project-replay`：再显式增加同项目sealed历史窗口与历史节点核验；旧三种grant均不静默增加回放能力
 
 资料方法、输入和预算见 `src/contracts/browser-materials.ts`；结果的八方法白名单见 `src/contracts/browser-results.ts`：`projectExecutions`、`execution`、`executionItems`、`datasetBatches`、`datasetRecords`、`executionReports`、`executionReport`、`executionReportItems`。结果页不提供执行启动、生成报告、人工判定或历史 DOM 回放；这些行为继续走既有 Electron 路径。
 
 结果列表及读取复用真实 `ProjectExecutions`，核对项目／执行、固定绑定、报告 hash 和条目身份。损坏、缺失和预算不足返回错误，不折叠为空结果。投影去除宿主环境路径、批次文件路径和原始异常；业务 JSON 值、缺失字段语义及来源引用保持，不承诺对任意业务值做通用敏感信息识别。原始异常详情保留在 Electron 端。结果请求上限16 KiB；有界集合1–28 KiB／1–100项，详情响应另限64 KiB。组合权限不提高旧 metadata 请求上限；资料请求仍有独立64 KiB限制。
+
+B2新增 `webReplayBundle` 与 `webReplaySelection` 两个只读方法，输入绑定project／replayId／generation／精确ReplayPosition，选取另带nodeId；后端从原始SourceModel重建frame与mirror scope，并拒绝不完整元数据／结构缺口。回放包只含有界离线事件与已验证归档资源，16 MiB总输出／8 MiB事件窗／8 MiB资源／128唯一资源；这不扩大旧方法预算。撤销／取消在返回前重新核验，已开始的部分归档IO不能保证抢占停止。
+
+回放壳由额外独立loopback origin只提供固定 `/replay.html`，没有业务API、代理、资源id路由或凭据。管理端通过精确origin／window及实例／回放／代际消息向壳传包；iframe不取得HTTP token。不同port隔离DOM/storage而不隔离按host匹配的Cookie；当前认证是内存Bearer，未来改Cookie需重审。正常Electron路径仍保留自己的隔离partition；两端复用播放器控制核心。具体证据见 [B2记录](refactor-handoffs/BROWSER-FIRST-B2-20260930.md)。
 
 启动、实际验收和未支持范围以 [重构计划](browser-first-refactor-plan.md)及当前交接为准；接口已存在不等于所有真实用户路径均已通过。
 

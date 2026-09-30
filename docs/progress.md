@@ -2,7 +2,7 @@
 
 ## 2026-09-30 浏览器优先重构当前入口
 
-当前推进至B1.4受限合成资料与只读结果纵向（后端 `48ba574`、UI `d3f08bd`），详见[当前阶段计划](browser-first-refactor-plan.md)与[B1.4实际验收](refactor-handoffs/BROWSER-FIRST-B14-20260930.md)。实际结果读取、并发实例、错误恢复、可见HMR及最终Native layout通过；报告inconclusive不等于业务验收通过。B2/B3尚未扩展，旧Electron对话框问题按用户决定保留，完整旧资料／modal矩阵未全验。下面较早构建／测试记录是历史，不能外推到当前候选。
+当前推进至B2指定合成回放／绑定纵向（共享核心 `6c14b7f`、隔离服务 `99713b3`、UI `dce378c`），见[当前计划](browser-first-refactor-plan.md)与[B2实际验收](refactor-handoffs/BROWSER-FIRST-B2-20260930.md)。真实DOM离线回放、精确节点绑定、固定版刷新及Native同源回读成立；同一固定字段实际正确值pass、错值fail、无来源inconclusive。后端仍为electron-companion，B3未开展，旧Electron对话框问题保留，完整兼容／安全矩阵未全验。旧记录不能外推为当前构建全通过。
 
 ## 当前：工作区布局与历史图标补修（2026-09-30）
 
