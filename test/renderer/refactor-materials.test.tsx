@@ -49,33 +49,33 @@ test('ordinary count and uniqueness controls persist and do not infer business c
  const f=await fixture();render(<Harness/>);await screen.findByRole('button',{name:'保存修改'});fireEvent.click(screen.getByText('任务目标与共享需求'));await click('管理共享需求');await screen.findByRole('option',{name:'Amounts'});fireEvent.change(screen.getByLabelText('需求'),{target:{value:'requirement'}});await waitFor(()=>expect((screen.getByLabelText('需求说明') as HTMLTextAreaElement).value).toBe('Amounts'));fireEvent.change(screen.getByLabelText('期望记录数（可选）'),{target:{value:'2'}});fireEvent.change(screen.getByLabelText('不重复的输出标识字段（可选）'),{target:{value:'orderId'}});await click('保存需求');await waitFor(async()=>expect((await f.get()).content.requirements[0].rules).toEqual([{type:'row-count',count:2},{type:'unique',field:'orderId'}]));
 });
 test('workcopy directory rename and current pointer survive component remount',async()=>{
- const f=await fixture();await f.materials.service.createDraft('project','human');const view=render(<Harness/>);await screen.findByRole('button',{name:'保存修改'});await click('存档');await click('工作副本');const names=await screen.findAllByLabelText('副本名称');fireEvent.blur(names[0],{target:{value:'Named copy'}});await waitFor(async()=>expect(Object.values((await f.materials.service.workspaceCatalog('project')).drafts).some(item=>item.name==='Named copy')).toBe(true));view.unmount();render(<Harness/>);await click('存档');await click('工作副本');await screen.findByDisplayValue('Named copy');
+ const f=await fixture();await f.materials.service.createDraft('project','human');const view=render(<Harness/>);await screen.findByRole('button',{name:'保存修改'});await click('存档');await click('工作副本');const names=await screen.findAllByLabelText('副本名称');fireEvent.change(names[0],{target:{value:'Named copy'}});await click('保存目录信息');await waitFor(async()=>expect(Object.values((await f.materials.service.workspaceCatalog('project')).drafts).some(item=>item.name==='Named copy')).toBe(true));view.unmount();render(<Harness/>);await click('存档');await click('工作副本');await screen.findByDisplayValue('Named copy');
 });
 
-test('blur rename completes before copy, and refocusing an unchanged name does not write again',async()=>{
+test('explicit rename completes before copy; blur never writes and copy selects its own directory record',async()=>{
  const f=await fixture(),gate=deferred<void>(),service=f.materials.service,manage=service.manageCatalog.bind(service);
  render(<Harness/>);await waitForWorkspaceReady();await click('存档');await click('工作副本');const input=await screen.findByLabelText('副本名称');
  const copy=vi.spyOn(service,'copyDraft');vi.spyOn(service,'manageCatalog').mockImplementationOnce(async(...args)=>{await gate.promise;return manage(...args);});
- fireEvent.change(input,{target:{value:'Alternative'}});fireEvent.blur(input);
- await waitFor(()=>expect(service.manageCatalog).toHaveBeenCalledTimes(1));const copyButton=screen.getByRole('button',{name:'复制工作副本'});expect((copyButton as HTMLButtonElement).disabled).toBe(false);fireEvent.click(copyButton);
- await act(async()=>{});expect(copy).not.toHaveBeenCalled();await act(async()=>gate.resolve());
+ fireEvent.change(input,{target:{value:'Alternative'}});fireEvent.blur(input);expect(service.manageCatalog).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'保存目录信息'}));
+ await waitFor(()=>expect(service.manageCatalog).toHaveBeenCalledTimes(1));const copyButton=screen.getByRole('button',{name:'复制工作副本'});expect((copyButton as HTMLButtonElement).disabled).toBe(true);fireEvent.click(copyButton);
+ await act(async()=>{});expect(copy).not.toHaveBeenCalled();await act(async()=>gate.resolve());await click('复制工作副本');
  await screen.findByText('已复制工作副本；可设为当前后继续编辑。');await screen.findByDisplayValue('Alternative 副本');
  expect(copy).toHaveBeenCalledTimes(1);expect((await service.listDrafts('project',{limit:100,maxBytes:28000})).items).toHaveLength(2);
  expect((await service.workspaceCatalog('project')).workingDraftId).toBe(f.draft.draftId);
  const before=(await service.workspaceCatalog('project')).catalogRevision;
- fireEvent.focus(screen.getByDisplayValue('Alternative'));fireEvent.blur(screen.getByDisplayValue('Alternative'));
+ fireEvent.focus(screen.getByDisplayValue('Alternative 副本'));fireEvent.blur(screen.getByDisplayValue('Alternative 副本'));
  await act(async()=>{});await service.workspaceCatalog('project');expect((await service.workspaceCatalog('project')).catalogRevision).toBe(before);
 });
 
-test('failed blur rename blocks the queued copy and leaves input available for an explicit retry',async()=>{
+test('failed explicit rename blocks copy and leaves input available for a deliberate retry',async()=>{
  const f=await fixture(),gate=deferred<void>(),service=f.materials.service;
  render(<Harness/>);await waitForWorkspaceReady();await click('存档');await click('工作副本');const input=await screen.findByLabelText('副本名称');
  const copy=vi.spyOn(service,'copyDraft');vi.spyOn(service,'manageCatalog').mockImplementationOnce(async()=>{await gate.promise;throw new Error('rename unavailable');});
- fireEvent.change(input,{target:{value:'Retained input'}});fireEvent.blur(input);
- await waitFor(()=>expect(service.manageCatalog).toHaveBeenCalledTimes(1));const copyButton=screen.getByRole('button',{name:'复制工作副本'});expect((copyButton as HTMLButtonElement).disabled).toBe(false);fireEvent.click(copyButton);
+ fireEvent.change(input,{target:{value:'Retained input'}});fireEvent.blur(input);expect(service.manageCatalog).not.toHaveBeenCalled();fireEvent.click(screen.getByRole('button',{name:'保存目录信息'}));
+ await waitFor(()=>expect(service.manageCatalog).toHaveBeenCalledTimes(1));const copyButton=screen.getByRole('button',{name:'复制工作副本'});expect((copyButton as HTMLButtonElement).disabled).toBe(true);fireEvent.click(copyButton);
  await act(async()=>gate.resolve());await screen.findByText('Error: rename unavailable');expect(copy).not.toHaveBeenCalled();
  expect((input as HTMLInputElement).value).toBe('Retained input');expect((await service.listDrafts('project',{limit:100,maxBytes:28000})).items).toHaveLength(1);
- fireEvent.blur(input);fireEvent.click(screen.getByRole('button',{name:'复制工作副本'}));
+ await click('保存目录信息');await click('复制工作副本');
  await screen.findByText('已复制工作副本；可设为当前后继续编辑。');await screen.findByDisplayValue('Retained input 副本');expect(copy).toHaveBeenCalledTimes(1);
 });
 
@@ -117,4 +117,42 @@ test('failed save when leaving a focused editor retains the input and editor',as
  fireEvent.change(screen.getByLabelText('说明'),{target:{value:'Unsaved explanation'}});f.fail();await click('返回摘要');
  await screen.findByText(/disk unavailable/);expect((screen.getByLabelText('说明') as HTMLTextAreaElement).value).toBe('Unsaved explanation');
  expect(screen.getByLabelText('编辑保存点')).toBeTruthy();expect((await f.get()).content.checkpoints[0].notes).toBe('');
+});
+
+
+test('unsaved archive metadata blocks tab navigation, never writes on blur, and can be cancelled',async()=>{
+ const f=await fixture();render(<Harness/>);await waitForWorkspaceReady();await click('存档');await click('工作副本');
+ const input=await screen.findByLabelText('副本名称'), original=(input as HTMLInputElement).value;
+ const manage=vi.spyOn(f.materials.service,'manageCatalog');
+ fireEvent.change(input,{target:{value:'Unsubmitted label'}});fireEvent.blur(input);
+ fireEvent.click(screen.getByRole('button',{name:'资料版本'}));
+ expect(screen.getByRole('button',{name:'工作副本'}).getAttribute('aria-pressed')).toBe('true');
+ expect(screen.getByRole('alert').textContent).toContain('未保存输入');expect(manage).not.toHaveBeenCalled();
+ fireEvent.click(screen.getByRole('button',{name:'取消目录修改'}));expect((input as HTMLInputElement).value).toBe(original);
+ await click('资料版本');expect(screen.getByRole('button',{name:'资料版本'}).getAttribute('aria-pressed')).toBe('true');
+});
+
+
+test('archive name normalization displays the durable value after explicit save',async()=>{
+ const f=await fixture();render(<Harness/>);await waitForWorkspaceReady();await click('存档');await click('工作副本');
+ const input=await screen.findByLabelText('副本名称');fireEvent.change(input,{target:{value:'  Trimmed name  '}});await click('保存目录信息');
+ await screen.findByDisplayValue('Trimmed name');expect((await f.materials.service.workspaceCatalog('project')).drafts[f.draft.draftId].name).toBe('Trimmed name');
+ expect((screen.getByRole('button',{name:'保存目录信息'}) as HTMLButtonElement).disabled).toBe(true);
+});
+
+
+test('archive confirmation scope must be resolved before changing catalog type',async()=>{
+ await fixture();render(<Harness/>);await waitForWorkspaceReady();await click('存档');await click('保存存档版本');
+ fireEvent.change(await screen.findByLabelText('版本名称'),{target:{value:'Proposed archive'}});await waitFor(()=>expect((screen.getByRole('button',{name:'工作副本'}) as HTMLButtonElement).disabled).toBe(false));fireEvent.click(screen.getByRole('button',{name:'工作副本'}));
+ expect(screen.getByRole('region',{name:'确认存档范围'})).toBeTruthy();expect(screen.getByRole('button',{name:'资料版本'}).getAttribute('aria-pressed')).toBe('true');
+ expect(screen.getByRole('alert').textContent).toContain('确认存档范围');await click('返回继续编辑');expect(screen.queryByRole('region',{name:'确认存档范围'})).toBeNull();
+});
+
+test('archive context changes reveal its normal-flow anchor without scrolling on metadata input',async()=>{
+ const descriptor=Object.getOwnPropertyDescriptor(HTMLElement.prototype,'scrollIntoView'), scroll=vi.fn();Object.defineProperty(HTMLElement.prototype,'scrollIntoView',{configurable:true,value:scroll});
+ try {await fixture();render(<Harness/>);await waitForWorkspaceReady();const before=scroll.mock.calls.length;await click('存档');await waitFor(()=>expect(scroll.mock.calls.length).toBeGreaterThan(before));
+ const catalogBefore=scroll.mock.calls.length;await click('工作副本');await screen.findByLabelText('副本名称');await waitFor(()=>expect(scroll.mock.calls.length).toBeGreaterThan(catalogBefore));
+ const editingBefore=scroll.mock.calls.length;fireEvent.change(screen.getByLabelText('副本名称'),{target:{value:'Typing should not move the page'}});fireEvent.blur(screen.getByLabelText('副本名称'));expect(scroll.mock.calls).toHaveLength(editingBefore);
+ expect(scroll.mock.instances.some(value=>(value as Element)?.hasAttribute('data-archive-context-anchor'))).toBe(true);
+ } finally {cleanup();if(descriptor)Object.defineProperty(HTMLElement.prototype,'scrollIntoView',descriptor);else delete (HTMLElement.prototype as any).scrollIntoView;}
 });

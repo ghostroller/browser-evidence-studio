@@ -16,7 +16,7 @@ function fixture() {
     const draft = { draftId: `${project}-draft`, draftRevision: 0, taskBrief: { objective: project, scope: '' } };
     switch (method) {
       case 'workingMaterialDraft': case 'materialDraft': return draft;
-      case 'materialDrafts': return { items: [draft], outputTruncated: false };
+      case 'materialDrafts': return { items: [{ ...draft, status: 'available', author: 'human', updatedAt: '2026-09-30T00:00:00Z' }], outputTruncated: false };
       case 'materialRevisions': case 'materialCollection': case 'authoringRecovery': return { items: [], outputTruncated: false };
       case 'materialCatalog': return { catalogRevision: 0, workingDraftId: draft.draftId, drafts: { [draft.draftId]: { name: `${project} copy` } }, revisions: {} };
       case 'manageMaterialCatalog':
@@ -29,13 +29,16 @@ function fixture() {
   const element = (projectId: string) => <MaterialWorkbench projectId={projectId} view="archives" onOpenReplay={vi.fn()} onSelectTarget={vi.fn()} />;
   const view = render(element('first'));
   const ready = async (project: string) => {
+    await waitFor(() => expect((screen.getByRole('button', {name:'工作副本'}) as HTMLButtonElement).disabled).toBe(false));
+    if (screen.getByRole('button', {name:'工作副本'}).getAttribute('aria-pressed') !== 'true') fireEvent.click(screen.getByRole('button', {name:'工作副本'}));
     await screen.findByDisplayValue(`${project} copy`);
     await waitFor(() => expect((screen.getByRole('button', { name: '复制工作副本' }) as HTMLButtonElement).disabled).toBe(false));
   };
   const startRename = async () => {
     fireEvent.click(screen.getByRole('button', { name: '工作副本' }));
     await ready('first');
-    fireEvent.blur(screen.getByLabelText('副本名称'), { target: { value: 'Renamed copy' } });
+    fireEvent.change(screen.getByLabelText('副本名称'), { target: { value: 'Renamed copy' } });
+    fireEvent.click(screen.getByRole('button', {name:'保存目录信息'}));
     await waitFor(() => expect(call).toHaveBeenCalledWith('manageMaterialCatalog', expect.objectContaining({ projectId: 'first', name: 'Renamed copy' })));
   };
   return { view, element, ready, startRename, rejectRename };
@@ -75,7 +78,8 @@ for (const returnToOriginal of [false, true]) {
       f.view.rerender(f.element('first'));
       await f.ready('first');
     }
-    fireEvent.blur(screen.getByLabelText('副本名称'), { target: { value: 'New session name' } });
+    fireEvent.change(screen.getByLabelText('副本名称'), { target: { value: 'New session name' } });
+    fireEvent.click(screen.getByRole('button', {name:'保存目录信息'}));
     // A pending old-session write must not prevent this session's action.
     expect(await screen.findByText('Error: Current project rename failed')).toBeTruthy();
     await act(async () => { f.rejectRename(new Error('Old project rename failed')); });

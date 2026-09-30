@@ -39,6 +39,7 @@ async function fixture(empty=false,grant='project-materials') {
   let event!:ReadableStreamDefaultController<Uint8Array>, loseEdit=false, losePublish=false, readFailure=false;
   let collectionDelay: (()=>Promise<void>) | undefined;
   let metadataDelay:(()=>Promise<void>)|undefined;
+  let recordingsDelay:(()=>Promise<void>)|undefined;
   const invalidate=()=>event.enqueue(new TextEncoder().encode('event: scope-invalidated\ndata: {"projectId":"project"}\n\n'));
   const fetcher=vi.fn(async(url:string|URL|Request,init?:RequestInit)=>{
     const envelope=JSON.parse(String(init?.body));
@@ -47,7 +48,7 @@ async function fixture(empty=false,grant='project-materials') {
     const {method,body}=envelope;
     if(method==='state'){await metadataDelay?.();if(readFailure)throw new Error('connection offline');return json({project:{id:'project',name:'Orders',objective:'Amounts',revision:1}});}
     if(method==='projectExecutions')return json({items:[],returnedBytes:55,outputTruncated:false});
-    if(method==='materialRecordings')return json({items:[{recordingId:'recording',sealedAt:'2026-09-30T00:00:00Z'}],returnedBytes:100,outputTruncated:false});
+    if(method==='materialRecordings'){await recordingsDelay?.();return json({items:[{recordingId:'recording',sealedAt:'2026-09-30T00:00:00Z'}],returnedBytes:100,outputTruncated:false});}
     if(method==='recordingStreams')return json({items:[{first:position,last:position,events:1,monotonicTime:true}]});
     if(method==='recordingPositions')return json({items:[{position,type:2,source:0}]});
     const result=await domain.call(method,body);
@@ -65,7 +66,7 @@ async function fixture(empty=false,grant='project-materials') {
     await waitFor(()=>expect((screen.getByRole('button',{name:'保存修改'}) as HTMLButtonElement).disabled).toBe(false));
     await waitFor(()=>expect(screen.queryByText('读取工作副本')).toBeNull());
   };
-  return {...domain,client,fetcher,rendered,connect,delayMetadata:(value?:()=>Promise<void>)=>{metadataDelay=value;},domainEvents:()=>{domain.materials.service.onChanged=invalidate;},offline:()=>event.error(new Error('offline')),delayCollections:(value?:()=>Promise<void>)=>{collectionDelay=value;},loseEdit:()=>{loseEdit=true;},losePublish:()=>{losePublish=true;},readFailure:(value:boolean)=>{readFailure=value;},
+  return {...domain,client,fetcher,rendered,connect,delayRecordings:(value?:()=>Promise<void>)=>{recordingsDelay=value;},delayMetadata:(value?:()=>Promise<void>)=>{metadataDelay=value;},domainEvents:()=>{domain.materials.service.onChanged=invalidate;},offline:()=>event.error(new Error('offline')),delayCollections:(value?:()=>Promise<void>)=>{collectionDelay=value;},loseEdit:()=>{loseEdit=true;},losePublish:()=>{losePublish=true;},readFailure:(value:boolean)=>{readFailure=value;},
     invalidate,
     rpc:()=>fetcher.mock.calls.map(([,init])=>JSON.parse(String(init?.body))).filter(value=>value.method)};
 }
@@ -230,4 +231,13 @@ test('opening and refreshing combined read-only results preserves a dirty materi
   expect((screen.getByLabelText('标题') as HTMLInputElement).value).toBe('Unsaved material title');
   expect(f.rpc().filter(item=>item.method==='editMaterialDraft')).toHaveLength(before);
   expect((await f.get()).content.checkpoints[0].title).toBe('Example 1');
+});
+
+
+test('browser source picker stays unavailable until its initial recording directory is actually loaded',async()=>{
+ const f=await fixture(true);let release!:()=>void;const gate=new Promise<void>(resolve=>{release=resolve;});f.delayRecordings(()=>gate);await f.connect();
+ await waitFor(()=>expect(f.rpc().some(item=>item.method==='materialRecordings')).toBe(true));
+ const recording=screen.getByLabelText('来源录制') as HTMLSelectElement;expect(recording.matches(':disabled')).toBe(true);expect(recording.options).toHaveLength(1);
+ await act(async()=>release());await waitFor(()=>expect(recording.matches(':disabled')).toBe(false));expect(recording.options).toHaveLength(2);
+ fireEvent.change(recording,{target:{value:'recording'}});await waitFor(()=>expect((screen.getByLabelText('来源文档流') as HTMLSelectElement).options).toHaveLength(2));
 });

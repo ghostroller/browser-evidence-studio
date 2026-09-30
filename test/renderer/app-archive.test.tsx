@@ -56,6 +56,7 @@ function emptyWorkspace(method: string) {
 }
 
 async function showRecordingArchive() {
+  await waitFor(() => expect((screen.getByRole('button', { name: '保存修改' }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.mouseDown(screen.getByRole('tab', { name: '存档' }), { button: 0, ctrlKey: false });
   fireEvent.click(await screen.findByRole('button', { name: '原始录制' }));
   await screen.findByRole('region', { name: '原始录制存档' });
@@ -64,7 +65,8 @@ async function showRecordingArchive() {
 
 function recordingDiagnostics(runId: string) {
   const heading = screen.getByRole('heading', { level: 4, name: new RegExp(runId) });
-  const recording = within(heading.closest('section')!);
+  fireEvent.click(within(heading.closest('section')!).getByRole('button', { name: '查看录制详情' }));
+  const recording = within(screen.getByRole('region', { name: '录制详情' }));
   const summary = recording.getByText('录制管理与诊断');
   if (!(summary.parentElement as HTMLDetailsElement).open) fireEvent.click(summary);
   return recording;
@@ -84,6 +86,7 @@ test('urgent stop remains available during an unrelated pending request and targ
   });
   setTestWorkbenchClient({ call, bounds: vi.fn() });
   render(<ThemeProvider initial={{ theme: 'light', layout: {} }}><App /></ThemeProvider>);
+  await waitFor(() => expect((screen.getByRole('button', { name: '保存修改' }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.mouseDown(screen.getByRole('tab', { name: '实现与结果' }), { button: 0, ctrlKey: false });
   await waitFor(() => expect((screen.getByRole('button', { name: '保存当前登录环境' }) as HTMLButtonElement).disabled).toBe(false));
   fireEvent.click(screen.getByRole('button', { name: '保存当前登录环境' }));
@@ -116,7 +119,7 @@ test('quick project creation retries the same operation after a lost response',a
   });setTestWorkbenchClient({call,bounds:vi.fn()});
   render(<ThemeProvider initial={{theme:'light',layout:{}}}><App/></ThemeProvider>);
   fireEvent.click(screen.getByRole('button',{name:'新建项目'}));fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'Synthetic retry'}});
-  fireEvent.click(screen.getByRole('button',{name:'创建项目'}));await screen.findAllByText('reply lost');
+  fireEvent.click(screen.getByRole('button',{name:'创建项目'}));await screen.findAllByText(/reply lost/);
   expect((screen.getByLabelText('项目名称') as HTMLInputElement).value).toBe('Synthetic retry');
   fireEvent.click(screen.getByRole('button',{name:'创建项目'}));await waitFor(()=>expect(screen.queryByLabelText('项目名称')).toBeNull());
   const attempts=call.mock.calls.filter(([method])=>method==='createProject');expect(attempts).toHaveLength(2);expect(attempts[0][1].operationId).toBeTruthy();expect(attempts[1][1].operationId).toBe(attempts[0][1].operationId);expect(receipts.size).toBe(1);
@@ -146,7 +149,7 @@ test('first management project stays unused across modal close; explicit selecti
   await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());expect((screen.getByLabelText('项目') as HTMLSelectElement).value).toBe('');
   expect(call.mock.calls.some(([method])=>method==='workingMaterialDraft')).toBe(false);
   fireEvent.click(screen.getByRole('button',{name:'项目与环境管理'}));const reopened=within(await screen.findByRole('dialog'));
-  fireEvent.click(reopened.getByRole('button',{name:'Unused first project'}));fireEvent.click(reopened.getByRole('button',{name:'检查并删除空项目'}));
+  fireEvent.click(reopened.getByRole('button',{name:'Unused first project'}));fireEvent.click(reopened.getByText('项目归档与删除'));fireEvent.click(reopened.getByRole('button',{name:'检查并删除空项目'}));
   fireEvent.click(await reopened.findByRole('button',{name:'确认删除空对象'}));await reopened.findByText('管理状态已保存；历史资料保持可读。');
   expect(host.projects).toHaveLength(0);expect(JSON.parse(await readFile(path.join(root,'workspace.json'),'utf8')).projects).toHaveLength(0);
   fireEvent.click(reopened.getByRole('button',{name:'新建项目'}));fireEvent.change(reopened.getByLabelText('项目名称'),{target:{value:'Ready project'}});
@@ -358,4 +361,26 @@ test.each([false, true])('injected client refreshes and unsubscribes without a p
   await waitFor(() => expect(call.mock.calls.filter(([method]) => method === 'state')).toHaveLength(mounts + 1));
   view.unmount();
   expect(unsubscribe).toHaveBeenCalledTimes(mounts);
+});
+
+
+test.each(['button','escape'])('management dirty input survives overlay %s close until explicitly discarded', async how => {
+ stubLayout();const call=vi.fn(async(method:string)=>method==='state'?state:method==='presentation'?undefined:emptyWorkspace(method));setTestWorkbenchClient({call,bounds:vi.fn()});
+ render(<ThemeProvider initial={{theme:'light',layout:{}}}><App/></ThemeProvider>);
+ await waitFor(()=>expect((screen.getByLabelText('项目') as HTMLSelectElement).value).toBe('project-1'));
+ fireEvent.click(screen.getByRole('button',{name:'项目与环境管理'}));
+ const dialog=within(await screen.findByRole('dialog'));fireEvent.change(dialog.getByLabelText('项目名称'),{target:{value:'Unsaved project name'}});
+ if(how==='button')fireEvent.click(dialog.getByRole('button',{name:'返回工作台'}));else fireEvent.keyDown(dialog.getByLabelText('项目名称'),{key:'Escape'});
+ expect(screen.getByRole('dialog')).toBeTruthy();expect((dialog.getByLabelText('项目名称') as HTMLInputElement).value).toBe('Unsaved project name');
+ fireEvent.click(dialog.getByRole('button',{name:'继续编辑'}));expect(screen.getByRole('dialog')).toBeTruthy();
+ fireEvent.click(dialog.getByRole('button',{name:'返回工作台'}));fireEvent.click(dialog.getByRole('button',{name:'放弃输入并继续'}));await waitFor(()=>expect(screen.queryByRole('dialog')).toBeNull());
+ expect(call.mock.calls.some(([method])=>method==='updateProject')).toBe(false);
+});
+
+test('initial material bootstrap visibly disables section navigation until the authoritative draft is ready',async()=>{
+ stubLayout();const gate=deferred<any>();const call=vi.fn(async(method:string)=>method==='state'?state:method==='presentation'?undefined:method==='workingMaterialDraft'?gate.promise:emptyWorkspace(method));setTestWorkbenchClient({call,bounds:vi.fn()});
+ render(<ThemeProvider initial={{theme:'light',layout:{}}}><App/></ThemeProvider>);
+ await waitFor(()=>expect(call.mock.calls.some(([method])=>method==='workingMaterialDraft')).toBe(true));
+ await waitFor(()=>expect((screen.getByRole('tab',{name:'存档'}) as HTMLButtonElement).disabled).toBe(true));expect(screen.getByText('正在处理资料，请稍候…')).toBeTruthy();
+ await act(async()=>gate.resolve(emptyWorkspace('workingMaterialDraft')));await waitFor(()=>expect((screen.getByRole('tab',{name:'存档'}) as HTMLButtonElement).disabled).toBe(false));
 });
