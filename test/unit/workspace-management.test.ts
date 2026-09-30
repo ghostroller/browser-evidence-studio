@@ -140,3 +140,24 @@ test('IA17: failed environment creation, editing, and lifecycle writes never pub
   await expect(management.manageProfile({ projectId: p.projectId, profileId: p.id, action: 'disable', expectedRevision: 1 })).rejects.toThrow('write refusal');
   expect(host.profiles).toEqual(original); expect((await restart()).host.profiles).toEqual(original);
 });
+
+test('B3: dedicated Chromium metadata is explicit and survives reopen without partition migration', async () => {
+  host.runtimeProvider='chromium';
+  const p=await profile();
+  expect(p.provider).toBe('chromium');expect(p.storageRef).toBe(`chromium:${p.id}`);
+  await management.updateProfile({projectId:p.projectId,profileId:p.id,expectedRevision:p.revision,name:'Renamed dedicated environment'});
+  expect((await restart()).host.profiles[0]).toMatchObject({provider:'chromium',storageRef:p.storageRef});
+});
+test('B3: absent provider and a custom Electron partition remain byte-identical on rename/reopen', async () => {
+  const p=await profile(),before=await stored();
+  before.profiles[0].storageRef='persist:legacy-custom-partition';delete before.profiles[0].provider;
+  await atomicJson(path.join(root,'workspace.json'),before);
+  await management.updateProfile({projectId:p.projectId,profileId:p.id,expectedRevision:p.revision,name:'Legacy renamed'});
+  const restored=(await restart()).host.profiles[0];
+  expect(restored.storageRef).toBe('persist:legacy-custom-partition');expect(Object.hasOwn(restored,'provider')).toBe(false);
+});
+test('B3: unknown provider fails closed and retains the original workspace bytes', async () => {
+  await profile();const before=await stored();before.profiles[0].provider='other';
+  await atomicJson(path.join(root,'workspace.json'),before);const bytes=await readFile(path.join(root,'workspace.json'),'utf8');
+  await expect(restart()).rejects.toThrow('Unsupported browser');expect(await readFile(path.join(root,'workspace.json'),'utf8')).toBe(bytes);
+});

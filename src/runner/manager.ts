@@ -29,6 +29,8 @@ export interface StartWorkflowOptions {
   transport: GateTransport;
   hooks: RunnerHooks;
   workerPath?: string;
+  /** Explicit provider-owned environment; absent retains the Electron launch contract. */
+  workerEnvironment?:NodeJS.ProcessEnv;
   dependencyLockPath?: string;
   knownSourceRefs?: string[];
   maxDurationMs?: number;
@@ -138,6 +140,7 @@ export async function startWorkflow(options: StartWorkflowOptions): Promise<Work
   await options.beforeWorker?.({ manifest, entryPath, inputSha256, fingerprintBefore, startedAt, snapshot, sourceEntryPath, selection });
   options.startupSignal?.throwIfAborted();
   const worker = new Worker(options.workerPath ?? path.join(import.meta.dirname, 'runner-worker.js'), {
+    ...(options.workerEnvironment?{env:options.workerEnvironment,execArgv:[]}:{}),
     workerData: { entryPath, exportName: manifest.exportName, input: options.input, targetId: options.targetId, snapshot, selection, ...(executionBinding ? { execution: { binding: executionBinding, attemptId: workflowAttemptId } } : {}) },
   });
   let status: WorkflowRunResult['status'] = 'interrupted';

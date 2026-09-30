@@ -17,7 +17,7 @@ export interface GateConflict {
   occurredAt: string;
 }
 
-interface ProtocolCommand { id?: number; method?: string; sessionId?: string; params?: Record<string, unknown>; }
+export interface ProtocolCommand { id?: number; method?: string; sessionId?: string; params?: Record<string, unknown>; }
 
 export interface GateCloseDiagnostic {
   trigger: 'host' | 'worker' | 'transport';
@@ -69,7 +69,7 @@ export class GateTransport implements ProtocolTransport {
 
   constructor(
     private readonly transport: ProtocolTransport,
-    private readonly options: { onConflict?: (conflict: GateConflict) => void; onClosed?: (details: GateCloseDiagnostic) => void } = {},
+    private readonly options: { onCommand?: (command:Readonly<ProtocolCommand>)=>void; onConflict?: (conflict: GateConflict) => void; onClosed?: (details: GateCloseDiagnostic) => void } = {},
   ) {
     transport.onmessage = (message) => this.receive(message);
     transport.onclose = details => this.didClose('transport', details);
@@ -99,6 +99,7 @@ export class GateTransport implements ProtocolTransport {
     if(this.state==='open'&&!this.isMaintenance(command))this.commandGuard?.();
     if (this.pending.has(id)) throw new Error(`Duplicate in-flight CDP command id ${id}`);
     if (maintenance) this.maintenanceCommands += 1;
+    if(this.state==='open'&&!this.isMaintenance(command))this.options.onCommand?.(command);
     this.pending.set(id, command.method);
     try {
       this.transport.send(message);

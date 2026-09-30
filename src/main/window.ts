@@ -182,6 +182,7 @@ export class StudioWindow {
     this.rect = { x:rect.x,y:rect.y,width:Math.max(0,rect.width),height:Math.max(0,rect.height) }; this.layout();
     if(usable)for(const ready of this.uiBoundsWaiters)ready();
   }
+  async awaitInput() {}
   lock(value: boolean) { this.locked = value; this.layout(); if (value && this.mask.getVisible()) this.contents(this.mask)?.focus(); }
   private place(view: WebContentsView, rect: {x:number;y:number;width:number;height:number}, visible: boolean) {
     const current = view.getBounds();

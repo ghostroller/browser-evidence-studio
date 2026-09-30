@@ -41,7 +41,7 @@ async function captured(options:{emptyCachedFont?:boolean;resourceChangeDuringPr
     }
     return{result:{}};
   };
-  capture=new CaptureCoordinator({createCDPSession:async()=>cdp} as unknown as Page,{pageId:'page',targetId:'target',webContentsId:1,navigationGeneration:0},store);
+  capture=new CaptureCoordinator({createCDPSession:async()=>cdp} as unknown as Page,{pageId:'page',targetId:'target',navigationGeneration:0},store);
   await capture.start();
   if(!options.earlyBaseline)snapshot();
   await capture.flush();

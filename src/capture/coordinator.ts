@@ -21,7 +21,10 @@ import { SourceFrameScopes } from './frame-scopes';
 import { StylesheetTextCapture } from './stylesheet-text';
 import { observedFontMediaType } from '@/resources/font';
 
-export interface PageIdentity { pageId:string; targetId:string; webContentsId:number; navigationGeneration:number; openerPageId?:string; }
+/** Capture needs only provider-neutral CDP/source identity. Native identifiers stay in explicit host variants. */
+export interface PageIdentity { pageId:string; targetId:string; navigationGeneration:number; openerPageId?:string; }
+export interface ElectronPageIdentity extends PageIdentity { provider:'electron'; webContentsId:number }
+export interface ChromiumPageIdentity extends PageIdentity { provider:'chromium'; browserInstanceId:string }
 const BODY_LIMIT = 8 * 1024 * 1024;
 interface ResourceDocument { frameId:string; loaderId:string; }
 

@@ -1,3 +1,4 @@
+import { profileProvider, type RuntimeProvider } from '../browser/runtime';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -9,6 +10,7 @@ export interface Project {
   revision?: number; lifecycle?: 'active' | 'archived'; updatedAt?: string;
 }
 export interface Profile {
+  provider?:RuntimeProvider;
   id: string; projectId: string; name: string; entryUrl?: string; instructions?: string; storageRef?: string;
   revision?: number; lifecycle?: 'active' | 'disabled'; createdAt?: string; updatedAt?: string; openedAt?: string;
   configRevision?: number; checkedAt?: string; checkedConfigRevision?: number; checkSelector?: string;
@@ -29,7 +31,7 @@ interface ManagementState {
   validationStarting?: { validationId: string; validationRunId?: string } | null;
 }
 export interface WorkspaceManagementHost {
-  root: string; projects: Project[]; profiles: Profile[]; state(): ManagementState;
+  root: string; runtimeProvider?:RuntimeProvider; projects: Project[]; profiles: Profile[]; state(): ManagementState;
   taskAuthorizations?(projectId: string): Array<{ authorizationId: string; profileId?: string; status: string }>;
   onChanged?(): void;
 }
@@ -88,6 +90,7 @@ export class WorkspaceManagement {
         ensure(item.lifecycle === undefined || (kind === 'project' ? ['active', 'archived'] : ['active', 'disabled']).includes(item.lifecycle), `Invalid ${kind} lifecycle`, 500);
       }
     }
+    for(const profile of value.profiles)profileProvider(profile);
     ensure(value.profiles.every((profile: any) => value.projects.some((project: any) => project.id === profile.projectId)), 'Profile has an unknown project', 500);
     ensure(value.managementOperations === undefined || record(value.managementOperations), 'Invalid management operation directory', 500);
     return value as Workspace;
@@ -141,7 +144,8 @@ export class WorkspaceManagement {
     return this.transaction('createProfile', body, value => {
       const project = value.projects.find(item => item.id === key(body.projectId)); ensure(project, 'Unknown project', 404); ensure(project.lifecycle !== 'archived', 'Restore this project before creating an environment', 409);
       const profile: Profile = { id: randomUUID(), projectId: project.id, name: text(body.name, 'Environment name', 120, true), entryUrl: entryUrl(body.entryUrl ?? 'about:blank'), instructions: text(body.instructions ?? '', 'Login instructions', 4000), checkSelector: text(body.checkSelector ?? '', 'Login check selector', 2000) || undefined, expectedOrigin: origin(body.expectedOrigin ?? ''), revision: 1, configRevision: 1, lifecycle: 'active', createdAt: now(), loginStatus: 'unknown' };
-      profile.storageRef = `persist:bes-${profile.projectId}-${profile.id}`; value.profiles.push(profile); return profile;
+      const provider=this.host.runtimeProvider??'electron';
+      if(provider==='chromium'){profile.provider='chromium';profile.storageRef=`chromium:${profile.id}`;}else profile.storageRef = `persist:bes-${profile.projectId}-${profile.id}`; value.profiles.push(profile); return profile;
     });
   }
   updateProfile(body: Command) {

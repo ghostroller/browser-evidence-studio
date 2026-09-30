@@ -1,12 +1,12 @@
 import { ensure } from '@/shared/errors';
 
-export interface BrowserPageStatus {
-  pageId:string; targetId:string; webContentsId:number; generation:number; url:string; title:string;
+export type BrowserPageStatus = {
+  pageId:string; targetId:string; generation:number; url:string; title:string;
   openerPageId?:string; inspecting:boolean; canGoBack:boolean; canGoForward:boolean; loading:boolean;
   zoomFactor:number; loadError?:{kind:'url'|'network'|'certificate'|'denied'|'renderer';url:string;message:string;code?:number};
   find?:{requestId:number;activeMatchOrdinal:number;matches:number};
   dialog?:{id:string;type:string;message:string;defaultValue:string};
-}
+} & ({provider:'electron';webContentsId:number}|{provider:'chromium';browserInstanceId:string});
 export interface BrowserDownloadStatus {
   id:string;pageId:string;filename:string;path:string;receivedBytes:number;totalBytes:number;
   state:'progressing'|'interrupted'|'completed'|'cancelled';startedAt:string;recordingId?:string;

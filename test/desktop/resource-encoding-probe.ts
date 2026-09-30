@@ -50,7 +50,7 @@ async function main(){
     report.protocol.cachedFont={base64:cachedFont.base64Encoded,length:cachedFont.content.length,prefix:[...cachedFont.content.slice(0,12)].map(c=>c.codePointAt(0)!.toString(16)),...('error' in cachedFont?{error:cachedFont.error}:{})};
     assert(decoded.text.includes('\ue700'));
     store=await EvidenceStore.create(path.join(root!,'runs','recording'),{id:'recording',projectId:'synthetic',mode:'synthetic',kind:'demonstrate',objective:'Hidden UTF8 cached CSS and generic-MIME font proof'});
-    capture=new CaptureCoordinator(page,{pageId:'page',targetId:(target as any)._targetId,webContentsId:native.webContents.id,navigationGeneration:0},store);
+    capture=new CaptureCoordinator(page,{pageId:'page',targetId:(target as any)._targetId,navigationGeneration:0},store);
     await capture.start();await capture.flush();
     await page.evaluate(async()=>{const link=document.createElement('link');link.rel='stylesheet';link.href='/two.css';const loaded=new Promise<void>((resolve,reject)=>{link.onload=()=>resolve();link.onerror=()=>reject(new Error('second stylesheet failed'));});document.head.append(link);await loaded;const span=document.createElement('span');span.id='second';span.className='second';span.textContent='\ue701';document.body.append(span);await document.fonts.ready;});
     await new Promise(resolve=>setTimeout(resolve,700));await capture.flush();
