@@ -5,7 +5,7 @@ import { ensure } from '@/shared/errors';
 
 export type UiTheme = 'light' | 'dark';
 export interface UiPreferences { theme: UiTheme; layout: Record<string, number[]>; }
-const PANEL_KEYS = new Set(['workspace', 'checkpoints', 'validation', 'evidence', 'inspection']);
+const PANEL_KEYS = new Set(['workspace', 'workspace-archive', 'checkpoints', 'validation', 'evidence', 'inspection']);
 const MAX_FILE_BYTES = 4096;
 
 function validatedPatch(value: unknown): Partial<UiPreferences> {

@@ -94,3 +94,10 @@ test('trusted presentation bypasses a busy business queue and public callers can
   assert.equal(calls.length, 5);
   assert.deepEqual(active, { controller: 'agent', leaseEpoch: 9, execution: 'finalizing' });
 });
+
+
+test('archive panel ratio persists independently from the regular workspace ratio', async () => {
+ const root=await mkdtemp(path.join(os.tmpdir(),'bes-archive-preferences-'));
+ try { const preferences=new UiPreferencesStore(root);await preferences.update({layout:{workspace:[30,70]}});await preferences.update({layout:{'workspace-archive':[64,36]}});assert.deepEqual(new UiPreferencesStore(root).read().layout,{workspace:[30,70],'workspace-archive':[64,36]}); }
+ finally { await rm(root,{recursive:true,force:true}); }
+});

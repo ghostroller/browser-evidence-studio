@@ -1,5 +1,7 @@
 import React,{useEffect,useRef,useState} from 'react';
 import type { BrowserCommand, BrowserPageStatus, BrowserSessionStatus } from '@/main/browser/browser-controls';
+import { ArrowLeft, ArrowRight, X, Minus, Plus, RotateCw, Square } from 'lucide-react';
+import { IconButton } from './ui/icon-button';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 
@@ -48,23 +50,23 @@ export function ManagedBrowserToolbar({session,call,refresh,disabled=false,onSav
     <div className="flex flex-wrap items-center gap-1" role="tablist" aria-label="浏览器标签">
       {session.pages.map(tab=><div key={tab.pageId} className="flex max-w-64 items-center rounded border">
         <Button role="tab" aria-selected={tab.pageId===session.selectedPageId} variant={tab.pageId===session.selectedPageId?'secondary':'ghost'} size="sm" disabled={!canUse} onClick={()=>void command('select',{},tab)} className="min-w-0 truncate" title={tab.url}>{tab.loading?'加载中 · ':tab.loadError?'错误 · ':''}{tab.title||'新标签'}</Button>
-        <Button aria-label={`关闭标签 ${tab.title||'新标签'}`} variant="ghost" size="sm" disabled={!canUse} onClick={()=>void command('close',{},tab)}>×</Button>
+        <IconButton icon={X} label={`关闭标签 ${tab.title||'新标签'}`} disabled={!canUse} onClick={()=>void command('close',{},tab)}/>
       </div>)}
       <Button size="sm" variant="outline" disabled={!canUse} onClick={()=>void command('new')}>新标签</Button>
       <Button size="sm" variant="ghost" disabled={!canUse||!session.closedPageCount} onClick={()=>void command('reopen')} title="恢复网址及环境，不恢复未保存的网页表单">恢复关闭的标签</Button>
     </div>
     <div className="flex min-w-0 flex-wrap items-center gap-1">
-      <Button size="sm" variant="outline" aria-label="后退" disabled={!canUse||!page?.canGoBack} onClick={()=>void command('back')}>←</Button>
-      <Button size="sm" variant="outline" aria-label="前进" disabled={!canUse||!page?.canGoForward} onClick={()=>void command('forward')}>→</Button>
-      <Button size="sm" variant="outline" disabled={!canUse||!page} onClick={()=>void command(page?.loading?'stop':'reload')}>{page?.loading?'停止加载':'刷新'}</Button>
+      <IconButton icon={ArrowLeft} label="后退" disabled={!canUse||!page?.canGoBack} onClick={()=>void command('back')}/>
+      <IconButton icon={ArrowRight} label="前进" disabled={!canUse||!page?.canGoForward} onClick={()=>void command('forward')}/>
+      <IconButton icon={page?.loading?Square:RotateCw} label={page?.loading?'停止加载':'刷新'} disabled={!canUse||!page} onClick={()=>void command(page?.loading?'stop':'reload')}/>
       <form className="flex min-w-48 flex-1 gap-1" onSubmit={event=>{event.preventDefault();setEditing(false);void command('navigate',{url});}}>
         <Input ref={addressRef} aria-label="网页地址" value={url} disabled={!canUse||!page} onFocus={()=>setEditing(true)} onChange={event=>setUrl(event.target.value)} />
         <Button size="sm" variant="outline" type="submit" disabled={!canUse||!page}>前往</Button>
       </form>
       <Button size="sm" variant="ghost" disabled={!canUse||!page} onClick={()=>{setFindOpen(!findOpen);requestAnimationFrame(()=>findRef.current?.focus());}}>页内查找</Button>
-      <Button size="sm" variant="ghost" disabled={!canUse||!page} aria-label="缩小页面" onClick={()=>void command('zoom',{zoomFactor:Math.max(.25,(page?.zoomFactor??1)-.1)})}>−</Button>
+      <IconButton icon={Minus} label="缩小页面" disabled={!canUse||!page} onClick={()=>void command('zoom',{zoomFactor:Math.max(.25,(page?.zoomFactor??1)-.1)})}/>
       <Button size="sm" variant="ghost" disabled={!canUse||!page} title="恢复 100%" onClick={()=>void command('zoom',{zoomFactor:1})}>{Math.round((page?.zoomFactor??1)*100)}%</Button>
-      <Button size="sm" variant="ghost" disabled={!canUse||!page} aria-label="放大页面" onClick={()=>void command('zoom',{zoomFactor:Math.min(3,(page?.zoomFactor??1)+.1)})}>+</Button>
+      <IconButton icon={Plus} label="放大页面" disabled={!canUse||!page} onClick={()=>void command('zoom',{zoomFactor:Math.min(3,(page?.zoomFactor??1)+.1)})}/>
       <Button size="sm" variant="ghost" onClick={()=>setDownloadsOpen(!downloadsOpen)}>下载 {session.downloads.length||''}</Button>
     </div>
     {!session.pages.length&&<p>当前没有标签。点击“新标签”继续使用同一登录环境。</p>}
