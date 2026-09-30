@@ -15,8 +15,9 @@ export function ProjectMetadataForm({ name, objective, onName, onObjective, onSu
     {creating && <p className="hint">创建后先整理项目资料；设为当前浏览项目后开始整理保存点。</p>}
     <Label>项目名称<Input aria-label="项目名称" value={name} onChange={event => onName(event.target.value)} maxLength={200} disabled={busy || disabled} /></Label>
     <Label>目录简介<Textarea aria-label="目录简介" value={objective} onChange={event => onObjective(event.target.value)} maxLength={4000} disabled={busy || disabled} /></Label>
-    <Button type="submit" disabled={busy || disabled || !name.trim()}>{creating ? '创建项目' : '保存项目修改'}</Button>
+    <div className="button-row"><Button variant="default" type="submit" disabled={busy || disabled || !name.trim()}>{creating ? '创建项目' : '保存项目修改'}</Button>
     {dirty && <Button type="button" disabled={busy} onClick={onCancel}>撤销项目输入</Button>}
+    </div>
     {children}
   </form>;
 }
