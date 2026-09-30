@@ -37,6 +37,18 @@ export async function runWorkspaceLayoutScenarios(studio:Studio) {
   }
   async function disclose(text:string) {const el='[...document.querySelectorAll("summary")].find(el=>el.textContent.startsWith('+JSON.stringify(text)+')&&'+visible+')';if(!await read<boolean>('('+el+')?.parentElement.open'))await clickTarget(el);}
   try {
+    // Exercise the empty workspace too: flex-shrinking the status beside all
+    // three action buttons used to wrap its Chinese text one glyph per line.
+    for (const [width,height] of [[1180,812],[1100,760],[1450,935]]) {
+      window.setSize(width,height);await delay(500);
+      const footer=await read<any>('(()=>{const el=document.querySelector(".evidence-strip"),status=el.querySelector(":scope > div"),text=status.querySelector("span"),r=el.getBoundingClientRect(),s=status.getBoundingClientRect(),t=text.getBoundingClientRect();return {viewport:innerWidth,width:r.width,height:r.height,statusWidth:s.width,textHeight:t.height,lineHeight:parseFloat(getComputedStyle(text).lineHeight),overflow:el.scrollWidth>el.clientWidth,buttons:[...el.querySelectorAll("button")].map(button=>{const b=button.getBoundingClientRect();return {top:b.top,bottom:b.bottom,right:b.right};}),statusBottom:s.bottom,right:r.right,bottom:r.bottom};})()');
+      report.emptyFooterSizes??=[];report.emptyFooterSizes.push(footer);
+      assert(footer.textHeight<=footer.lineHeight*2,'Recording status must remain readable, not a vertical glyph column: '+JSON.stringify(footer));
+      assert(footer.height<120,'Evidence footer must leave room for the workspace');
+      assert(!footer.overflow,'Evidence actions must not overflow horizontally');
+      assert(footer.buttons.every((button:any)=>button.top>=footer.statusBottom-1&&button.right<=footer.right+1&&button.bottom<=footer.bottom+1),'History actions wrap below the status and remain inside the footer');
+      await captureUiFrame(studio,'layout-empty-footer-'+width+'.png');
+    }
     await click('新建项目');await fill('项目名称','布局回放复核');await fill('业务目标','整理两个页面保存点，为其中一个补充纯文字说明。');await click('创建项目');
     await wait(async()=>studio.projects.length,n=>n===1,'project created');
     await click('添加环境');await fill('环境名称','合成登录页');await fill('登录入口',site.url+'/orders');await click('添加');
