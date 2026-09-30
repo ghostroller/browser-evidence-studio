@@ -8,6 +8,7 @@ const MAX_CONTENT_BYTES = 2 * 1024 * 1024;
 const MAX_ITEMS = 2000;
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
+const enumString = (value: unknown, allowed: readonly string[]): boolean => typeof value === 'string' && allowed.includes(value);
 const fail = (message: string): never => { throw new MaterialError('INVALID_MATERIAL', message); };
 const keys = (v: Record<string, unknown>, allowed: string[], label: string): void => {
   for (const key of Object.keys(v)) if (!allowed.includes(key)) fail(`${label} has unknown property ${key}`);
@@ -75,7 +76,7 @@ function rule(value: unknown): DataRule {
     case 'field-type':
       keys(item, ['type', 'field', 'valueType'], 'field-type rule');
       string(item.field, 'rule.field', 256);
-      if (!['string', 'number', 'boolean', 'object', 'array', 'null'].includes(String(item.valueType))) fail('Invalid field valueType');
+      if (!enumString(item.valueType, ['string', 'number', 'boolean', 'object', 'array', 'null'])) fail('Invalid field valueType');
       break;
     case 'unique':
       keys(item, ['type', 'field'], 'unique rule'); string(item.field, 'rule.field', 256); break;
@@ -124,10 +125,10 @@ export function validateContent(value: unknown): MaterialContent {
     if (!record(raw)) fail('Field must be an object');
     const item = raw as Record<string, unknown>;
     keys(item, ['id', 'dataset', 'name', 'description', 'outputPath', 'sourceProof', 'valueType', 'sourcePolicy', 'target', 'annotationId', 'checkpointId', 'bindingStatus', 'examples'], 'field');
-    if (!['any-evidenced', 'page-displayed'].includes(String(item.sourcePolicy))) fail('Invalid source policy');
-    if (item.valueType !== undefined && !['string', 'number', 'boolean', 'object', 'array', 'null'].includes(String(item.valueType))) fail('Invalid field type');
+    if (!enumString(item.sourcePolicy, ['any-evidenced', 'page-displayed'])) fail('Invalid source policy');
+    if (item.valueType !== undefined && !enumString(item.valueType, ['string', 'number', 'boolean', 'object', 'array', 'null'])) fail('Invalid field type');
     if ((item.checkpointId !== undefined || item.bindingStatus !== undefined) && item.target === undefined) fail('Field binding metadata requires a target');
-    if (item.bindingStatus !== undefined && !['bound', 'needs-rebind', 'unavailable'].includes(String(item.bindingStatus))) fail('Invalid field binding status');
+    if (item.bindingStatus !== undefined && !enumString(item.bindingStatus, ['bound', 'needs-rebind', 'unavailable'])) fail('Invalid field binding status');
     let proofFields: Pick<MaterialField, 'outputPath' | 'sourceProof'> = {};
     try {
       if (item.outputPath !== undefined) proofFields.outputPath = parseJsonPointer(item.outputPath);
@@ -142,7 +143,7 @@ export function validateContent(value: unknown): MaterialContent {
       ...(item.examples === undefined ? {} : { examples: list(item.examples, 'field.examples').map(raw => {
         if (!record(raw)) return fail('Field example must be an object');
         keys(raw, ['id', 'checkpointId', 'target', 'bindingStatus'], 'field example');
-        if (!['bound', 'needs-rebind', 'unavailable'].includes(String(raw.bindingStatus))) return fail('Invalid example binding status');
+        if (!enumString(raw.bindingStatus, ['bound', 'needs-rebind', 'unavailable'])) return fail('Invalid example binding status');
         return { id: id(raw.id, 'example.id'), checkpointId: id(raw.checkpointId, 'example.checkpointId'), target: target(raw.target, 'example.target'), bindingStatus: raw.bindingStatus as 'bound' | 'needs-rebind' | 'unavailable' };
       }) }),
       ...(item.target === undefined ? {} : { target: target(item.target, 'field.target') }),
@@ -170,8 +171,8 @@ export function validateContent(value: unknown): MaterialContent {
     const item = raw as Record<string, unknown>;
     keys(item, ['id', 'checkpointId', 'target', 'text', 'author', 'interpretation', 'bindingStatus'], 'annotation');
     if (item.author !== 'human' && item.author !== 'agent') fail('Invalid annotation author');
-    if (!['observed', 'inferred', 'unverified'].includes(String(item.interpretation))) fail('Invalid interpretation');
-    if (!['bound', 'needs-rebind', 'unavailable', 'none'].includes(String(item.bindingStatus))) fail('Invalid binding status');
+    if (!enumString(item.interpretation, ['observed', 'inferred', 'unverified'])) fail('Invalid interpretation');
+    if (!enumString(item.bindingStatus, ['bound', 'needs-rebind', 'unavailable', 'none'])) fail('Invalid binding status');
     if (item.target !== undefined && item.bindingStatus === 'none') fail('Element annotation requires a binding status');
     return { id: id(item.id, 'annotation.id'), checkpointId: id(item.checkpointId, 'annotation.checkpointId'), ...(item.target === undefined ? {} : { target: target(item.target, 'annotation.target') }),
       text: string(item.text, 'annotation.text', 16000), author: item.author as MaterialAnnotation['author'], interpretation: item.interpretation as MaterialAnnotation['interpretation'],
