@@ -187,6 +187,8 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
     finally { if(token===selectionRequest.current&&ownsSession())setPending(''); }
   }, [call, loadCollection, editorSessionId]);
   useEffect(() => { ++listRequest.current; ++selectionRequest.current; ++writeRequest.current; pendingRef.current = false;
+    // A new project session must not inherit an old directory write or rejection.
+    directoryWrite.current = null;
     ++revisionRequest.current;setViewedRevision(null);setViewedPages(empty());
     draftRef.current = null; setDraft(null); setDrafts({ items: [], outputTruncated: false }); setRevisions({ items: [], outputTruncated: false });
     setPages(empty()); resetEditor(); setPending(''); setError('');
@@ -557,7 +559,11 @@ export function MaterialWorkbench({ projectId, recordingId, position, selectedTa
     try { await loadCollection(selected, collection, token, cursor); }
     catch (failure) { if (selectedDraft(scope, token, selected.draftId, selected.draftRevision)) setError(String(failure)); }
   };
-  const run = (action:()=>Promise<unknown>) => { void action().catch(failure=>setError(String(failure))); };
+  const run = (action:()=>Promise<unknown>) => {
+    // A rejected action belongs to the session that started it, even if the
+    // user switches away and returns to the same project before it settles.
+    void action().catch(failure=>{if(ownsSession())setError(String(failure));});
+  };
   const switchDraft = (id:string) => changeEditor(()=>directoryAction(async()=>{ await call('setWorkingMaterialDraft',{draftId:id}); await openDraft(id); await refreshLists(); onEditWorkspace?.(); }));
   const manage = (kind:'drafts'|'revisions',id:string,patch:{name?:string;hidden?:boolean;note?:string})=>directoryAction(async()=>{
     const current=await call('materialCatalog');

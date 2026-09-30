@@ -2,6 +2,16 @@
 
 本轮入口为 [docs/README](../README.md)，契约为13/14；T1–T3历史结论不作为当前构建证据。
 
+## 2026-09-30 项目切换后的迟到目录错误修复
+
+从远端 main `16fdf030816b7d04422d2a671a50af8b8a12c49c` 接续。源码审查发现 `MaterialWorkbench.run()` 在目录操作失败时无条件写入错误：项目 A 改名请求未返回时切到 B，或 A→B→A，旧错误会显示在新会话。目录 promise 队列也跨会话保留，使新会话的目录操作等待旧请求并继承其失败。修复仅复用现有 `ownsSession()` 检查迟到错误，并在已有项目重置 effect 中清空目录队列；同会话的失焦改名→复制顺序和失败阻断保持不变。
+
+新增 `test/renderer/material-action-ownership.test.tsx` 通过真实 React 组件/控件和明确的 IPC 替身验证五项：跨项目迟到错误、返回原项目的新会话、当前会话错误与输入保留，以及上述两种切换后新改名不被旧队列阻塞/旧错误不覆盖当前错误。未改源码时前两项实际失败（2失败/1通过）；只加错误归属检查时新增队列两项实际失败（2失败/3通过）；最终5项全部通过。日志为 `output/cloud-action-ownership-before.log`、`cloud-action-queue-before.log`、`cloud-action-ownership-after.log`。这些是 renderer 回归，不冒充真实 Electron 故障注入或持久化验收。
+
+最终 `npm run typecheck` 和 `npm run build` 通过，Node 24.21.0 / npm 11.19.0，未升级依赖。生产构建89文件身份见 `output/cloud-action-build-identity.json`，聚合 SHA256 `4c9c30b141654f20e5f6aa2eecf264f5b57356bffb52470eb08e08b28a53c5a6`。最终全量在云端桌面上下文运行，79文件531项：527通过、2失败、2跳过；两项失败仍是上次已在未改动基线确认的 Windows 读锁替换假设（`test/unit/soak-report.test.ts`），本次未改。此前偶发的复制前失焦改名反馈测试本轮通过。完整日志为 `output/cloud-action-full-tests.log`；不能宣称全量通过。
+
+本次未重跑真实桌面业务旅程、长测或打包；已有演示窗口不代表加载本次新构建。需复核桌面时使用 `npm run demo:product` 启动新的合成环境。输出、合成数据、运行时和构建产物均不提交。
+
 ## 2026-09-30 云端 Linux 证据底栏窄窗修复
 
 从干净 `df6c27b7dffec74def3593543ed5ca089d90209b` 克隆接续，使用 Node 24.21.0 / npm 11.19.0 / Electron 44.4.3。首次真实桌面启动在 1180×812 窗口观察到“连续录制与保存点分别记录”被三枚历史按钮挤成逐字竖列。原因是状态 flex 项允许缩到零基宽；仅将 `.evidence-strip > div` 的 flex 改为 `1 0 100%`，状态独占一行，按钮继续自然换行。
