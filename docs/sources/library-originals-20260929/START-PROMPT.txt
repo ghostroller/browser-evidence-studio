@@ -1,0 +1,11 @@
+先做低成本的浏览器前端验证，不重新设计产品或一次性搬走Electron。
+
+阅读AGENTS.md、docs/README.md，以及docs/architecture/browser-first-workbench.md第0–5节、docs/development/agent-ui-feedback-loop.md。参考审查HEAD为63029811ce3485b4cdeeafc7f2105091432fc267；核对实际HEAD、dirty、活动实例，保留后续成果、原件和旧profile。13/14继续定义产品语义，本次只改变开发/运行边界。
+
+本次授权实施B0/B1：先实测当前Codex内置浏览器或受控浏览器的localhost、DOM/样式/console/网络/截图能力及权限；同时核实已有Electron CDP入口，不假定Electron只能computer use。然后抽出最小类型化WorkbenchClient和HTTP/IPC适配，让同一React工作台在普通浏览器经真实服务完成管理、保存点编辑、固定版和结果读取，并用HMR直接观察布局。过渡期可保留Electron companion，但如实标注，不能冒称纯Node。
+
+现有Agent HTTP不是高权限UI API；工作台配对、Agent任务授权、历史回放必须隔离，不裸露任意dispatch(source=ui)、CDP、长期token或真实profile。界面刷新不结束录制，单一writer和operationId重试边界保持。不要通过iframe嵌任意网站、关webSecurity或建设屏幕流平台实现分离。
+
+在真实浏览器里完成配套F01–F14和三个代表状态：保存点默认页、旧存档只读/派生编辑、字段/结果。正常点击和输入，检查几何、命中、滚动与截图；不以隐藏dispatch、force click或全mock求通过。同步保留最小Electron冒烟。直接实现，最多一个不冲突助手，不恢复多层管理；源码和相关文档按包提交，不自动push或清理。
+
+首批不实施完整外部Chromium provider或迁移登录数据；B2共享Web回放允许先做接口/风险验证，未完成明确报告。交付可打开URL、真实后端类型、源码/实例、三场景证据及与原流程对比，再给出是否值得继续B2/B3的结论。不要只交另一份计划，也不要几小时抽象拆分后还没有可操作前端。
