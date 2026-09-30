@@ -2,7 +2,7 @@
 
 ## 2026-09-30 浏览器优先重构当前入口
 
-当前推进至B2指定合成回放／绑定纵向（共享核心 `6c14b7f`、隔离服务 `99713b3`、UI `dce378c`），见[当前计划](browser-first-refactor-plan.md)与[B2实际验收](refactor-handoffs/BROWSER-FIRST-B2-20260930.md)。真实DOM离线回放、精确节点绑定、固定版刷新及Native同源回读成立；同一固定字段实际正确值pass、错值fail、无来源inconclusive。后端仍为electron-companion，B3未开展，旧Electron对话框问题保留，完整兼容／安全矩阵未全验。旧记录不能外推为当前构建全通过。
+当前推进 B3 首切片：provider 身份与共享 StudioCore／Electron adapter，实际 Electron product-journey 及重开通过。Node 候选已实测录制、离线回放、字段固定版和当前页只读三态，但有头 Chromium 输入锁也阻止 Puppeteer 输入；运行模式取舍待用户确认，崩溃恢复仍在验证，完整 Node 入口尚未发布。见[当前计划](browser-first-refactor-plan.md)、[B3实施与阻塞](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)。[B2已交付证据](refactor-handoffs/BROWSER-FIRST-B2-20260930.md)及旧 Electron 对话框问题保留，旧记录不能外推为当前构建全通过。
 
 ## 当前：工作区布局与历史图标补修（2026-09-30）
 

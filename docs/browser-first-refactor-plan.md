@@ -20,7 +20,8 @@
 - B1.4：同项目只读结果已实现；真实执行／报告读取、非空批次、双实例、错误恢复与最终Native layout通过，见[交接](refactor-handoffs/BROWSER-FIRST-B14-20260930.md)。可见HMR补验96ms，仅单次观察延迟、不编造旧耗时对照；不开放浏览器执行／人工评判，不进入B2/B3
 - 原生 focus 后续定位：已证实 Electron alert/confirm 的 CDP 回应未释放原生模态框，见[对话框生命周期问题](refactor-handoffs/ELECTRON-DIALOG-LIFECYCLE-20260930.md)。用户已选择保留问题记录、继续浏览器拆分，暂不改变 Electron 对话框交互；失败门禁继续保留
 - B2：用户确认后完成共享回放核心、独立origin、精确节点绑定／固定版／刷新及Native同源回读，最终attempt9实测正确／错误／无来源三态为pass／fail／inconclusive，见[B2交接](refactor-handoffs/BROWSER-FIRST-B2-20260930.md)。后端仍为electron-companion，窗口与未测矩阵按交接限定
-- B3–B4：仍为后续计划；旧profile、字段语义和数据格式未迁移
+- B3：用户已确认推进；首节点发布provider身份与共享StudioCore，指定Electron旅程及重开通过。Node候选已完成录制／离线回放／字段固定版／当前页只读三态，但有头输入锁也阻止Puppeteer输入；运行模式取舍待用户确认，崩溃恢复另在验证。详见[B3交接](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)，不宣布B3全部完成或Node入口已发布
+- B4：仍为后续计划；旧profile、字段语义和原件未迁移
 
 依赖主线：
 
@@ -162,6 +163,8 @@ B2 隔离设计可在 B1 期间准备；B4 的 Electron 冒烟从 B1 开始持�
 
 ## 7. B3：再提取纯 Node 后端与 Chromium provider
 
+**当前状态**：已获用户授权并开始实施，首个可交付切片为共享领域编排／provider身份与Electron adapter。纯Node候选的实际通过与关键未通过项见[B3交接](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)；输入隔离能力不能从接口或只读核验成功推定。
+
 **依赖**：B1 已改善反馈、B2 共享回放可运行、provider 数据契约与兼容策略明确。先提接口并维持 Electron 行为，再加 provider，不整体重写现有领域模块。
 
 **建议顺序**：
@@ -227,4 +230,4 @@ git diff --check
 | F13 回放边界 | B2真实DOM离线回放及节点选取已成立，CSS/PNG与普通文本核对；限定sealed有界窗口，独立origin，不用图片替代DOM |
 | F14 报告归属 | 各切片均记录源码／构建／实例；B1.3 attempt1 误判撤回、attempt2 真失败与 attempt3 复验分开保存 |
 
-B1当前已交付启动后真实URL、electron-companion事实、资料及只读结果纵向、三状态证据和有范围限制的反馈时间。历史测试实例已退出，应重新启动取得新URL。原生对话框、完整旧资料／长文本等未覆盖项不随B1切片消失；按原设计先呈现本节点收益与边界，B2指定合成纵向现已通过；B3仍需基于现有收益／旧profile兼容／生命周期风险另作决策。
+B1当前已交付启动后真实URL、electron-companion事实、资料及只读结果纵向、三状态证据和有范围限制的反馈时间。历史测试实例已退出，应重新启动取得新URL。原生对话框、完整旧资料／长文本等未覆盖项不随B1切片消失；按原设计先呈现本节点收益与边界，B2指定合成纵向现已通过；B3已获授权推进，共享核心首切片可独立交付；Node有头输入隔离的产品取舍待确认，完整范围见B3交接。
