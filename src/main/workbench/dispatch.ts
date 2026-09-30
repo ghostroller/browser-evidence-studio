@@ -1,3 +1,4 @@
+import { isReplayMethod, parseWebReplayRequest, type BrowserReplayPort } from './replay-port';
 import { isMaterialMethod, parseMaterialRequest } from './material-validation';
 import type { BrowserMaterialPort } from './material-port';
 import { isResultMethod, parseResultRequest } from './result-validation';
@@ -53,9 +54,22 @@ function projectDto(value: BrowserProjectMetadata, projectId: string): BrowserPr
 /** No Studio import, generic dispatch, retry, business lock or deduplication here. */
 export class WorkbenchDispatcher {
   constructor(private readonly sessions: WorkbenchSessions, private readonly port: ProjectMetadataPort,
-    private readonly changed: (projectId: string) => void = () => {}, private readonly materials?: BrowserMaterialPort, private readonly results?: BrowserResultPort) {}
+    private readonly changed: (projectId: string) => void = () => {}, private readonly materials?: BrowserMaterialPort, private readonly results?: BrowserResultPort, private readonly replay?: BrowserReplayPort) {}
 
   async dispatch(value: unknown, context: WorkbenchSessionContext, signal?: AbortSignal): Promise<unknown> {
+    if (value && typeof value === 'object' && isReplayMethod((value as Record<string, unknown>).method)) {
+      this.sessions.assertActive(context);
+      if (context.grant !== 'project-replay') throw new WorkbenchError('forbidden');
+      const request = parseWebReplayRequest(value);
+      if (request.instanceId !== context.instanceId || request.body.projectId !== context.projectId) throw new WorkbenchError('forbidden');
+      if (!this.replay) throw new WorkbenchError('unavailable');
+      const controller = new AbortController();
+      const unsubscribe = this.sessions.onInvalidated(context, () => controller.abort());
+      const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true });
+      const access = { authorize: () => { this.sessions.assertActive(context); if (controller.signal.aborted || signal?.aborted) throw new WorkbenchError('cancelled'); } };
+      try { access.authorize(); const result = await this.replay.execute(request, access, controller.signal); access.authorize(); return result; }
+      finally { unsubscribe(); signal?.removeEventListener('abort', abort); }
+    }
     if (value && typeof value === 'object' && isResultMethod((value as Record<string, unknown>).method)) return this.dispatchResults(value, context, signal);
     if (value && typeof value === 'object' && isMaterialMethod((value as Record<string, unknown>).method)) return this.dispatchMaterials(value, context, signal);
     const request = parseWorkbenchRequest(value);
@@ -104,7 +118,7 @@ export class WorkbenchDispatcher {
   }
   private async dispatchMaterials(value: unknown, context: WorkbenchSessionContext, signal?: AbortSignal): Promise<unknown> {
     this.sessions.assertActive(context);
-    if (context.grant !== 'project-materials' && context.grant !== 'project-workbench') throw new WorkbenchError('forbidden');
+    if (context.grant !== 'project-materials' && context.grant !== 'project-workbench' && context.grant !== 'project-replay') throw new WorkbenchError('forbidden');
     const request = parseMaterialRequest(value);
     if (request.instanceId !== context.instanceId || request.body.projectId !== context.projectId) throw new WorkbenchError('forbidden');
     if (!this.materials) throw new WorkbenchError('unavailable');
@@ -127,7 +141,7 @@ export class WorkbenchDispatcher {
 
   private async dispatchResults(value: unknown, context: WorkbenchSessionContext, signal?: AbortSignal): Promise<unknown> {
     this.sessions.assertActive(context);
-    if (context.grant !== 'project-workbench') throw new WorkbenchError('forbidden');
+    if (context.grant !== 'project-workbench' && context.grant !== 'project-replay') throw new WorkbenchError('forbidden');
     const request = parseResultRequest(value);
     if (request.instanceId !== context.instanceId || request.body.projectId !== context.projectId) throw new WorkbenchError('forbidden');
     if (!this.results) throw new WorkbenchError('unavailable');

@@ -11,6 +11,9 @@ export default defineConfig(() => {
   const instanceId = process.env.BES_WORKBENCH_INSTANCE_ID ?? '';
   if (!Number.isSafeInteger(browserPort) || browserPort < 1 || browserPort > 65535 || !/^[a-zA-Z0-9_-]{1,128}$/.test(instanceId)) throw new Error('Use start:workbench for a synthetic browser connection.');
   const origin = `http://127.0.0.1:${browserPort}`;
+  const replayOrigin = process.env.BES_WORKBENCH_REPLAY_ORIGIN;
+  const replay = new URL(replayOrigin ?? '');
+  if (replay.protocol !== 'http:' || replay.hostname !== '127.0.0.1' || !replay.port || replay.origin !== replayOrigin || replayOrigin === origin) throw new Error('Invalid isolated replay origin');
   const proxy = createWorkbenchDevProxy({ origin, targetPort });
   return {
     root: 'src/renderer', base: './',
@@ -19,7 +22,10 @@ export default defineConfig(() => {
       configureServer(server) { server.middlewares.use(proxy); },
       transformIndexHtml(html, context) {
         if (context.path !== '/browser.html') return html;
-        return [{ tag: 'meta', attrs: { name: 'workbench-instance', content: instanceId }, injectTo: 'head' }];
+        return { html: html.replace("frame-src 'self' about:", `frame-src 'self' about: ${replayOrigin}`), tags: [
+          { tag: 'meta', attrs: { name: 'workbench-instance', content: instanceId }, injectTo: 'head' },
+          { tag: 'meta', attrs: { name: 'workbench-replay-origin', content: replayOrigin }, injectTo: 'head' },
+        ] };
       },
     }],
     resolve: { tsconfigPaths: true },

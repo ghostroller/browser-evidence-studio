@@ -1,3 +1,5 @@
+import { ReplayDocumentServer } from './workbench/replay-document';
+import { createBrowserReplayPort } from './workbench/replay-port';
 import { createBrowserMaterialPort } from './workbench/material-port';
 import { createBrowserResultPort } from './workbench/result-port';
 import { app, ipcMain, protocol, net } from 'electron';
@@ -40,7 +42,7 @@ protocol.registerSchemesAsPrivileged([
   {scheme:'bes-resource',privileges:{standard:true,secure:true,corsEnabled:true,supportFetchAPI:true}}
 ]);
 let studio:Studio|undefined;let api:ApiHandle|undefined;let quitting=false;let lifecycle:LifecycleLog|undefined;
-let workbench:WorkbenchHttpTransport|undefined;let pairing:WorkbenchPairing|undefined;
+let replayDocument:ReplayDocumentServer|undefined;let workbench:WorkbenchHttpTransport|undefined;let pairing:WorkbenchPairing|undefined;
 let visibleEvidence:Awaited<ReturnType<typeof import('../../test/desktop/native-window-evidence').recordNativeWindow>>|undefined;
 let shutdownTask:Promise<void>|undefined;let shutdownExitCode=0;
 async function endpoint(){for(let i=0;i<100;i++){try{const [port,browserPath]=(await readFile(path.join(dataRoot,'DevToolsActivePort'),'utf8')).trim().split(/\r?\n/);const url=`http://127.0.0.1:${port}/json/version`;const data=await fetch(url).then(r=>r.json()) as any;if(data.webSocketDebuggerUrl)return `ws://127.0.0.1:${port}${browserPath}`;}catch{}await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('Internal CDP endpoint did not become ready');}
@@ -53,12 +55,13 @@ else app.whenReady().then(async()=>{
   await lifecycle.record('workspace-opening');await studio.init();await lifecycle.record('workspace-opened');
   if(syntheticWorkbench){
     const sessions=new WorkbenchSessions({instanceId:studio.instanceId});
-    workbench=new WorkbenchHttpTransport({origin:syntheticWorkbench.origin,sessions,projectPort:createProjectMetadataPort(studio.management),materialPort:createBrowserMaterialPort(studio.root,studio.materials),resultPort:createBrowserResultPort(studio.executions)});
+    workbench=new WorkbenchHttpTransport({origin:syntheticWorkbench.origin,sessions,projectPort:createProjectMetadataPort(studio.management),materialPort:createBrowserMaterialPort(studio.root,studio.materials),resultPort:createBrowserResultPort(studio.executions),replayPort:createBrowserReplayPort(studio.root,studio.materials)});
     pairing=new WorkbenchPairing(sessions,studio.management,syntheticWorkbench.origin);
     const address=await workbench.start();
+    replayDocument=new ReplayDocumentServer();const replayOrigin=await replayDocument.start(syntheticWorkbench.origin,studio.instanceId);
     // Discovery contains no ticket, session token, Agent token or credential.
     await mkdir(path.join(dataRoot,'connection'),{recursive:true,mode:0o700});
-    await writeFile(path.join(dataRoot,'connection','workbench.json'),JSON.stringify({...address,processId:process.pid}),{flag:'wx',mode:0o600});
+    await writeFile(path.join(dataRoot,'connection','workbench.json'),JSON.stringify({...address,replayOrigin,processId:process.pid}),{flag:'wx',mode:0o600});
   }
   let metadata=new Map(studio.projects.map(project=>[project.id,JSON.stringify([project.name,project.objective,project.revision])]));
   studio.materials.service.onChanged=projectId=>{workbench?.invalidate(projectId);studio?.onChanged();};
@@ -224,7 +227,7 @@ function shutdown(reason:string,code=0):Promise<void>{
     const record=async(stage:string,details:Record<string,unknown>={})=>{try{await lifecycle?.record(stage,{reason,...details});}catch(error){shutdownExitCode=1;console.error('Lifecycle diagnostic could not be saved',error);}};
     await record('shutdown-requested',{exitCode:shutdownExitCode,runId:studio?.active?.id,execution:studio?.active?.execution});
     if(visibleEvidence){visibleEvidence.mark('Application shutdown: '+reason);try{await visibleEvidence.stop({kind:'independent visible demonstration',automatedJourney:false});}catch(error){console.error('Visible evidence finalization failed',error);}}
-    for(const [stage,close] of [['workbench',()=>workbench?.dispose()],['api',()=>api?.close()],['studio',()=>studio?.close()]] as const){
+    for(const [stage,close] of [['replay-document',()=>replayDocument?.dispose()],['workbench',()=>workbench?.dispose()],['api',()=>api?.close()],['studio',()=>studio?.close()]] as const){
       await record('closing-'+stage);
       try{await close();await record(stage+'-closed');}
       catch(error){shutdownExitCode=1;console.error(stage+' shutdown failed',error);await record(stage+'-close-failed');}

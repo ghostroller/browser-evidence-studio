@@ -1,3 +1,4 @@
+import type { BrowserReplayPort } from './replay-port';
 import { isMaterialMethod } from './material-validation';
 import { BROWSER_MATERIAL_BUDGET } from '../../contracts/browser-materials';
 import type { BrowserMaterialPort } from './material-port';
@@ -19,6 +20,7 @@ export interface WorkbenchHttpOptions {
   projectPort: ProjectMetadataPort;
   materialPort?: BrowserMaterialPort;
   resultPort?: BrowserResultPort;
+  replayPort?: BrowserReplayPort;
   maxRequests?: number;
   maxStreams?: number;
   maxStreamsPerSession?: number;
@@ -64,7 +66,7 @@ export class WorkbenchHttpTransport {
     this.maxStreamsPerSession = budget(options.maxStreamsPerSession, 2, 4);
     this.maxBodyBytes = budget(options.maxBodyBytes, 16_384, 65_536);
     this.requestTimeoutMs = budget(options.requestTimeoutMs, 5_000, 30_000);
-    this.dispatcher = new WorkbenchDispatcher(options.sessions, options.projectPort, projectId => this.invalidate(projectId), options.materialPort, options.resultPort);
+    this.dispatcher = new WorkbenchDispatcher(options.sessions, options.projectPort, projectId => this.invalidate(projectId), options.materialPort, options.resultPort, options.replayPort);
     // Node checks incomplete headers/requests periodically. Bound that sweep
     // too: expiry is the deadline plus at most one sweep (and event-loop delay).
     this.server = createServer({ maxHeaderSize: 8_192, requestTimeout: this.requestTimeoutMs,
@@ -163,7 +165,7 @@ export class WorkbenchHttpTransport {
       response.once('close', disconnected);
       // Authenticate before allocating a body buffer on RPC and event routes.
       const context = request.url === WORKBENCH_PATHS.session ? undefined : this.authenticate(request);
-      const materialGrant = (context?.grant === 'project-materials' || context?.grant === 'project-workbench') && request.url === WORKBENCH_PATHS.rpc;
+      const materialGrant = (context?.grant === 'project-materials' || (context?.grant === 'project-workbench' || context?.grant === 'project-replay')) && request.url === WORKBENCH_PATHS.rpc;
       const body = await this.readBody(request, materialGrant);
       if (controller.signal.aborted) throw new WorkbenchError('cancelled');
       if (request.url === WORKBENCH_PATHS.session) {

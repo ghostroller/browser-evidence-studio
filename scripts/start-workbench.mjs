@@ -57,16 +57,18 @@ export async function startWorkbench() {
       await delay(100);
     }
     if (!discovery || discovery.processId !== companion.pid || discovery.origin !== origin || !/^[a-zA-Z0-9_-]{1,128}$/.test(discovery.instanceId)) throw new Error('Synthetic companion readiness was not verified.');
+    const replay = new URL(discovery.replayOrigin);
+    if (replay.protocol !== 'http:' || replay.hostname !== '127.0.0.1' || !replay.port || replay.origin !== discovery.replayOrigin || replay.origin === origin) throw new Error('Invalid isolated replay authority.');
     const target = new URL(discovery.baseUrl);
     if (target.protocol !== 'http:' || target.hostname !== '127.0.0.1' || !target.port || target.origin !== discovery.baseUrl) throw new Error('Invalid companion authority.');
     vite = spawn(process.execPath, [path.join(workspace, 'node_modules/vite/bin/vite.js'), '--config', 'vite.browser.config.ts'], {
-      cwd: workspace, stdio: 'inherit', env: { ...process.env, BES_WORKBENCH_BROWSER_PORT: String(browserPort), BES_WORKBENCH_TARGET_PORT: target.port, BES_WORKBENCH_INSTANCE_ID: discovery.instanceId },
+      cwd: workspace, stdio: 'inherit', env: { ...process.env, BES_WORKBENCH_BROWSER_PORT: String(browserPort), BES_WORKBENCH_TARGET_PORT: target.port, BES_WORKBENCH_INSTANCE_ID: discovery.instanceId, BES_WORKBENCH_REPLAY_ORIGIN: discovery.replayOrigin },
     });
     children.push(vite); const viteDone = watch(vite);
     const identity = { schemaVersion: 1, startedAt: new Date().toISOString(), dataRoot, workspace,
       sourceHead: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace, encoding: 'utf8' }).trim(),
       sourceDirty: !!execFileSync('git', ['status', '--porcelain'], { cwd: workspace, encoding: 'utf8' }).trim(),
-      backendKind: 'electron-companion', runtimeProvider: 'electron', frontendOrigin: origin, backendOrigin: discovery.baseUrl,
+      backendKind: 'electron-companion', runtimeProvider: 'electron', frontendOrigin: origin, backendOrigin: discovery.baseUrl, replayOrigin: discovery.replayOrigin,
       logs: { processOutput: 'launcher terminal stdout/stderr (not captured)', lifecycleDirectory: path.join(dataRoot, 'diagnostics') },
       buildSha256: createHash('sha256').update(build).digest('hex'), instanceId: discovery.instanceId,
       companionProcessId: companion.pid, viteProcessId: vite.pid, browserUrl: `${origin}/browser.html` };

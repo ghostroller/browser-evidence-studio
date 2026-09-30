@@ -17,7 +17,7 @@ export class WorkbenchPairing {
   async begin(input: unknown, assertTrusted: () => void): Promise<BrowserWorkbenchTicket> {
     const body = record(input); exactKeys(body, ['projectId'], ['grant']); const projectId = identifier(body.projectId);
     const grant = body.grant ?? 'project-metadata';
-    if (grant !== 'project-metadata' && grant !== 'project-materials' && grant !== 'project-workbench') throw new WorkbenchError('invalid_request');
+    if (grant !== 'project-metadata' && grant !== 'project-materials' && grant !== 'project-workbench' && grant !== 'project-replay') throw new WorkbenchError('invalid_request');
     this.revoke(); const generation = this.generation;
     await this.management.readProject(projectId, { start: operation => { assertTrusted(); return operation(); } });
     assertTrusted();

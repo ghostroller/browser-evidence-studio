@@ -7,11 +7,12 @@ test('real Vite HTML transform has one nonsecret instance identity and explicit 
   const portProbe = createTcpServer(); await new Promise<void>(resolve => portProbe.listen(0, '127.0.0.1', resolve));
   const address = portProbe.address(); if (!address || typeof address === 'string') throw new Error('No port');
   await new Promise<void>(resolve => portProbe.close(() => resolve()));
-  const keys = ['BES_WORKBENCH_BROWSER_PORT', 'BES_WORKBENCH_TARGET_PORT', 'BES_WORKBENCH_INSTANCE_ID'] as const;
+  const keys = ['BES_WORKBENCH_BROWSER_PORT', 'BES_WORKBENCH_TARGET_PORT', 'BES_WORKBENCH_INSTANCE_ID', 'BES_WORKBENCH_REPLAY_ORIGIN'] as const;
   const before = keys.map(key => process.env[key]);
   process.env.BES_WORKBENCH_BROWSER_PORT = String(address.port);
   process.env.BES_WORKBENCH_TARGET_PORT = '9';
   process.env.BES_WORKBENCH_INSTANCE_ID = 'vite-fixture-instance';
+  process.env.BES_WORKBENCH_REPLAY_ORIGIN = 'http://127.0.0.1:9876';
   let server: Awaited<ReturnType<typeof createServer>> | undefined;
   try {
     // HTML/proxy fixture: do not launch the asynchronous whole-app dependency
@@ -22,6 +23,8 @@ test('real Vite HTML transform has one nonsecret instance identity and explicit 
     expect(html.match(/name="workbench-instance"/g)).toHaveLength(1);
     expect(html).toContain('content="vite-fixture-instance"');
     expect(html).toContain('data-workbench-host="browser"');
+    expect(html).toContain("frame-src 'self' about: http://127.0.0.1:9876");
+    expect(html).toContain('name="workbench-replay-origin"');
     expect(html).not.toMatch(/Bearer |ticket=|token=/);
     const module = await fetch(`http://127.0.0.1:${address.port}/index.tsx`);
     expect(module.status).toBe(200);

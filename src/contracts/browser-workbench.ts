@@ -1,7 +1,7 @@
 /** B1.2a's deliberately narrow, JSON-only browser transport contract.
  * This is not WorkbenchClient or the trusted Electron/Agent API surface.
  */
-export type BrowserWorkbenchGrant = 'project-metadata' | 'project-materials' | 'project-workbench';
+export type BrowserWorkbenchGrant = 'project-metadata' | 'project-materials' | 'project-workbench' | 'project-replay';
 export interface BrowserProjectMetadata {
   id: string;
   name: string;
