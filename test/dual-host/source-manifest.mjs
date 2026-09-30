@@ -1,0 +1,5 @@
+import fs from 'node:fs/promises';import {execFileSync} from 'node:child_process';import {createHash} from 'node:crypto';import {fileTreeHashes} from './source-evidence.mjs';
+import { fileURLToPath } from 'node:url';
+export const repo=fileURLToPath(new URL('../../',import.meta.url)).replace(/\/$/,'');
+export async function sourceBuildManifest(){const result={head:execFileSync('git',['rev-parse','HEAD'],{cwd:repo,encoding:'utf8'}).trim(),status:execFileSync('git',['status','--porcelain'],{cwd:repo,encoding:'utf8'}).trim(),files:{}};for(const dir of ['src','test','scripts','.vite'])for(const[name,hash]of Object.entries(await fileTreeHashes(repo+'/'+dir)))result.files[dir+'/'+name]=hash;for(const file of(await fs.readdir(repo)).filter(f=>/^vite.*\.ts$|^vitest.*\.ts$|^package(?:-lock)?\.json$|^tsconfig.*\.json$/.test(f)))result.files[file]=createHash('sha256').update(await fs.readFile(repo+'/'+file)).digest('hex');return result;}
+export const stable=x=>Array.isArray(x)?'['+x.map(stable).join(',')+']':x&&typeof x==='object'?'{'+Object.keys(x).sort().map(k=>JSON.stringify(k)+':'+stable(x[k])).join(',')+'}':JSON.stringify(x);

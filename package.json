@@ -21,6 +21,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:dual-host": "node test/dual-host/run.mjs",
     "test:integration": "npm run build && node test/desktop/launch.js",
     "test:journey": "npm run build && node test/desktop/launch.js --product-journey",
     "test:journey:numeric": "npm run build && node test/desktop/launch.js --product-journey --numeric",
