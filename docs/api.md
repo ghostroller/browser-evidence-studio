@@ -1,8 +1,18 @@
 # 本机 HTTP API
 
+## Node 本地 owner 控制（B3 开发模式）
+
+Node 入口另提供同源 `POST /owner/session` 和 `POST /owner/rpc`，不是业务 Agent `/v1` 的替代别名。前者接收当前实例与本地终端一次性票据，后者使用内存 Bearer、精确实例头和 `{instanceId, method, body}`。精确 Host／Origin／Fetch Metadata、请求体预算、方法白名单和字段检查全部适用；请求不能自报可信主体，也不能把普通工作台 token 升级为 owner。
+
+完整输入／输出契约为 [node-owner.ts](../src/contracts/node-owner.ts)。能力包括项目／专用环境创建、录制／封存／中断恢复、明确启动和停止固定版本执行、读取真实数据集尝试并生成报告、签发或撤销项目回放授权及退出。页面操作须绑定实际 page／target／generation；会话关闭／中断恢复使用 project／profile／session／lease，避免伪造已消失的页面。
+
+`executionMode=cooperative-dev-test` 仅由显式本地启动启用。`inputIsolation=none`、`physicalInputExclusive=false`、`interferenceDetection=partial`、`humanHandoff=unsupported` 同时显示并保存到对应环境元数据；逻辑控制权不意味着物理鼠标键盘隔离。没有标志时启动拒绝；直接内部构造的默认执行能力也保持禁用。旧 Electron 工作台及其 Agent 权限不随此模式改变。
+
+owner 票据 60 秒、会话最多 15 分钟；撤销／到期取消受其控制的启动或执行并撤销派生工作台访问。不可保存票据／Bearer 到 URL、构建或日志。owner 状态返回的是本地控制投影，当前整列表无分页，客户端上限 2 MiB；不能把它描述成已有 B1 预算保证的资料读取接口。
+
 ## 浏览器工作台连接（B1，2026-09-30）
 
-此入口与下文的业务 Agent `/v1` API 是不同权限主体。仅通过 `npm run start:workbench` 启动的隔离合成实例启用；后端仍为 Electron companion，普通客户端启动不额外开放工作台监听。Vite 使用受控同源代理，不开放通用跨域 CORS 或任意可信 UI dispatch。
+此入口与下文的业务 Agent `/v1` API 是不同权限主体。`npm run start:workbench` 使用隔离 Electron companion；B3 的 `npm run start:node -- --dev-cooperative-input` 使用独立 Node／Chromium 开发实例。普通 Electron 客户端不额外开放工作台监听。Vite 使用受控同源代理，不开放通用跨域 CORS 或任意可信 UI dispatch。
 
 工作台使用 `POST /workbench/session` 交换一次配对票据、`POST /workbench/rpc` 调用显式方法、`POST /workbench/events` 读取认证后的 SSE。可信 Electron 主窗口正常 UI 明确选择项目与权限，票据／会话绑定实例和项目；短期凭据仅在内存中使用，不放 URL、构建产物或日志。关闭、隐藏、最小化或重载配对窗口会撤销关联授权。精确 Host／Origin、过期和主体校验同时适用于事件流。
 
@@ -11,7 +21,7 @@
 - `project-workbench`：显式增加同项目只读执行结果；旧 metadata／materials 会话不静默升级
 - `project-replay`：再显式增加同项目sealed历史窗口与历史节点核验；旧三种grant均不静默增加回放能力
 
-资料方法、输入和预算见 `src/contracts/browser-materials.ts`；结果的八方法白名单见 `src/contracts/browser-results.ts`：`projectExecutions`、`execution`、`executionItems`、`datasetBatches`、`datasetRecords`、`executionReports`、`executionReport`、`executionReportItems`。结果页不提供执行启动、生成报告、人工判定或历史 DOM 回放；这些行为继续走既有 Electron 路径。
+资料方法、输入和预算见 `src/contracts/browser-materials.ts`；结果的八方法白名单见 `src/contracts/browser-results.ts`：`projectExecutions`、`execution`、`executionItems`、`datasetBatches`、`datasetRecords`、`executionReports`、`executionReport`、`executionReportItems`。结果页本身不提供执行启动、生成报告或人工判定。历史 DOM 回放由 B2 的独立授权模块提供；执行／报告生成由对应宿主的可信控制入口提供，不能由旧工作台 grant 越权调用。
 
 结果列表及读取复用真实 `ProjectExecutions`，核对项目／执行、固定绑定、报告 hash 和条目身份。损坏、缺失和预算不足返回错误，不折叠为空结果。投影去除宿主环境路径、批次文件路径和原始异常；业务 JSON 值、缺失字段语义及来源引用保持，不承诺对任意业务值做通用敏感信息识别。原始异常详情保留在 Electron 端。结果请求上限16 KiB；有界集合1–28 KiB／1–100项，详情响应另限64 KiB。组合权限不提高旧 metadata 请求上限；资料请求仍有独立64 KiB限制。
 

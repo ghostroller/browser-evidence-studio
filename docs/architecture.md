@@ -10,9 +10,9 @@ WorkspaceManagement 在 workspace.json 内执行 clone→校验完整依赖→�
 
 B1采用同一React入口及共享项目表单／MaterialWorkbench／ResultCenter，宿主差异集中在类型化client和显式能力。Electron继续通过唯一bridge adapter走可信IPC；浏览器通过独立、按instance/project/grant约束的HTTP/SSE端口读取真实服务，不伪造完整Studio.state，不复用业务Agent token成为可信UI。
 
-当前后端仍是Electron companion。浏览器已扩展的资料编辑与只读结果各有窄方法契约和有界投影，现有Studio、采集和原生回放保持原路径。新结果读取去除宿主路径及原始异常，固定报告继续检查完整执行绑定和内容hash；业务值不是任意文本脱敏器的输出。Browser权限不包含执行启动、报告生成、人工评判或旧原生历史节点调用；B2另建明确回放授权与SourceModel选取端口。
+后端可由Electron companion承载，或由B3显式启用的Node／独立Chromium开发入口承载。浏览器已扩展的资料编辑与只读结果各有窄方法契约和有界投影，现有Studio、采集和原生回放保持原路径。新结果读取去除宿主路径及原始异常，固定报告继续检查完整执行绑定和内容hash；业务值不是任意文本脱敏器的输出。Browser权限不包含执行启动、报告生成、人工评判或旧原生历史节点调用；B2另建明确回放授权与SourceModel选取端口。
 
-这一步不迁移旧profile的partition/storageRef，不改变Electron对话框交互。B2将可信controller／呈现／选取核心抽为双宿主共用，Web壳使用不同loopback origin及无脚本的录制子iframe，Native保留既有独立partition／bes-resource。控制消息的source/origin/replay/generation/command与编辑器selection所有权共同限制迟到选取；原始数据仍由同一SourceModel核验。B3首节点已把领域编排提取为StudioCore，Electron子类保留原生呈现，PageIdentity明确区分Electron与Chromium身份。旧profile缺省provider仍为Electron，不迁移partition/storageRef。独立Node候选仍待输入隔离取舍和恢复验收，尚未发布；B2实际通过与未测范围单列，不能从接口数推定完成。当前源码、实际验收和后续依赖以 [重构计划](browser-first-refactor-plan.md)为准，运行入口见 [环境](environment.md#浏览器工作台的隔离合成入口)。
+这一步不迁移旧profile的partition/storageRef，不改变Electron对话框交互。B2将可信controller／呈现／选取核心抽为双宿主共用，Web壳使用不同loopback origin及无脚本的录制子iframe，Native保留既有独立partition／bes-resource。控制消息的source/origin/replay/generation/command与编辑器selection所有权共同限制迟到选取；原始数据仍由同一SourceModel核验。B3首节点已把领域编排提取为StudioCore，Electron子类保留原生呈现，PageIdentity明确区分Electron与Chromium身份。旧profile缺省provider仍为Electron，不迁移partition/storageRef。Node开发模式按17:32用户决定采用非独占的有头输入：明确提示避让，保留逻辑lease／generation／取消和证据检查，不承诺检测全部人工干扰。启动须显式opt-in，可视人工交接暂不支持；B2实际通过与未测范围单列，不能从接口数推定完成。当前源码、实际验收和后续依赖以 [重构计划](browser-first-refactor-plan.md)为准，运行入口见 [环境](environment.md#浏览器工作台的隔离合成入口)。
 
 ## 1. 技术决策
 

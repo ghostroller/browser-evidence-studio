@@ -20,7 +20,7 @@
 - B1.4：同项目只读结果已实现；真实执行／报告读取、非空批次、双实例、错误恢复与最终Native layout通过，见[交接](refactor-handoffs/BROWSER-FIRST-B14-20260930.md)。可见HMR补验96ms，仅单次观察延迟、不编造旧耗时对照；不开放浏览器执行／人工评判，不进入B2/B3
 - 原生 focus 后续定位：已证实 Electron alert/confirm 的 CDP 回应未释放原生模态框，见[对话框生命周期问题](refactor-handoffs/ELECTRON-DIALOG-LIFECYCLE-20260930.md)。用户已选择保留问题记录、继续浏览器拆分，暂不改变 Electron 对话框交互；失败门禁继续保留
 - B2：用户确认后完成共享回放核心、独立origin、精确节点绑定／固定版／刷新及Native同源回读，最终attempt9实测正确／错误／无来源三态为pass／fail／inconclusive，见[B2交接](refactor-handoffs/BROWSER-FIRST-B2-20260930.md)。后端仍为electron-companion，窗口与未测矩阵按交接限定
-- B3：用户已确认推进；首节点发布provider身份与共享StudioCore，指定Electron旅程及重开通过。Node候选已完成录制／离线回放／字段固定版／当前页只读三态，但有头输入锁也阻止Puppeteer输入；运行模式取舍待用户确认，显式中断恢复和同profile重开已复验，仍不外推为全部生命周期通过。详见[B3交接](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)，不宣布B3全部完成或Node入口已发布
+- B3：已按17:32用户确认的显式有头协作开发模式交付。当前页／从入口真实交互、固定资料来源核验、取消／观察到的导航干扰／目标关闭、renderer及provider中断恢复通过；27文件233项、两种构建及Electron旅程／重开通过。无物理输入独占或通用干扰识别，详见[B3验收与限制](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)
 - B4：仍为后续计划；旧profile、字段语义和原件未迁移
 
 依赖主线：
@@ -163,7 +163,7 @@ B2 隔离设计可在 B1 期间准备；B4 的 Electron 冒烟从 B1 开始持�
 
 ## 7. B3：再提取纯 Node 后端与 Chromium provider
 
-**当前状态**：已获用户授权并开始实施，首个可交付切片为共享领域编排／provider身份与Electron adapter。纯Node候选的实际通过与关键未通过项见[B3交接](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)；输入隔离能力不能从接口或只读核验成功推定。
+**当前状态**：共享领域编排／provider身份、Electron adapter和显式Node开发入口已交付。用户明确选择非独占有头开发模式，提示避让而不强制拦截物理输入；新版实际交互及恢复验收见[B3交接](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)。该模式不是生产级独占执行，不能从报告通过推定没有人工干扰。
 
 **依赖**：B1 已改善反馈、B2 共享回放可运行、provider 数据契约与兼容策略明确。先提接口并维持 Electron 行为，再加 provider，不整体重写现有领域模块。
 
@@ -217,7 +217,7 @@ git diff --check
 | --- | --- |
 | F01 工具能力 | B1.2b 实际 loopback 浏览器入口、DOM／截图／网络可观察；原生整窗图仍可能分表面取证 |
 | F02 同一组件 | 共享入口、shell、项目表单、MaterialWorkbench与ResultCenter均在浏览器／Electron实际运行 |
-| F03 真实后端 | metadata 与资料 UI 均经真实领域服务落盘；固定版／派生当前副本刷新及 Electron 回读已核对，仍为 electron-companion |
+| F03 真实后端 | metadata 与资料 UI 均经真实领域服务落盘；固定版／派生当前副本刷新及 Electron 回读已核对，B1为electron-companion，B3另实测纯Node完整指定开发纵向 |
 | F04 实例隔离 | B1.4同工作树两实例同时运行，独立根／端口／profile／发现信息与独立关闭已验证；未测双工作树 |
 | F05 HMR | 元数据页样式实际观察与恢复；B1.4可见CSS补验96ms、随后三状态两尺寸取证与字节恢复；165ms旧变量探针不算可见样式，无旧同条件提速倍数 |
 | F06 API 主体 | 真实配对、未认证／错误 Origin/Host 拒绝、撤销与自然到期通过；Agent 权限未扩大 |
@@ -230,4 +230,4 @@ git diff --check
 | F13 回放边界 | B2真实DOM离线回放及节点选取已成立，CSS/PNG与普通文本核对；限定sealed有界窗口，独立origin，不用图片替代DOM |
 | F14 报告归属 | 各切片均记录源码／构建／实例；B1.3 attempt1 误判撤回、attempt2 真失败与 attempt3 复验分开保存 |
 
-B1当前已交付启动后真实URL、electron-companion事实、资料及只读结果纵向、三状态证据和有范围限制的反馈时间。历史测试实例已退出，应重新启动取得新URL。原生对话框、完整旧资料／长文本等未覆盖项不随B1切片消失；按原设计先呈现本节点收益与边界，B2指定合成纵向现已通过；B3已获授权推进，共享核心首切片可独立交付；Node有头输入隔离的产品取舍待确认，完整范围见B3交接。
+B1当前已交付启动后真实URL、electron-companion事实、资料及只读结果纵向、三状态证据和有范围限制的反馈时间。历史测试实例已退出，应重新启动取得新URL。原生对话框、完整旧资料／长文本等未覆盖项不随B1切片消失；按原设计先呈现本节点收益与边界，B2指定合成纵向现已通过；B3已按显式非独占的有头开发模式交付指定纵向，保留协议／证据控制及已知限制，后续双端收口见B4。

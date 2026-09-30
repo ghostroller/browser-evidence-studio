@@ -9,7 +9,7 @@
 | Node | 24.21.0 LTS | 开发工具、测试及独立脚本 |
 | npm | 11.19.0 | 唯一包管理器 |
 | Electron | 44.4.3 | 桌面窗口、WebContentsView 和内置浏览器 |
-| puppeteer-core | 25.11.0 | 连接 Electron 内嵌浏览器及执行普通脚本 |
+| puppeteer-core | 25.11.0 | 连接 Electron／独立 Chromium 并执行普通脚本 |
 | rrweb | 2.1.6 | 页面录制与回放 |
 | Electron Forge / Vite 插件 | 7.11.2 | 开发启动与分发包装 |
 | Vite | 8.3.0 | main、preload、renderer 和 worker 构建 |
@@ -158,8 +158,37 @@ HTTP 服务只供本机访问，地址和连接文件路径可在客户端“连
 
 这个对照同时去掉调试/采集初始化，并使用新 profile。若京东正常，还需与新 profile 的正常录制模式比较，不能直接宣布 rrweb 是根因；若仍异常，再评估 Electron 原生能力/session 和标准 Chrome/Edge 模式。详见 [对照记录](browser-compatibility-reference.md)。
 
-## 升级要求
+## Node + Chromium 协作式开发入口（B3）
 
-Node/Electron/Puppeteer/rrweb 升级至少复跑目标身份、导航/弹窗、网络正文、rrweb 录制回放、checkpoint 输入锁、profile 持久化、人工交接、取消和关闭清理。记录实际运行时版本及 lockfile hash，按失败范围调整当前受支持组合，不引入旧 Node/Puppeteer 兼容层。
+此入口是明确启用的有界面开发／测试工具，复用同一资料、回放和执行服务。它不会阻止人工点击或键盘输入；自动化运行时请勿操作受控浏览器，需要操作时先停止执行。只能发现部分目标／导航异常，核验通过不证明运行期间无人干扰。当前不支持执行中的可视人工接管，runner 的此类请求会明确失败。
+
+在项目根目录，使用锁定的 Node/npm 和已经安装的 Chromium：
+
+```sh
+npm run build:node
+npm run start:node -- --dev-cooperative-input
+```
+
+可选参数为 `--chromium /absolute/path/to/chromium` 和 `--data-root /absolute/private/directory`。未传数据根时，每次生成新的隔离目录；重开须显式传回启动器显示的同一数据根。根必须属于当前用户且不可由其他用户读写，旧 Electron 数据根不会被自动接管或迁移。当前同根租约使用确定性 loopback 端口，碰到占用会保守拒绝；不要通过改算法或另找端口绕过同根排他性。
+
+`--dev-cooperative-input` 缺失、重复选项、相对路径或与 `--headless` 组合会在创建根／监听器／浏览器之前拒绝。模式由本地启动确定，HTTP 请求不能自行启用。此入口仅在 Linux dot 桌面完成本轮真实验证；其他平台的可执行文件解析、焦点和生命周期仍须分别验证，不据 Node API 可跨平台就宣称产品已通过。
+
+启动器显示 owner 页面、共享工作台和非秘密实例清单位置。一次性 owner 票据只显示在本地启动终端，有效期 60 秒；在 owner 页面手动输入，交换为最多 15 分钟的内存会话。终端输入 `pair` 可撤销旧授权并重新签发，不把票据写入脚本、日志、URL 或仓库。关闭页面或丢失回执并不证明后端任务停止；需要时使用明确的停止／撤销／退出入口。
+
+正常使用顺序：
+
+1. owner 页面创建项目及专用 Chromium 环境，开始录制并在独立窗口示范，保存点后停止并封存
+2. owner 明确签发本项目回放票据，打开共享工作台编辑字段、选择真实历史节点及固定版本
+3. owner 登记本地工作流目录，填写固定版本身份，选择当前页面或从入口执行；不要同时操作业务浏览器
+4. 明确选择实际数据集尝试再生成核验报告，在共享工作台读取结果
+5. 正常退出并等待排空；若 provider 崩溃，使用只对后端确认断开或页面崩溃的会话开放的“结束中断会话”，保留中断／缺口而非伪造封存，再重开环境
+
+专用 profile 的持久化以正常关闭 Chromium 为边界，不冒称存在与 Electron 等价的即时 flush API。若不得不强制结束，显示并记录持久化未经确认；进程终止未经确认时不释放根租约。保留 `provider` 和 `storageRef`；不复制真实 Cookie，不将旧 Electron partition 交给 Chromium。下载和非受管弹窗在此开发切片被拒绝。当前 owner 状态没有分页，大目录可能超过客户端 2 MiB 响应限制；资料／结果／回放端口仍保留各自预算。
+
+精确构建、通过范围、历史失败及资源保真缺口见 [B3 验收记录](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)。合成证据、profile、日志和临时图片不提交版本控制。
+
+## 升级要求（共同约束）
+
+Node/Electron/Puppeteer/rrweb 升级至少复跑目标身份、导航/弹窗、网络正文、rrweb 录制回放、checkpoint 控制边界、profile 持久化、人工交接能力、取消和关闭清理。Electron 保留输入隔离回归；Node 协作模式验证非独占提示、逻辑边界及不支持交接的明确失败，不冒称物理锁通过。记录实际运行时版本及 lockfile hash，按失败范围调整当前受支持组合，不引入旧 Node/Puppeteer 兼容层。
 
 依赖选择参考 [Node 发布政策](https://nodejs.org/en/about/previous-releases)、[Electron 稳定发布](https://releases.electronjs.org/release?channel=stable)、[Puppeteer 环境要求](https://pptr.dev/guides/system-requirements) 和 [浏览器映射](https://pptr.dev/supported-browsers)。不凭 `latest` 标签自动升级，也不采用 alpha/beta 作为基础依赖。Windows ZIP 是当前分发形式，签名、自动更新和真实账号场景验收仍须分别安排。
