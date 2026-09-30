@@ -91,7 +91,7 @@ export function createBrowserMaterialPort(root: string, materials: ProjectMateri
           case 'createMaterialDraft': return materialSummary(await service.createDraft(body.projectId, 'human', body.baseRevisionId, body.operationId));
           case 'copyMaterialDraft': return materialSummary(await service.copyDraft(body.projectId, body.draftId, body.expectedDraftRevision, body.operationId));
           case 'editMaterialDraft': return materials.edit(body.projectId, body.draftId, body.expectedDraftRevision, body.edits, 'ui');
-          case 'publishMaterialDraft': return materialSummary(await service.publish(body.projectId, body.draftId, body.expectedDraftRevision, 'human', body.operationId));
+          case 'publishMaterialDraft': return materialSummary(await materials.publish(body.projectId, body.draftId, body.expectedDraftRevision, 'human', body.operationId));
           case 'materialPublicationStatus': return service.publicationStatus(body.projectId, body.operationId);
           case 'prepareMaterialArchive': return service.prepareArchive(body.projectId, body.draftId);
           case 'materialDiff': return service.diff(body.projectId, body.fromRevisionId, body.toRevisionId, budget);

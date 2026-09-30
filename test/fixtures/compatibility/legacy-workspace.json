@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "projects": [
+    {
+      "id": "legacy-project",
+      "name": "Legacy project",
+      "objective": "Historical fixture",
+      "createdAt": "2026-09-26T12:00:00.000Z"
+    }
+  ],
+  "profiles": [
+    {
+      "id": "legacy-profile",
+      "projectId": "legacy-project",
+      "name": "Custom partition",
+      "storageRef": "persist:custom-legacy-login",
+      "loginStatus": "unknown"
+    },
+    {
+      "id": "legacy-fallback",
+      "projectId": "legacy-project",
+      "name": "Old default partition",
+      "loginStatus": "unknown"
+    }
+  ]
+}

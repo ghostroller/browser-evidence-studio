@@ -95,7 +95,7 @@ export abstract class StudioCore<I extends PageIdentity,V,S> {
   protected validationRecovery:{diagnostics:ValidationRecoveryDiagnostic[];catalogStatus:'rebuilt'|'write-failed'}={diagnostics:[],catalogStatus:'rebuilt'};
   protected fixture?:{url:string;close:()=>Promise<void>};
   onChanged=()=>{};
-  constructor(readonly root:string, readonly window:BrowserPresentation<V>, public endpoint:string, readonly applicationPath:string, protected readonly lifecycleObserver?:ValidationLifecycleObserver) {this.materials=new ProjectMaterials(root);this.executions=new ProjectExecutions(root,this.materials);}
+  constructor(readonly root:string, readonly window:BrowserPresentation<V>, public endpoint:string, readonly applicationPath:string, protected readonly lifecycleObserver?:ValidationLifecycleObserver) {this.materials=new ProjectMaterials(root,(projectId,type,reference)=>this.tasks.publish(projectId,type,reference));this.executions=new ProjectExecutions(root,this.materials);}
   protected gateCommand(_page:ManagedPage<I,V>,_command:Readonly<ProtocolCommand>):void {}
   protected workerEnvironment():NodeJS.ProcessEnv|undefined{return undefined;}
   protected abstract providerSession(profile:Profile):Promise<S>;

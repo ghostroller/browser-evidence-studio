@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "projectId": "legacy-project",
+  "revisionId": "legacy-fixed",
+  "contentHash": "e3f2ed503699d64c76733f7e025d7d7976ffe3946a2cc444de021203975f1adf",
+  "createdAt": "2026-09-26T12:00:00.000Z",
+  "author": "human",
+  "content": {
+    "requirements": [
+      {
+        "id": "requirement",
+        "description": "Preserve literal legacy field",
+        "fieldIds": [
+          "legacy-field"
+        ],
+        "rules": []
+      }
+    ],
+    "fields": [
+      {
+        "id": "legacy-field",
+        "name": "Legacy amount",
+        "description": "Old format without value type or examples",
+        "dataset": "orders",
+        "sourcePolicy": "page-displayed"
+      }
+    ],
+    "checkpoints": [],
+    "annotations": [],
+    "recordingRefs": []
+  }
+}

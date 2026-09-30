@@ -16,6 +16,7 @@ import { WorkbenchHttpTransport } from '../main/workbench/http';
 import { WorkbenchPairing } from '../main/workbench/pairing';
 import { createProjectMetadataPort } from '../main/workbench/project-port';
 import { createBrowserMaterialPort } from '../main/workbench/material-port';
+import { connectMaterialChanges } from '../main/workbench/material-changes';
 import { createBrowserResultPort } from '../main/workbench/result-port';
 import { createBrowserReplayPort } from '../main/workbench/replay-port';
 import { ReplayDocumentServer } from '../main/workbench/replay-document';
@@ -57,6 +58,7 @@ export async function startNodeWorkbench(args:string[]=process.argv.slice(2)){
     replay=new ReplayDocumentServer();const replayOrigin=await replay.start(origin,studio.instanceId);assertStarting();
     workbench=new WorkbenchHttpTransport({origin,sessions:scopedSessions,projectPort:createProjectMetadataPort(studio.management),materialPort:createBrowserMaterialPort(root,studio.materials),resultPort:createBrowserResultPort(studio.executions),replayPort:createBrowserReplayPort(root,studio.materials)});
     const backend=await workbench.start();assertStarting();studio.onChanged=()=>{for(const project of studio!.projects)workbench!.invalidate(project.id);};
+    connectMaterialChanges(studio.materials, projectId => workbench!.invalidate(projectId), () => studio!.onChanged());
     owner=new NodeOwnerServer({studio,origin,pairing,shutdown});const ownerPort=(await owner.start()).port;assertStarting();
     Object.assign(process.env,{BES_WORKBENCH_BROWSER_PORT:String(browserPort),BES_WORKBENCH_TARGET_PORT:new URL(backend.baseUrl).port,BES_WORKBENCH_OWNER_PORT:String(ownerPort),BES_WORKBENCH_INSTANCE_ID:studio.instanceId,BES_WORKBENCH_REPLAY_ORIGIN:replayOrigin});
     // Middleware mode deliberately leaves signal/stdin ownership with this assembly.

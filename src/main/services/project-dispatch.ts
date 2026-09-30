@@ -82,14 +82,12 @@ export async function dispatchProject(studio: Studio, method: string, body: any,
       case 'createMaterialDraft': return materialSummary(await service.createDraft(body.projectId, source === 'api' ? 'agent' : 'human', body.baseRevisionId,body.operationId));
       case 'editMaterialDraft': {
         const result = await studio.materials.edit(body.projectId, body.draftId, body.expectedDraftRevision, body.edits, source);
-        if (result.status === 'saved') studio.tasks.publish(body.projectId, 'material-draft-saved', { draftId: body.draftId, draftRevision: String(result.draft!.draftRevision) });
         return result;
       }
       case 'publishMaterialDraft': {
         const draft = await service.getDraft(body.projectId, body.draftId);
         ensure(source === 'ui' || draft.author === 'agent', 'Agent may publish its candidate draft only', 403);
-        const revision = await service.publish(body.projectId, body.draftId, body.expectedDraftRevision, source === 'api' ? 'agent' : 'human', body.operationId);
-        studio.tasks.publish(body.projectId, 'material-revision-published', { revisionId: revision.revisionId, contentHash: revision.contentHash });
+        const revision = await studio.materials.publish(body.projectId, body.draftId, body.expectedDraftRevision, source === 'api' ? 'agent' : 'human', body.operationId);
         return materialSummary(revision);
       }
       case 'materialDiff': return service.diff(body.projectId, body.fromRevisionId, body.toRevisionId, budget);

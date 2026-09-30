@@ -1,3 +1,4 @@
+import { connectMaterialChanges } from './workbench/material-changes';
 import { ReplayDocumentServer } from './workbench/replay-document';
 import { createBrowserReplayPort } from './workbench/replay-port';
 import { createBrowserMaterialPort } from './workbench/material-port';
@@ -64,7 +65,7 @@ else app.whenReady().then(async()=>{
     await writeFile(path.join(dataRoot,'connection','workbench.json'),JSON.stringify({...address,replayOrigin,processId:process.pid}),{flag:'wx',mode:0o600});
   }
   let metadata=new Map(studio.projects.map(project=>[project.id,JSON.stringify([project.name,project.objective,project.revision])]));
-  studio.materials.service.onChanged=projectId=>{workbench?.invalidate(projectId);studio?.onChanged();};
+  connectMaterialChanges(studio.materials, projectId => workbench?.invalidate(projectId), () => studio?.onChanged());
   studio.onChanged=()=>{
     if(workbench){
       const next=new Map(studio!.projects.map(project=>[project.id,JSON.stringify([project.name,project.objective,project.revision])]));

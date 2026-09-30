@@ -32,7 +32,7 @@ export function materialSummary<T extends TaskMaterialDraft | TaskMaterialRevisi
  * every recording remains project-scoped. No live browser view/lease is touched. */
 export class ProjectMaterials {
   readonly service: FileMaterialService;
-  constructor(private readonly root: string) {
+  constructor(private readonly root: string, private readonly committed: (projectId: string, type: string, reference: Record<string, string>) => void = () => {}) {
     this.service = new FileMaterialService(root, {
       position: async position => (await (await this.replay(position.recordingId)).state(position, { maxBytes: 1024 * 1024, limit: 1000 })).reliability,
       target: target => this.verifyTarget(target),
@@ -57,6 +57,14 @@ export class ProjectMaterials {
   }
   async workingDraft(projectId:string){
     return this.service.workingDraft(projectId);
+  }
+  private notifyCommitted(projectId: string, type: string, reference: Record<string, string>) {
+    try { this.committed(projectId, type, reference); } catch { /* Durable success cannot be rolled back by an observer. */ }
+  }
+  async publish(projectId: string, draftId: string, expectedDraftRevision: number, author: 'human' | 'agent', operationId?: string) {
+    const revision = await this.service.publish(projectId, draftId, expectedDraftRevision, author, operationId);
+    this.notifyCommitted(projectId, 'material-revision-published', { revisionId: revision.revisionId, contentHash: revision.contentHash });
+    return revision;
   }
 
   async authorReceipt(projectId:string,input:{operationId:string;receiptId:string;position:ReplayPosition;title:string;notes:string;draftId?:string;derivedFrom?:string}){
@@ -120,6 +128,7 @@ export class ProjectMaterials {
       ...content.annotations.flatMap(annotation => annotation.target ? [annotation.target.position.recordingId] : []), ...content.fields.flatMap(field => field.target ? [field.target.position.recordingId] : [])]);
     for (const recordingId of recordings) if(!draft.content.recordingRefs.includes(recordingId))await this.replay(recordingId, projectId);
     const result = await this.service.updateDraft(projectId, draftId, expectedDraftRevision, content, source === 'ui' ? 'human' : 'agent');
+    if (result.status === 'saved') this.notifyCommitted(projectId, 'material-draft-saved', { draftId, draftRevision: String(result.draft.draftRevision) });
     return result.status === 'saved' ? { status: result.status, draft: materialSummary(result.draft), createdIds, focus: createdIds.length ? { collection: 'checkpoints', id: createdIds.at(-1) } : undefined } : { status: result.status, current: materialSummary(result.current), expectedDraftRevision };
   }
 }
