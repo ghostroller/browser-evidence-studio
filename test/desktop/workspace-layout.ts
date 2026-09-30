@@ -23,16 +23,54 @@ export async function runWorkspaceLayoutScenarios(studio:Studio) {
     while(Date.now()<end){const result=await fn();if(accept(result))return result;await delay(100);}
     throw new Error('Layout timeout: '+label+'; '+await read('document.body.innerText.slice(-2400)'));
   }
+  async function focusState(expression:string) {
+    const renderer=await read<{
+      hasFocus:boolean;targetActive:boolean;targetUsable:boolean;active:unknown;target:unknown;
+      input:{value:string;selectionStart:number|null;selectionEnd:number|null;type:string}|null;
+    }>('(()=>{const target='+expression+';const describe=el=>el?{tag:el.tagName,role:el.getAttribute("role")||(el.tagName==="BUTTON"?"button":el.tagName==="TEXTAREA"?"textbox":null),name:el.getAttribute("aria-label")||(el.tagName==="BUTTON"?el.textContent.trim():null),connected:el.isConnected,tabIndex:el.tabIndex,disabled:!!el.disabled,inert:!!el.closest("[inert]"),visible:!!el.getClientRects().length}:null;return {hasFocus:document.hasFocus(),targetActive:!!target&&document.activeElement===target,targetUsable:!!target&&!target.disabled&&!!target.getClientRects().length&&!target.closest("[hidden],[inert]"),active:describe(document.activeElement),target:describe(target),input:target?.matches("input,textarea")?{value:target.value,selectionStart:target.selectionStart,selectionEnd:target.selectionEnd,type:target.type}:null};})()');
+    return {windowFocused:window.isFocused(),uiFocused:ui.isFocused(),windowVisible:window.isVisible(),windowMinimized:window.isMinimized(),...renderer};
+  }
+  async function waitForFocus(expression:string,label:string,requireTarget:boolean,accept:(state:Awaited<ReturnType<typeof focusState>>)=>boolean=()=>true) {
+    const end=Date.now()+3000;
+    const initial=await focusState(expression);
+    let current=initial;
+    while(true) {
+      if(current.windowFocused&&current.uiFocused&&current.hasFocus&&current.targetUsable&&(!requireTarget||current.targetActive)&&accept(current))return current;
+      if(Date.now()>=end) {
+        const diagnostic={label,expression,requireTarget,initial,last:current};
+        (report.focusFailures??=[]).push(diagnostic);
+        throw new Error('Layout focus timeout: '+JSON.stringify(diagnostic));
+      }
+      await delay(20);current=await focusState(expression);
+    }
+  }
   async function clickTarget(expression:string,wc:WebContents=ui) {
     const point=await wait<any>(()=>read<any>('(()=>{const el='+expression+';if(!el||el.disabled||!('+visible+'))return null;el.scrollIntoView({block:"center",inline:"nearest"});const r=el.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()',wc),Boolean,expression);
-    assert(await read<boolean>('(()=>{const el='+expression+',hit=document.elementFromPoint('+point.x+','+point.y+');return !!hit&&(hit===el||el.contains(hit));})()',wc),'Target must be visible and receive the click');
+    const hitTest='(()=>{const el='+expression+',hit=document.elementFromPoint('+point.x+','+point.y+');return !!el&&!!hit&&(hit===el||el.contains(hit));})()';
+    assert(await read<boolean>(hitTest,wc),'Target must be visible and receive the click');
+    if(wc===ui) {
+      // sendInputEvent does not activate the native host like a desktop click.
+      // Focus only Electron surfaces; the actual click must focus the DOM node.
+      window.focus();ui.focus();
+      await waitForFocus(expression,'UI input owns native focus',false);
+      assert(await read<boolean>(hitTest,wc),'Target must still receive the click after native focus');
+    }
     wc.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point});wc.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point});await delay(260);
   }
   const button=(name:string)=>'[...document.querySelectorAll("button")].find(el=>(el.textContent.trim()==='+JSON.stringify(name)+'||el.getAttribute("aria-label")==='+JSON.stringify(name)+')&&'+visible+')';
   const click=(name:string)=>clickTarget(button(name));
   async function fill(label:string,value:string) {
     const expression='[...document.querySelectorAll("label")].find(el=>el.firstChild?.textContent.trim()==='+JSON.stringify(label)+'&&'+visible+')?.querySelector("input,textarea")';
-    await clickTarget(expression);ui.sendInputEvent({type:'keyDown',keyCode:'A',modifiers:['control']});ui.sendInputEvent({type:'keyUp',keyCode:'A',modifiers:['control']});await ui.insertText(value);await delay(120);
+    await clickTarget(expression);
+    const beforeSelect=await waitForFocus(expression,'Input click focuses '+label,true);
+    assert(beforeSelect.input&&typeof beforeSelect.input.selectionStart==='number'&&typeof beforeSelect.input.selectionEnd==='number','Input must support text selection: '+JSON.stringify({label,state:beforeSelect}));
+    ui.sendInputEvent({type:'keyDown',keyCode:'A',modifiers:['control']});ui.sendInputEvent({type:'keyUp',keyCode:'A',modifiers:['control']});
+    // Observe the one native shortcut's selection before inserting. Never set
+    // selection/value through the DOM or retry an input that was not accepted.
+    const selected=await waitForFocus(expression,'Ctrl+A selects the entire input: '+label,true,state=>state.input?.selectionStart===0&&state.input.selectionEnd===state.input.value.length);
+    await ui.insertText(value);
+    const inserted=await waitForFocus(expression,'Visible input committed: '+label,true,state=>state.input?.value===value);
+    (report.inputPreparation??=[]).push({label,beforeSelect,selected,inserted});
     assert.equal(await read('('+expression+').value'),value);
   }
   async function disclose(text:string) {const el='[...document.querySelectorAll("summary")].find(el=>el.textContent.startsWith('+JSON.stringify(text)+')&&'+visible+')';if(!await read<boolean>('('+el+')?.parentElement.open'))await clickTarget(el);}
@@ -74,9 +112,16 @@ export async function runWorkspaceLayoutScenarios(studio:Studio) {
       assert(metric.browser.height>height*.5,'Historical page retains the majority of height');
       assert(metric.speed.width<100,'Speed select wrapper stays compact');
       assert(!metric.overflow,'No horizontal document overflow');assert(metric.stop>0,'Global stop remains visible');
-      await clickTarget('document.querySelector("[aria-label=编辑注释] textarea")');
+      const annotationInput='document.querySelector("[aria-label=编辑注释] textarea")';
+      await clickTarget(annotationInput);
+      const beforeTab=await waitForFocus(annotationInput,'Annotation click focuses the textarea',true);
       ui.sendInputEvent({type:'keyDown',keyCode:'TAB'});ui.sendInputEvent({type:'keyUp',keyCode:'TAB'});
-      assert(await read<boolean>('document.activeElement?.tagName==="BUTTON"'),'Normal Tab reaches the source-selection action');
+      // Chromium may finish native Tab default handling after executeJavaScript
+      // is queued. Wait for the exact action, never force DOM focus or accept an
+      // arbitrary button. A prevented or misdirected Tab still fails the gate.
+      const sourceSelection='[...document.querySelectorAll("[aria-label=编辑注释] button")].find(el=>(el.getAttribute("role")||"button")==="button"&&(el.getAttribute("aria-label")||el.textContent.trim())==="选择历史元素（可选）"&&'+visible+')';
+      const afterTab=await waitForFocus(sourceSelection,'Normal Tab reaches the source-selection action',true);
+      (report.keyboardFocus??=[]).push({width,height,beforeTab,afterTab});
       assert(await read<boolean>('(()=>{const el=document.querySelector(".material-toolbar"),r=el.getBoundingClientRect(),hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);return !!hit&&(el===hit||el.contains(hit));})()'),'Working copy identity remains visible while the editor scrolls');
       await captureUiFrame(studio,'layout-editor-'+width+'.png');report.sizes.push(metric);
     }
