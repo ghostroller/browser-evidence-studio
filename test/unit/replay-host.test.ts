@@ -4,7 +4,7 @@ import { ReplayHost } from '@/main/services/replay-host';
 import { replayHit } from '@/main/services/replay-presentation';
 
 const fake=vi.hoisted(()=>({views:[] as any[],partitions:[] as any[],response:vi.fn(),load:undefined as undefined|Promise<void>,selection:undefined as undefined|Promise<boolean>,script:undefined as undefined|((code:string)=>unknown),diagnostics:[] as any[]}));
-vi.mock('electron',()=>({session:{fromPartition:()=>{const value={setPermissionRequestHandler:vi.fn(),setPermissionCheckHandler:vi.fn(),webRequest:{onBeforeRequest:vi.fn()},on:vi.fn(),protocol:{handler:undefined as any,handle(_name:string,handler:any){this.handler=handler;},unhandle:vi.fn()}};fake.partitions.push(value);return value;}},WebContentsView:class{webContents={destroyed:false,setWindowOpenHandler:vi.fn(),on:vi.fn(),loadURL:vi.fn(()=>fake.load??Promise.resolve()),executeJavaScript:vi.fn(async(code:string)=>fake.script?fake.script(code):code.includes('window.__besSelectSequence=')?(fake.selection??true):code.includes('new rrweb.Replayer')?[]:true),isDestroyed:()=>this.webContents.destroyed,close:()=>{this.webContents.destroyed=true;},focus:vi.fn()};constructor(){fake.views.push(this);}}}));
+vi.mock('electron',()=>({session:{fromPartition:()=>{const value={setPermissionRequestHandler:vi.fn(),setPermissionCheckHandler:vi.fn(),webRequest:{onBeforeRequest:vi.fn()},on:vi.fn(),protocol:{handler:undefined as any,handle(_name:string,handler:any){this.handler=handler;},unhandle:vi.fn()}};fake.partitions.push(value);return value;}},WebContentsView:class{webContents={destroyed:false,setWindowOpenHandler:vi.fn(),on:vi.fn(),loadURL:vi.fn(()=>fake.load??Promise.resolve()),executeJavaScript:vi.fn(async(code:string)=>fake.script?fake.script(code):code.includes('window.__besReplayController.select(')?(fake.selection??true):code.includes('window.__besReplayController.mount(')?[]:true),isDestroyed:()=>this.webContents.destroyed,close:()=>{this.webContents.destroyed=true;},focus:vi.fn()};constructor(){fake.views.push(this);}}}));
 vi.mock('@/main/services/replay-presentation',async importOriginal=>({...await importOriginal<typeof import('@/main/services/replay-presentation')>(),fitReplayViewport:function fitReplayViewport(){return()=>{};},waitReplayPresentation:async function waitReplayPresentation(){return await (globalThis as any).__replayPresentation??[];}}));
 vi.mock('@/replay/source-model',()=>({SourceModel:class{nodes=new Map();}}));
 vi.mock('@/replay/rrweb-player',()=>({prepareReplayEvents:(window:any)=>({events:[{timestamp:0},...window.records.map((record:any,index:number)=>({timestamp:index+1}))],pauseOffset:window.records.length+1})}));
@@ -21,11 +21,11 @@ function browserFixture(){
     play=(at?:number)=>{if(at!==undefined)this.clock=at;playback.play(at);};
     pause=(at?:number)=>{if(at!==undefined)this.clock=at;playback.pause(at);};
     destroy=()=>playback.destroy();}
-  const style={display:'none'},element={style,focus:vi.fn(),contentDocument:{}};
-  const browser:any={};
+  const style={display:'none'},element={style,focus:vi.fn(),addEventListener:vi.fn(),contentDocument:{addEventListener:vi.fn()}};
+  const browser:any={rrweb:{Replayer:Player}};
   const context=createContext({window:browser,document:{querySelector:()=>element},rrweb:{Replayer:Player},__replayPresentation:Promise.resolve([])});
   fake.script=(code:string)=>{
-    if(!code.startsWith('if((window.__besGeneration')&&!code.startsWith('window.__besCommand=')&&!code.startsWith('(async()=>{')&&!code.startsWith('(()=>{'))return true;
+    if(!code.startsWith('(function installReplayController')&&!code.startsWith('window.__besReplayController.')&&!code.startsWith('if((window.__besGeneration')&&!code.startsWith('window.__besCommand=')&&!code.startsWith('(async()=>{')&&!code.startsWith('(()=>{'))return true;
     return runInContext(code,context);
   };
   return {browser,playback,holdPresentation:(promise:Promise<string[]>)=>{(context as any).__replayPresentation=promise;}};

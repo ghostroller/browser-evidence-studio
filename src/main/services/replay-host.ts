@@ -1,3 +1,4 @@
+import { installReplayController } from '@/replay/controller';
 import { randomUUID } from 'node:crypto';
 import { session, WebContentsView } from 'electron';
 import path from 'node:path';
@@ -84,7 +85,7 @@ export class ReplayHost {
       if(this.active!==active||view.webContents.isDestroyed())return;
       await view.webContents.executeJavaScript(rrwebSource);
       if(this.active!==active||view.webContents.isDestroyed())return;
-      await view.webContents.executeJavaScript(`window.__besReplay={sequence:0,nodeId:null};document.querySelector('#selection').addEventListener('click',event=>{event.preventDefault();event.stopImmediatePropagation();const frame=document.querySelector('#replay iframe');if(!frame)return;const hit=(${replayHit.toString()})(frame,event.clientX,event.clientY);const id=hit&&window.__besPlayer?.getMirror().getId(hit.node);if(!Number.isSafeInteger(id)||id<0){window.__besReplay={sequence:window.__besReplay.sequence+1,nodeId:null,error:'此位置没有可解析的源节点；frame/shadow可能不可用'};return;}const marker=document.querySelector('#selected');Object.assign(marker.style,{display:'block',left:hit.rect.x+'px',top:hit.rect.y+'px',width:hit.rect.width+'px',height:hit.rect.height+'px'});window.__besReplay={sequence:window.__besReplay.sequence+1,nodeId:id};});true`);
+      await view.webContents.executeJavaScript(`(${installReplayController.toString()})(${replayHit.toString()},${fitReplayViewport.toString()},${waitReplayPresentation.toString()});true`);
     })();
     void active.ready.catch(()=>{});
     this.window.showReplay(view,false);
@@ -126,7 +127,7 @@ export class ReplayHost {
     ensure(start.recordingId===end.recordingId&&start.pageId===end.pageId&&start.documentId===end.documentId&&start.streamEpoch===end.streamEpoch&&start.eventSeq<end.eventSeq,'Playback end must follow the current position in the same source stream',409);
     if(active.playback&&sameReplayPosition(active.playback.end,end)){
       const generation=active.state.generation,command=this.command(active,true),selection=++active.selectionGeneration;
-      const started=await active.view.webContents.executeJavaScript(`(()=>{window.__besCommand=Math.max(window.__besCommand||0,${command});if(window.__besGeneration!==${generation}||window.__besCommand!==${command})return false;window.__besSelectSequence=Math.max(window.__besSelectSequence||0,${selection});document.querySelector('#selection').style.display='none';window.__besPlayer.setConfig({speed:${body.speed}});window.__besPlaybackEnded=false;window.__besPlayer.play(window.__besPlayer.getCurrentTime());return true;})()`);
+      const started=await active.view.webContents.executeJavaScript(`window.__besReplayController.play(${generation},${command},${body.speed})`);
       if(this.active===active&&active.state.generation===generation&&active.commandSequence===command){active.state.playing=started===true;active.playIntent=started===true;}
       return structuredClone(active.state);
     }
@@ -137,7 +138,7 @@ export class ReplayHost {
     const generation=active.state.generation,command=this.command(active,false);
     active.state.playing=false;
     if(active.state.status==='failed')return structuredClone(active.state);
-    const clock=await active.view.webContents.executeJavaScript(`(()=>{window.__besCommand=Math.max(window.__besCommand||0,${command});if(window.__besGeneration!==${generation}||!window.__besPlayer)return null;window.__besPlayer.pause();return window.__besPlayer.getCurrentTime();})()`);
+    const clock=await active.view.webContents.executeJavaScript(`window.__besReplayController.pause(${generation},${command})`);
     if(this.active===active&&active.state.generation===generation&&active.commandSequence===command&&typeof clock==='number')this.updatePlayback(active,clock,false);
     return structuredClone(active.state);
   }
@@ -159,7 +160,7 @@ export class ReplayHost {
     try {
       await active.ready; abort.signal.throwIfAborted();
       // Destroy the previous mirror before allocating another bounded reconstruction.
-      await active.view.webContents.executeJavaScript(`if((window.__besGeneration||0)<=${generation}){window.__besCommand=Math.max(window.__besCommand||0,${command});window.__besGeneration=${generation};window.__besFitReplay?.();window.__besFitReplay=null;window.__besPlayer?.destroy();window.__besPlayer=null;document.querySelector('#selection').style.display='none';document.querySelector('#selected').style.display='none';}true`);
+      await active.view.webContents.executeJavaScript(`window.__besReplayController.reset(${generation},${command})`);
       const service=await this.materials.replay(end.recordingId,active.state.projectId),window=await service.window(end,abort.signal);
       ensure(window.records.some(record=>sameReplayPosition(record.position,start)),'Playback start is outside the bounded source window',409);
       const archive=new ResourceArchive(path.join(this.root,'runs',end.recordingId));
@@ -173,7 +174,7 @@ export class ReplayHost {
       const startOffset=offsets.find(item=>sameReplayPosition(item.position,start))!.offset;
       active.playback=speed===undefined?undefined:{end,offsets,gaps:window.gaps};
       active.source=new SourceModel(window.records.filter(record=>record.position.eventSeq<=start.eventSeq));
-      const assetErrors:string[]=await active.view.webContents.executeJavaScript(`(async()=>{if(window.__besGeneration!==${generation})return [];const player=new rrweb.Replayer(${JSON.stringify(prepared.events)},{root:document.querySelector('#replay'),speed:${speed??1},showWarning:false,showDebug:false,UNSAFE_replayCanvas:false});window.__besPlayer=player;window.__besPlaybackEnded=false;player.on('finish',()=>{if(window.__besGeneration===${generation}&&window.__besPlayer===player)window.__besPlaybackEnded=true});player.pause(${startOffset});window.__besFitReplay=(${fitReplayViewport.toString()})(document.querySelector('#replay-stage'),document.querySelector('#replay'));window.__besReplay={sequence:0,nodeId:null};const failures=await (${waitReplayPresentation.toString()})(document.querySelector('#replay iframe').contentDocument,${generation});${speed!==undefined?`if(window.__besGeneration===${generation}&&window.__besCommand===${command})player.play(${startOffset});`:''}return failures;})()`);
+      const assetErrors:string[]=await active.view.webContents.executeJavaScript(`window.__besReplayController.mount(${JSON.stringify(prepared.events)},${startOffset},${generation},${command},${speed??1},${speed!==undefined})`);
       abort.signal.throwIfAborted();
       if(this.active!==active||active.state.generation!==generation)return structuredClone(active.state);
       for(const message of assetErrors)if(active.state.resources!.failures.length<16)active.state.resources!.failures.push({generation,name:'AssetReadinessError',message});
@@ -209,7 +210,7 @@ export class ReplayHost {
     const active=this.require(id);ensure(typeof enabled==='boolean','Selection flag must be boolean');
     ensure(active.state.status==='ready'&&!active.state.playing&&!active.playIntent,'Pause at an exact historical position before selecting',409);
     const generation=active.state.generation,selection=++active.selectionGeneration,command=this.command(active,false);
-    const applied=await active.view.webContents.executeJavaScript(`(()=>{window.__besCommand=Math.max(window.__besCommand||0,${command});if(window.__besGeneration!==${generation}||window.__besCommand!==${command}||(window.__besSelectSequence||0)>${selection})return false;window.__besSelectSequence=${selection};document.querySelector('#selection').style.display=${JSON.stringify(enabled?'block':'none')};${enabled?"document.querySelector('#selection').focus();":"document.querySelector('#selected').style.display='none';"}return true;})()`);
+    const applied=await active.view.webContents.executeJavaScript(`window.__besReplayController.select(${enabled},${generation},${command})`);
     if(!applied||this.active!==active||active.state.generation!==generation||active.selectionGeneration!==selection||active.commandSequence!==command||active.state.status!=='ready')return structuredClone(active.state);
     active.state.selecting=enabled;
     if(enabled)active.view.webContents.focus();else this.window.window.webContents.focus();

@@ -1,5 +1,6 @@
 /** Resource URL rewriting is lexical: CSS strings/comments are distinguished
  * from url() and @import tokens; no global replacement of site-controlled text. */
+export function createCssUrlRewriter() {
 function escapeString(text: string): string { return '"' + text.replace(/["\\\n\r\f]/g, char => char === '"' || char === '\\' ? '\\' + char : '\\a ') + '"'; }
 function decodeCss(text: string): string { return text.replace(/\\(?:([0-9a-f]{1,6})\s?|([^\r\n\f])|\r?\n)/gi, (_match, hex: string | undefined, escaped: string | undefined) => hex ? String.fromCodePoint(Math.min(parseInt(hex, 16) || 0xfffd, 0x10ffff)) : escaped ?? ''); }
 function stringEnd(css: string, start: number): number {
@@ -7,7 +8,7 @@ function stringEnd(css: string, start: number): number {
   while (i < css.length) { if (css[i] === '\\') { i += 2; continue; } if (css[i++] === quote) return i; }
   return css.length;
 }
-export function rewriteCssUrls(css: string, resolve: (url: string) => string): string {
+function rewriteCssUrls(css: string, resolve: (url: string) => string): string {
   const output: string[] = []; let i = 0, importPending = false;
   while (i < css.length) {
     if (css.startsWith('/*', i)) { const end = css.indexOf('*/', i + 2); const next = end < 0 ? css.length : end + 2; output.push(css.slice(i, next)); i = next; continue; }
@@ -40,6 +41,10 @@ export function rewriteCssUrls(css: string, resolve: (url: string) => string): s
   }
   return output.join('');
 }
+
+return rewriteCssUrls;
+}
+export const rewriteCssUrls = createCssUrlRewriter();
 
 /** HTML srcset tokenization keeps commas inside data URLs and preserves width
  * or density descriptors. Invalid candidates resolve to the blocked placeholder. */
