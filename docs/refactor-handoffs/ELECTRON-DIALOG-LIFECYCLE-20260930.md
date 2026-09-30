@@ -2,6 +2,8 @@
 
 日期：2026-09-30（UTC）。状态：已定位，尚未修复；不得将相关桌面回归记为通过。
 
+用户于 2026-09-30 11:30 UTC 明确选择：先保留问题记录，继续浏览器拆分，暂不改变 Electron 的对话框交互。当前按下文方案 1 推进，保留失败检查，不实施方案 2。
+
 ## 结论
 
 当前 Electron 路径同时呈现原生网站 alert/confirm 和工作台内的 CDP 回应按钮。CDP accept/dismiss 能让网页继续、产生 `Page.javascriptDialogClosed`，但本次 Electron 44.4.3 / Linux 实测中原生模态框仍然存在，宿主 `BrowserWindow.isEnabled()` 保持 false。下一次业务页输入无法获得宿主焦点。

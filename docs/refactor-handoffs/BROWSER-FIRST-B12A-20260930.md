@@ -52,7 +52,7 @@ npm test -- test/unit/workbench-session.test.ts test/unit/workbench-dispatch.tes
 git diff --check
 ```
 
-尚未验证真实 Vite／React 配对、HTTP WorkbenchClient、持久业务 port、完整应用生命周期或 GUI。纯内存 fixture 的 operationId 对照不证明生产幂等已经实现。本切片不修改[Electron 对话框所有权问题](ELECTRON-DIALOG-LIFECYCLE-20260930.md)的策略；该产品取舍仍待用户决定。
+尚未验证真实 Vite／React 配对、HTTP WorkbenchClient、持久业务 port、完整应用生命周期或 GUI。纯内存 fixture 的 operationId 对照不证明生产幂等已经实现。本切片不修改[Electron 对话框所有权问题](ELECTRON-DIALOG-LIFECYCLE-20260930.md)的策略；用户已选择先保留问题、继续浏览器拆分，暂不改变 Electron 对话框交互。
 
 ## 后续与证据
 

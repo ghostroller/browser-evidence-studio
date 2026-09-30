@@ -15,8 +15,8 @@
 - B0：工具链可观察性已证明；完整产品／视觉基线未全部验收
 - B1.1：90 方法契约、唯一 bridge adapter、React 注入、native capability 和缺桥诊断落地；typecheck/build、19 文件110项定向测试、blur-copy正反3轮及真实 Electron 工作区封存回放通过。workspace-browser 候选两次与旧基线一次同点 focus 断言失败、后半段未测；后续诊断见下条，不宣布全部桌面验收通过
 - B1.2a：隔离 session／dispatch／HTTP／SSE 核心及纯内存 fixture 完成，最终 typecheck、7 文件56项整合测试及独立37项／反例复验通过，见[交接](refactor-handoffs/BROWSER-FIRST-B12A-20260930.md)。没有接入 app／renderer／Vite、没有 build／GUI 或真实资源访问
-- B1.2b：下一步才接受保护的合成 companion、真实 UI 配对、同源代理和 HTTP client；B1.3 尚未实现。现有 Agent 权限不放宽，领域版本／持久幂等仍由实际业务 port 负责
-- 原生 focus 后续定位：已证实 Electron alert/confirm 的 CDP 回应未释放原生模态框，见[对话框生命周期问题](refactor-handoffs/ELECTRON-DIALOG-LIFECYCLE-20260930.md)。修复策略涉及回应所有权与自动化能力，待用户选择；不阻塞独立传输核心实施
+- B1.2b：受保护合成 companion、真实 UI 配对、同源代理、浏览器 HTTP/SSE 与共享项目表单已完成，代码至 `81c01bb`，见[实际交接](refactor-handoffs/BROWSER-FIRST-B12B-20260930.md)。33 文件240项定向测试、真实 metadata 持久化／两端回读、HMR／自然到期通过；最终仅测试 helper 变化后严格 layout 连续两轮及 metadata 快验通过。F07／B1.3 未实现，现有 Agent 权限不放宽
+- 原生 focus 后续定位：已证实 Electron alert/confirm 的 CDP 回应未释放原生模态框，见[对话框生命周期问题](refactor-handoffs/ELECTRON-DIALOG-LIFECYCLE-20260930.md)。用户已选择保留问题记录、继续浏览器拆分，暂不改变 Electron 对话框交互；失败门禁继续保留
 - B2–B4：仍为后续计划；旧 profile、字段语义和数据格式未迁移
 
 依赖主线：
@@ -45,7 +45,7 @@ B2 隔离设计可在 B1 期间准备；B4 的 Electron 冒烟从 B1 开始持�
 
 ## 3. 当前代码落点与拆分风险
 
-以下为当前文件抽样核验，不是对整库完成新架构审计的声明。
+以下保留规划时的文件抽样核验，不是当前整库审计；B1.1 的 client 注入及 B1.2b 的实际接入变化以各自交接为准。
 
 | 当前落点 | 现状 | 对实施的含义 |
 | --- | --- | --- |
@@ -67,8 +67,8 @@ B2 隔离设计可在 B1 期间准备；B4 的 Electron 冒烟从 B1 开始持�
 
 **已经取得**：loopback HTTP/SSE/WS/CDP、真实 Electron UI/live/replay target、UI 到封存回放、临时拆分探针、公开 SPA 观察。详见工具链补充。生产 renderer 在普通 Vite 下缺桥白屏、整窗合成图超时、回放 SVG 图标缺失均已保留，不能抹掉或包装为全通过。
 
-**剩余交付**：
-1. 参数化开发启动／观察入口：从 repo 与当前环境解析路径，生成独立数据根、动态端口、实例身份和明确退出清理；不复用本次含绝对路径的临时脚本
+**交付状态与剩余**：
+1. B1.2b 已交付 `npm run start:workbench`：新合成根、动态端口、实例清单与自有进程退出实测；两个并发工作树完整隔离仍待验，不把顺序独立实例当成并发证明
 2. 记录前端改动至可见结果的实际步骤和耗时；保存默认保存点页、旧存档只读／派生页、字段选择与错误结果页的当前真实截图，标清缺失或尚未覆盖状态
 3. 明确如何取得 console/pageerror/requestfailed、DOM/style、UI/live/replay 分 target 图；原生视觉另留验证入口
 
@@ -108,7 +108,7 @@ B2 隔离设计可在 B1 期间准备；B4 的 Electron 冒烟从 B1 开始持�
 
 ### B1.2 受保护的本地工作台传输
 
-**子切片状态**：B1.2a 独立核心已完成并验证，详见[实际交接](refactor-handoffs/BROWSER-FIRST-B12A-20260930.md)；它只开放项目元数据的合成 port，不等于下面的真实接入已实现。B1.2b 负责受保护合成 companion、真实 UI 一次配对、同源代理、HTTP client 与事件重连；接入后另验真实服务／UI 生命周期，不能沿用 fixture 的通过。
+**子切片状态**：B1.2a 独立核心已完成，见[交接](refactor-handoffs/BROWSER-FIRST-B12A-20260930.md)；B1.2b 已接入真实 `WorkspaceManagement`、受保护合成 companion、真实 UI 一次配对、同源代理、HTTP/SSE client 与事件重连，并完成实际元数据纵向，见[实现与验收](refactor-handoffs/BROWSER-FIRST-B12B-20260930.md)。浏览器仅复用共享 shell／项目表单，不冒充完整90方法工作台或完整 Studio.state；此中间切片不满足 F07。
 
 **依赖**：B1.1 契约、B0 可重复启动。可暂时保留 Electron companion 承载 Studio；不声称纯 Node 已成立。
 
@@ -121,6 +121,8 @@ B2 隔离设计可在 B1 期间准备；B4 的 Electron 冒烟从 B1 开始持�
 - Electron IPC 路径保留并通过冒烟。临时探针的 401/403 仅作设计参考，不能替代这些生产负测
 
 ### B1.3 同一真实工作台的浏览器纵向
+
+**下一步，尚未实施**：优先 sealed 合成来源，复用真实 MaterialWorkbench／领域服务，完成保存点、字段、普通注释、复制、固定版与两端回读。资料读写需可信 UI 显式新配对，metadata 授权不静默扩展；保留既有 CAS／收据，没有 operationId 的编辑不自动重试，丢响应先显示待确认并权威回读。既有 ensure/create 工作副本、catalog 修补若沿用，明确作为资料写权限下的真实 UI／领域锁操作，不伪装只读、不改 Electron 原行为、不先搭通用平台。
 
 **依赖**：B1.2 的受保护真实服务。使用同一 React 组件和业务模型，由入口注入 HTTP client；Vite 热更新必须反映本地改动。
 
@@ -192,19 +194,19 @@ git diff --check
 
 | 条款 | 当前证据或剩余任务 |
 | --- | --- |
-| F01 工具能力 | 已有 dot 实测；新浏览器入口仍须使用新候选实际打开 |
-| F02 同一组件 | B1.1 已注入；浏览器共享入口、shell 与表单的实测待 B1.2b |
-| F03 真实后端 | Electron 持久化已实测；浏览器 UI 到真实磁盘及刷新回读待验 |
-| F04 实例隔离 | 核心 scope 负测已过；两个真实工作树/实例根、端口、发现信息不串仍待验 |
-| F05 HMR | 待实际改样式观察，核对受控会话/录制不重启 |
-| F06 API 主体 | B1.2a 核心鉴权负测已过；真实配对/代理/撤销接入待验 |
-| F07 代表编辑流程 | 未完成；项目名称/简介编辑不替代卡片、字段、注释、固定版与正确 ID |
-| F08 冲突/重连 | 核心取消与生命周期已测；真实 UI 断线、幂等重试和旧回执场景待验 |
-| F09 两种尺寸 | 须在 1450×935 与 1100×760 的真实浏览器候选检查，旧截图不代替 |
-| F10 命中/焦点 | 浏览器控件/modal/Esc 待验；Electron 对话框问题单列待决 |
-| F11 可读性 | 三代表状态实际视觉尚未完成，不能只凭 DOM/类型通过 |
-| F12 Electron 冒烟 | B1.1 启动/工作区通过；站点弹窗后续未过；后续候选重新冒烟 |
-| F13 回放边界 | 当前真实回放仍需 Electron；不能以图片冒充 Web DOM 回放 |
-| F14 报告归属 | 各节点记录源码/构建/实例；新候选继续追加实际证据 |
+| F01 工具能力 | B1.2b 实际 loopback 浏览器入口、DOM／截图／网络可观察；原生整窗图仍可能分表面取证 |
+| F02 同一组件 | 浏览器与 Electron 共享 React 入口、shell、项目表单已实测；完整资料工作台复用待 B1.3 |
+| F03 真实后端 | metadata UI→真实事务／磁盘／SSE→刷新重配及 Electron 回读通过；backendKind 明示 electron-companion |
+| F04 实例隔离 | 新空根、动态端口、单项目 scope 与路径负测通过；两个并发工作树／实例完整隔离仍待验 |
+| F05 HMR | 元数据页样式实际观察、恢复，companion 未重启；不外推录制／资料三场景收益 |
+| F06 API 主体 | 真实配对、未认证／错误 Origin/Host 拒绝、撤销与自然到期通过；Agent 权限未扩大 |
+| F07 代表编辑流程 | 未完成；metadata 不替代卡片、字段、注释、复制、固定版与正确 ID，下一步 B1.3 |
+| F08 冲突/重连 | metadata CAS／operationId、排队撤销、SSE 代际负测及真实断线／刷新／重连通过；资料编辑与全部丢回执场景未验 |
+| F09 两种尺寸 | metadata 1450×935 与1100×760 无横溢且可操作；资料页长文本／加载／错误全矩阵待验 |
+| F10 命中/焦点 | metadata 命中与配对关闭已测；Electron layout 严格焦点／键盘连续2轮过；完整 modal/Esc 未覆盖，旧对话框缺陷保留 |
+| F11 可读性 | metadata 项目名／状态／权限范围明确；三个资料代表状态实际视觉未完成 |
+| F12 Electron 冒烟 | B1.2b 启动、真实工作区／录制／封存／回放 layout 与退出通过；旧资料兼容未重跑，旧站点弹窗失败未修 |
+| F13 回放边界 | 浏览器未迁回放，明确需 Electron；未用图片或空状态冒充 Web DOM 回放 |
+| F14 报告归属 | B1.2b 记录两构建、源码manifest、实际实例与测试范围；仅testchunk变化后的重验和前构建 TTL/HMR 分开 |
 
 B1 最终交付必须包含可打开 URL、后端类型、真实资料纵向、三个可见状态和开发反馈步骤/耗时对照；完成后再判断 B2/B3 扩展收益，不能只靠接口数量或测试总数决定。

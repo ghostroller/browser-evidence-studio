@@ -6,9 +6,10 @@
 
 - [共享设计页面正文](sources/browser-first-shared-design-body.md)与[来源说明](sources/browser-first-shared-design-source-notes.md)：保留共享页正文及获取记录；三份现有 Library 源材料已按原字节导入，含完整 F01–F14。
 - [dot 环境工具链验证补充](dot-environment-toolchain-validation.md)：当前 Electron 集成路径、临时 HTTP/SSE 拆分探针、真实公开 SPA、版本身份、安全边界和可复用测试入口。工具链可行不等于浏览器版已实现或产品验收通过。
-- [浏览器优先重构计划](browser-first-refactor-plan.md)：当前阶段与下一步的规划入口，细化 B0–B4 的依赖、交付、验收与迁移边界；首个实施切片为类型化 WorkbenchClient 与保持行为的 Electron adapter。
+- [浏览器优先重构计划](browser-first-refactor-plan.md)：当前阶段与下一步的规划入口，细化 B0–B4 的依赖、交付、验收与迁移边界；已完成 B1.1/B1.2 的中间切片，下一步 B1.3 真实资料纵向。
 - [B1.1 实现与实际验收](refactor-handoffs/BROWSER-FIRST-B11-20260930.md)：类型化 client／Electron adapter 的源码、构建与通过范围；同时保留原生 focus 失败及未测部分。
-- [B1.2a 传输核心与验证](refactor-handoffs/BROWSER-FIRST-B12A-20260930.md)：隔离 session／dispatch／HTTP／SSE 的纯内存测试及安全反例复验；尚未接入真实应用，B1.2b 才实现保护合成 companion 与 UI 配对。
+- [B1.2a 传输核心与验证](refactor-handoffs/BROWSER-FIRST-B12A-20260930.md)：隔离 session／dispatch／HTTP／SSE 的纯内存测试及安全反例复验；记录该历史切片尚未接应用的范围。
+- [B1.2b 真实合成浏览器纵向](refactor-handoffs/BROWSER-FIRST-B12B-20260930.md)：已实现 `npm run start:workbench`、真实 UI 配对、共享项目元数据表单与磁盘／SSE／Electron 回读；含构建、实际通过与保留失败。只完成受限 metadata 页面，F07 资料编辑／复制／固定版留给 B1.3。
 
 本轮先让共享工作台具备低成本的真实 UI 反馈，再按阶段证据扩展受保护的浏览器连接、共享回放与独立 Node/Chromium provider。保留现有 Electron 路径，不因架构重构擅自更改下列产品语义或旧 profile 数据。
 
