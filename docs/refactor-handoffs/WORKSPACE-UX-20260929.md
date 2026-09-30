@@ -2,6 +2,16 @@
 
 本轮入口为 [docs/README](../README.md)，契约为13/14；T1–T3历史结论不作为当前构建证据。
 
+## 2026-09-30 运行参数空字符串修复
+
+从远端 main `7f29b034eaf57b03259e6b2508810e2405f59732` 接续。`WorkflowInputs` 的文字框清空时先命中空值分支并删除 JSON 键，使允许空字符串的必填参数变为缺失；可选参数也可能因被删除而绕过 `minLength` 校验。现在先按字符串类型保留 `""`，数字清空仍删除键，布尔/枚举的“未设置”和高级 JSON 保持原行为。同步修订 `docs/design.md`。
+
+新增真实 React 控件回归（IPC schema 替身，不是 Electron 业务旅程）：首项在原源码实际失败（1失败/2通过，`output/cloud-empty-string-before.log`）；修复及补充必填/可选 `minLength` 用例后，本文件5项通过（`cloud-empty-string-after.log`）。覆盖空字符串可通过允许空值的必填 schema、仍不能绕过 `minLength`、后续重新输入、数字清空及原有布尔和未知 JSON 保留。schema 断言使用与执行入口相同的 Ajv 严格配置。
+
+最终全量在云端桌面上下文运行：79文件534项，530通过、2失败、2跳过（`output/cloud-empty-string-full-tests.log`）。仅失败于已在原基线确认的 `test/unit/soak-report.test.ts` 两项 Windows 读锁替换假设；本次未改该模块，不能宣称全量通过。
+
+Node 24.21.0 / npm 11.19.0，`npm run typecheck` 与 `npm run build` 通过，未改依赖。89个构建文件身份见 `output/cloud-empty-string-build-identity.json`，聚合 SHA256 `49b027a5c8f012d2a2c159da116861597fdfd325a87227650b7c1ee8f0678b49`。本次未重跑 Electron 业务旅程、长测或打包；真实桌面人工复核可使用 `npm run demo:product` 启动新的合成环境。日志、构建与合成数据不提交。
+
 ## 2026-09-30 项目切换后的迟到目录错误修复
 
 从远端 main `16fdf030816b7d04422d2a671a50af8b8a12c49c` 接续。源码审查发现 `MaterialWorkbench.run()` 在目录操作失败时无条件写入错误：项目 A 改名请求未返回时切到 B，或 A→B→A，旧错误会显示在新会话。目录 promise 队列也跨会话保留，使新会话的目录操作等待旧请求并继承其失败。修复仅复用现有 `ownsSession()` 检查迟到错误，并在已有项目重置 effect 中清空目录队列；同会话的失焦改名→复制顺序和失败阻断保持不变。
