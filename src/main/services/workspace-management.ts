@@ -39,6 +39,9 @@ interface Workspace {
   [key: string]: unknown;
 }
 interface Command { operationId?: string; expectedRevision?: number; [key: string]: unknown }
+/** Optional caller authority gate; invoked synchronously at this queue's start.
+ * Once started, an atomic transaction is allowed to finish, not falsely rolled back. */
+export interface ManagementExecutionGate { start<T>(operation: () => T): T }
 const clone = <T,>(value: T): T => structuredClone(value);
 const record = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value);
 const key = (value: unknown): string => { ensure(typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value), 'Invalid management identity'); return value; };
@@ -91,10 +94,10 @@ export class WorkspaceManagement {
   }
   private publish(value: Workspace) { this.host.projects = clone(value.projects); this.host.profiles = clone(value.profiles); }
   async init() { const value = await this.read(); this.publish(value); }
-  private transaction<T>(method: string, body: Command, apply: (candidate: Workspace) => Promise<T> | T): Promise<T & { operationId: string }> {
+  private transaction<T>(method: string, body: Command, apply: (candidate: Workspace) => Promise<T> | T, gate?: ManagementExecutionGate): Promise<T & { operationId: string }> {
     const operationId = key(body.operationId ?? randomUUID());
     const fingerprint = createHash('sha256').update(canonical({ method, ...body, operationId })).digest('hex');
-    const pending = this.tail.then(async () => {
+    const execute = async () => {
       const current = await this.read(), prior = current.managementOperations?.[operationId];
       if (prior) { ensure(prior.fingerprint === fingerprint, 'Operation ID was already used for another management request', 409); this.publish(current); return clone(prior.result) as T & { operationId: string }; }
       const candidate = clone(current), result = { ...await apply(candidate), operationId };
@@ -102,7 +105,8 @@ export class WorkspaceManagement {
       candidate.managementOperations = { ...current.managementOperations, [operationId]: { fingerprint, result } };
       await this.write(this.file, candidate);
       this.publish(candidate); this.host.onChanged?.(); return clone(result);
-    });
+    };
+    const pending = this.tail.then(() => gate ? gate.start(execute) : execute());
     this.tail = pending.catch(() => {}); return pending;
   }
   createProject(body: Command) {
@@ -112,14 +116,26 @@ export class WorkspaceManagement {
       value.projects.push(project); return project;
     });
   }
-  updateProject(body: Command) {
+  updateProject(body: Command, gate?: ManagementExecutionGate) {
     return this.transaction('updateProject', body, value => {
       const project = value.projects.find(item => item.id === key(body.projectId ?? body.id)); ensure(project, 'Unknown project', 404); cas(project, body);
       if (body.name !== undefined) project.name = text(body.name, 'Project name', 200, true);
       if (body.objective !== undefined) project.objective = text(body.objective, 'Project description', 4000);
       if (body.scriptDirectory !== undefined) project.scriptDirectory = body.scriptDirectory === null || body.scriptDirectory === '' ? undefined : path.resolve(text(body.scriptDirectory, 'Script directory', 4096));
       return bump(project);
-    });
+    }, gate);
+  }
+  /** Read the persisted manifest after preceding management writes, retaining
+   * corruption/not-found errors instead of substituting an empty projection. */
+  readProject(projectId: string, gate?: ManagementExecutionGate): Promise<Project> {
+    const execute = async () => {
+      const current = await this.read();
+      const project = current.projects.find(item => item.id === key(projectId));
+      ensure(project, 'Unknown project', 404);
+      return clone(project);
+    };
+    const pending = this.tail.then(() => gate ? gate.start(execute) : execute());
+    this.tail = pending.catch(() => {}); return pending;
   }
   createProfile(body: Command) {
     return this.transaction('createProfile', body, value => {

@@ -25,6 +25,19 @@ export interface BrowserWorkbenchSession {
   projectId: string;
 }
 export interface BrowserWorkbenchTicket { ticket: string; expiresAt: number; instanceId: string }
+/** Trusted Electron UI only. Status never contains credentials. */
+export interface BrowserWorkbenchPairingStatus {
+  enabled: boolean;
+  instanceId?: string;
+  origin?: string;
+  tickets?: number;
+  sessions?: number;
+}
+export interface BrowserWorkbenchPairingBridge {
+  status(): Promise<BrowserWorkbenchPairingStatus>;
+  begin(projectId: string): Promise<BrowserWorkbenchTicket>;
+  revoke(): Promise<void>;
+}
 export type BrowserWorkbenchErrorCode =
   | 'unauthorized' | 'forbidden' | 'invalid_request' | 'not_found'
   | 'conflict' | 'busy' | 'cancelled' | 'unavailable' | 'internal_error';
