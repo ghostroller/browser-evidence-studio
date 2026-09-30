@@ -109,3 +109,33 @@
 独立审查结合 [Chromium InputHandler 源码](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/content/browser/devtools/protocol/input_handler.cc)确认此接口未暴露按输入来源过滤的选项；[Puppeteer headless 模式](https://pptr.dev/guides/headless-modes)是启动模式，不是保持页面 JS 状态的实时开关。最小候选方案是显式区分有头人工示范与无头从入口执行：先正常关闭、排空并释放同一专用 profile，再重新打开，禁止同时使用或复制 Cookie。当前页面临时状态与执行中可视人工接管不随此方案成立。
 
 2026-09-30 16:18 UTC 已向用户询问是否接受这一产品取舍；**尚未得到确认，不将该候选方案写成已实现功能**。OS 输入遮罩、窗口最小化或短时解锁不作为未经验证的替代方案。
+
+### 独立权限、取消与崩溃恢复
+
+- `security1`：24 项真实 owner／proxy 负测通过，包括缺失／错误凭据、错误 instance／Origin／Fetch Metadata、重复安全头、额外 source 字段、过时目标身份、其他项目、工作台 token 不能调用 owner，以及撤销后的拒绝。
+- `startup1`：首次启动尚未取得会话时，正常 UI 仍可撤销；通过启动器正常重新授权后，同一 profile 可重试成功。不是通过隐藏接口补造会话。
+- `recovery2`：普通停止执行完成，真实 Worker thread 的心跳停止，执行持久状态为 cancelled，控制权返回 human。此前 `recovery1` 把 Worker 的共享 process.pid 误认成独立进程，属于测试断言错误，已保留而非报为产品故障。
+- 原生地址栏测试未能观察到有效导航或对应事件，因此不认定导航隔离通过，也不凭该次超时报为策略失效；该分支仍未验证。
+- `crash2` 是真实产品问题：终止确认为本测试所有的 Chromium 后，等待停止并刷新，正常 seal 仍因失联 CDP 删除 recorder 脚本失败。录制保持 degraded，无法在同一后端中重开；整体后端退出仍可结束进程并保留中断状态。
+- 随后仅在 Node 候选增加显式“结束中断会话”。必须由后端确认 provider 已断开，验证 owner／project／profile／session／lease；加入并确认受控进程结束后，追加恢复缺口和 interrupted 状态，再关闭 writer、回收宿主资源。不能调用 seal 伪造完整来源，持久失败不宣布结束。
+- `crash-recovery5` 于 16:40:46 UTC 完成：真实进程终止 → 正常 UI 显式结束中断 → 原件字节保持 → 5 项误用请求被拒绝 → 同一后端／profile／storageRef 重新打开，取得新的 browser／session／target，人工控制下页面输入有效。该轮 source/build manifest 未变，最后正常退出。先前测试重跑修正了事件名、临时 writer.lock、旧测试 CDP 连接和 openedAt／revision 合法变化的错误假设，原现场均保留。
+
+恢复候选 `gate3` 的类型检查与两种构建通过，新增 4 项真实 writer 上下文恢复单测通过；定向集合为 **206／207**，唯一失败是随机新根首次获取确定性端口锁时遇到已占用端口。该行为保守拒绝写入，不改变端口重试以绕过排他性，也不把此整轮写成全绿。当前 schema1 的端口算法保持不变，哈希冲突／无关监听占用可能导致假冲突；改变算法需要版本兼容方案，以免旧新二进制同时写同一根。
+
+这些恢复结果不修复有头交互式 runner 的输入锁问题。Node 候选仍未发布，待决产品选择仍有效。
+
+### 最后关闭顺序修正与候选停点
+
+审查还发现 Node 先释放根目录租约、后写 `launch.json=closed` 的顺序错误，旧进程可能覆盖紧接着启动的后继实例身份。候选现先在持有租约时写入自己的最终状态，再释放租约；清理失败记录为 `shutdown-failed`，不冒称正常关闭，租约释放后不再写入该根。
+
+`final-shutdown` 独立实测启动／退出／立即同根后继通过：并发根被拒绝，旧进程不迟到覆盖后继身份，每次正常退出保留自己的 closed identity，早期无效 executable 启动不改写此前 manifest。此项没有启动业务 Chromium 或 GUI，不能代替主链或输入测试。最终类型检查和 3 文件／19 项相关测试通过（含此前碰到端口冲突的 node-runtime 文件），但没有将 gate3 整套重跑，因此仍保留其 206／207 历史结果。
+
+| 实际范围 | Node entry SHA-256 | 本次 source/build manifest SHA-256 |
+| --- | --- | --- |
+| attempt3 主链／当前页只读三态 | `acf2d63be8168584d9bdaa62e1fb99fe33a1ff252c6bc39722498c4b158f1e09` | `d5923de96602c6be5bc3dab70e003dd297651bb8d2bde82b29678d7c20070d71` |
+| crash-recovery5 显式中断／重开 | `f7196e015714f0e99830407884102d871d2978174da2d738aaf89e7d4865d5ab` | `d67e551076e1c2ed53d700df7a7b9900df9c6c942c26711951f218b82f8ca8f7` |
+| final-shutdown 最终入口顺序 | `31710326a7d8bc3879223a887fcde707c750876e86a5e0542c96161d13b9d9fc` | `3af2fc55aefc421ae8634d85b05a98bd11795a2c0c0ff69dc9265ba39cd826d9` |
+
+最终 584 项源码／构建 hash 已由主任务逐项核对一致。三个构建范围不能合并宣称“最终构建所有场景全过”。测试合成实例已退出，历史端口不是仍可用的产品地址。
+
+当前停点：共享核心与 Electron adapter 已单独发布；Node 候选及其启动／UI／恢复代码保留在工作区，未提交发布。继续前需要用户决定有头／无头运行能力取舍；没有自动切换、临时解锁、OS 遮罩或安全设置放宽。尚未覆盖完整旧 profile、全部 frame／shadow、长期运行和跨平台矩阵。owner 状态当前返回完整列表、客户端最多读取 2 MiB，不能称为服务端分页／有界投影；大目录规模仍有明确限制。部分旧结果提示仍需随 Node 正式入口一起校正。

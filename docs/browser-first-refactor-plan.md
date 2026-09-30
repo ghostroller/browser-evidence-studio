@@ -20,7 +20,7 @@
 - B1.4：同项目只读结果已实现；真实执行／报告读取、非空批次、双实例、错误恢复与最终Native layout通过，见[交接](refactor-handoffs/BROWSER-FIRST-B14-20260930.md)。可见HMR补验96ms，仅单次观察延迟、不编造旧耗时对照；不开放浏览器执行／人工评判，不进入B2/B3
 - 原生 focus 后续定位：已证实 Electron alert/confirm 的 CDP 回应未释放原生模态框，见[对话框生命周期问题](refactor-handoffs/ELECTRON-DIALOG-LIFECYCLE-20260930.md)。用户已选择保留问题记录、继续浏览器拆分，暂不改变 Electron 对话框交互；失败门禁继续保留
 - B2：用户确认后完成共享回放核心、独立origin、精确节点绑定／固定版／刷新及Native同源回读，最终attempt9实测正确／错误／无来源三态为pass／fail／inconclusive，见[B2交接](refactor-handoffs/BROWSER-FIRST-B2-20260930.md)。后端仍为electron-companion，窗口与未测矩阵按交接限定
-- B3：用户已确认推进；首节点发布provider身份与共享StudioCore，指定Electron旅程及重开通过。Node候选已完成录制／离线回放／字段固定版／当前页只读三态，但有头输入锁也阻止Puppeteer输入；运行模式取舍待用户确认，崩溃恢复另在验证。详见[B3交接](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)，不宣布B3全部完成或Node入口已发布
+- B3：用户已确认推进；首节点发布provider身份与共享StudioCore，指定Electron旅程及重开通过。Node候选已完成录制／离线回放／字段固定版／当前页只读三态，但有头输入锁也阻止Puppeteer输入；运行模式取舍待用户确认，显式中断恢复和同profile重开已复验，仍不外推为全部生命周期通过。详见[B3交接](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)，不宣布B3全部完成或Node入口已发布
 - B4：仍为后续计划；旧profile、字段语义和原件未迁移
 
 依赖主线：
