@@ -68,6 +68,16 @@ agent 的固定发现入口是仓库下的 **`output/dev/latest.json`**。先读
 
 合成入口回归位于 `test/unit/agent-dev-launch.test.ts`，由普通测试入口 `npm.cmd test` 收集；覆盖日志/终端输出、UTF-8 分块、非零退出、启动失败、数据路径和并发入口归属，不会启动真实客户端或读取账号数据。迁移前使用 `node --import tsx --test` 的结果保留在[历史验证记录](verification.md)。
 
+### 浏览器工作台的隔离合成入口
+
+使用同一 Node/npm 和依赖，先 `npm run build`，再 `npm run start:workbench`。此入口需要可运行 Electron 的图形会话；它启动真实 Electron companion 与 Vite 浏览器页面，并非无 Electron 的纯 Node 后端。浏览器使用终端输出的当次 `/browser.html` URL，不能固定为5173或沿用旧实例地址。
+
+每次启动都在 `output/workbench-<时间-随机标识>/companion` 建立新的合成数据根，不接受任意旧 `BES_DATA` 导入。先在该 Electron 窗口正常创建合成项目、录制／封存所需来源，再从配对面板明确选择项目和权限，将短时票据填入浏览器。不要使用真实登录 profile 做此阶段验收；关闭配对面板会撤销授权，浏览器刷新后需重新配对。
+
+同目录的 `launch.json` 记录实际浏览器／后端地址、实例、两个子进程、源码HEAD／dirty及主进程bundle hash；不含票据。源码dirty须结合测试源码清单解释，不能只凭HEAD把未提交构建当作干净版本。`status: ready` 表示当次启动检查完成，不是永久存活证明；独立核对进程与生命周期。终端输出未由此launcher自动保存，需要日志时由测试运行器显式捕获且避免泄露凭据。
+
+浏览器页面与 Electron 共享项目表单、资料编辑器及结果中心。Vite 支持前端 HMR；main/preload 修改仍需重建并重启。Browser grant 与能力范围见 [API](api.md#浏览器工作台连接b12026-09-30)。Web历史回放／节点选择和独立Node／Chromium provider尚不由此入口提供。实际通过、失败和未验部分见 [当前重构计划](browser-first-refactor-plan.md)。
+
 ## ESM 与 Vite 构建边界
 
 按用户的实施要求，项目已从最初的 Webpack 方案改为 Electron Forge + Vite；旧 Webpack 配置和依赖已移除。

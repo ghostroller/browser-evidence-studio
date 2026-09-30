@@ -1,10 +1,18 @@
 # 技术架构与协议
 
-状态：2026-09-29。当前产品契约为 docs/README 中的13/14，旧录放与 T1–T3 语义保留。新验证见本轮交接，历史长测不自动覆盖当前构建。
+状态：2026-09-30。当前产品契约为 docs/README 中的13/14，旧录放与 T1–T3 语义保留。新验证见本轮交接，历史长测不自动覆盖当前构建。
 
 工作区目录采用项目 materials/catalog.json sidecar：当前副本、目录 CAS 修订、生命周期标签和稳定版本号受现有 writer 锁保护。固定 revision/hash 与原件不改。复制和发布先持久化操作快照再写清单，重启重试恢复同 ID；manifest 已落盘后的草稿推进失败显式报告部分发布。实体按 ID 独立读取，不以加载列表充当关系数据库。
 
 WorkspaceManagement 在 workspace.json 内执行 clone→校验完整依赖→原子持久化→发布内存，保留操作回执及既有 partition。浏览器由现有 session lifecycle 管理，native view 初始化失败只回滚本次资源并追加失败/前台恢复事件。可信 preload 仅新增无载荷变更通知；UI 据此重新读取状态，避免导航代际滞后，旧轮询保留作补偿。网页不获得该桥。
+
+## 浏览器优先工作台的当前拆分边界
+
+B1采用同一React入口及共享项目表单／MaterialWorkbench／ResultCenter，宿主差异集中在类型化client和显式能力。Electron继续通过唯一bridge adapter走可信IPC；浏览器通过独立、按instance/project/grant约束的HTTP/SSE端口读取真实服务，不伪造完整Studio.state，不复用业务Agent token成为可信UI。
+
+当前后端仍是Electron companion。浏览器已扩展的资料编辑与只读结果各有窄方法契约和有界投影，现有Studio、采集和原生回放保持原路径。新结果读取去除宿主路径及原始异常，固定报告继续检查完整执行绑定和内容hash；业务值不是任意文本脱敏器的输出。Browser权限不包含执行启动、报告生成、人工评判或旧原生历史节点调用。
+
+这一步不迁移旧profile的partition/storageRef，不改变Electron对话框交互。共享Web回放／元素选择为B2，纯Node服务与独立Chromium provider为B3；它们有各自安全设计和验收门槛，不能从B1的接口或测试数推定已完成。当前源码、实际验收和后续依赖以 [重构计划](browser-first-refactor-plan.md)为准，运行入口见 [环境](environment.md#浏览器工作台的隔离合成入口)。
 
 ## 1. 技术决策
 

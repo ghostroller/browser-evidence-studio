@@ -1,5 +1,21 @@
 # 本机 HTTP API
 
+## 浏览器工作台连接（B1，2026-09-30）
+
+此入口与下文的业务 Agent `/v1` API 是不同权限主体。仅通过 `npm run start:workbench` 启动的隔离合成实例启用；后端仍为 Electron companion，普通客户端启动不额外开放工作台监听。Vite 使用受控同源代理，不开放通用跨域 CORS 或任意可信 UI dispatch。
+
+工作台使用 `POST /workbench/session` 交换一次配对票据、`POST /workbench/rpc` 调用显式方法、`POST /workbench/events` 读取认证后的 SSE。可信 Electron 主窗口正常 UI 明确选择项目与权限，票据／会话绑定实例和项目；短期凭据仅在内存中使用，不放 URL、构建产物或日志。关闭、隐藏、最小化或重载配对窗口会撤销关联授权。精确 Host／Origin、过期和主体校验同时适用于事件流。
+
+- `project-metadata`：项目摘要读取与名称／简介修改
+- `project-materials`：增加真实资料编辑／发布、目录和同项目 sealed 来源读取；初始化工作副本／目录修补仍是写语义
+- `project-workbench`：显式增加同项目只读执行结果；旧 metadata／materials 会话不静默升级
+
+资料方法、输入和预算见 `src/contracts/browser-materials.ts`；结果的八方法白名单见 `src/contracts/browser-results.ts`：`projectExecutions`、`execution`、`executionItems`、`datasetBatches`、`datasetRecords`、`executionReports`、`executionReport`、`executionReportItems`。结果页不提供执行启动、生成报告、人工判定或历史 DOM 回放；这些行为继续走既有 Electron 路径。
+
+结果列表及读取复用真实 `ProjectExecutions`，核对项目／执行、固定绑定、报告 hash 和条目身份。损坏、缺失和预算不足返回错误，不折叠为空结果。投影去除宿主环境路径、批次文件路径和原始异常；业务 JSON 值、缺失字段语义及来源引用保持，不承诺对任意业务值做通用敏感信息识别。原始异常详情保留在 Electron 端。结果请求上限16 KiB；有界集合1–28 KiB／1–100项，详情响应另限64 KiB。组合权限不提高旧 metadata 请求上限；资料请求仍有独立64 KiB限制。
+
+启动、实际验收和未支持范围以 [重构计划](browser-first-refactor-plan.md)及当前交接为准；接口已存在不等于所有真实用户路径均已通过。
+
 ## 工作区与管理服务（2026-09-29）
 
 以下是可信 UI 编排，不自动成为公开 HTTP 写路由。create/update/manageProject、create/update/manageProfile 和 settleManagementDependencies 使用 revision/operationId 与完整依赖；归档、停用、恢复保留身份与历史。空对象移除先核验无依赖。materialCatalog/manageMaterialCatalog、setWorkingMaterialDraft 和 copyMaterialDraft 管理 sidecar；workingMaterialDraft 在服务锁中返回稳定当前副本。materialEntity 返回精确对象及字段所属需求 ID，materialDraftDiff 比较副本与来源，materialDiff 包含 taskBrief。
