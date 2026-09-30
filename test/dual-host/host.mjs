@@ -79,8 +79,8 @@ async function connectNodeTarget(c){
 export async function recordFixture(c,fixture){
   const{ui,report}=c;c.fixture=fixture;c.sourceUrl=fixture.url;report.fixture={url:fixture.url,label:fixture.label};
   if(c.host==='electron'){
-    await click(ui,'新建项目');await fill(ui,'项目名称','B4 同输入双宿主验收');await fill(ui,'业务目标','精确历史金额与运行时采样分离');await click(ui,'创建项目');
-    await click(ui,'添加环境');await fill(ui,'环境名称','B4 无账号合成来源');await fill(ui,'登录入口',fixture.url);await click(ui,'添加');await click(ui,'打开环境');
+    await click(ui,'新建项目');await fill(ui,'项目名称','B4 同输入双宿主验收');await fill(ui,'目录简介','精确历史金额与运行时采样分离');await click(ui,'创建项目');
+    await click(ui,'添加环境');await fill(ui,'环境名称','B4 无账号合成来源');await fill(ui,'登录入口',fixture.url);await click(ui,'创建登录环境');await click(ui,'打开环境');
     c.live=await c.eb.waitForTarget(t=>t.url().startsWith(fixture.url)).then(t=>t.page());await c.live.waitForSelector('#amount');await ui.waitForFunction(()=>!document.querySelector('.statusbar').textContent.includes('正在处理'));await click(ui,'开始录制');
     const workspace=await readJson(c.launch.dataRoot+'/workspace.json');assert.equal(workspace.projects.length,1);assert.equal(workspace.profiles.length,1);c.projectId=workspace.projects[0].id;c.profileId=workspace.profiles[0].id;report.profile=workspace.profiles[0];
   }else{

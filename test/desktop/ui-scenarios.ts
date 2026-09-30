@@ -53,14 +53,14 @@ export async function runReviewUiScenarios(studio: Studio): Promise<void> {
   }
   await waitFor(() => evaluate<boolean>(`!!document.querySelector('.native-browser.inactive') && !document.querySelector('select[aria-label="项目"]')?.disabled`), Boolean, 'sealed run reaches the empty workspace');
   await evaluate<void>(`document.querySelector('button[aria-label="新建项目"]').click()`);
-  await waitFor(() => evaluate<string>(`document.querySelector('.overlay-heading h2')?.textContent || ''`), value => value === '新建项目', 'new project dialog');
-  await evaluate<void>(`(() => {const input=document.querySelector('[placeholder="例如：订单采集验收"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'UI 新建项目');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await waitFor(() => evaluate<string>(`document.querySelector('.overlay-heading h2')?.textContent || ''`), value => value === '项目与环境管理', 'new project dialog');
+  await evaluate<void>(`(() => {const input=document.querySelector('[aria-label="项目名称"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'UI 新建项目');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
   await click('创建项目', `document.querySelector('[role="dialog"]')`);
   await waitFor(() => evaluate<boolean>(`!document.querySelector('[role="dialog"]') && document.querySelector('select[aria-label="项目"]')?.selectedOptions[0]?.textContent === 'UI 新建项目'`), Boolean, 'project created and selected through UI');
   await evaluate<void>(`document.querySelector('button[aria-label="添加环境"]').click()`);
-  await waitFor(() => evaluate<boolean>(`!!document.querySelector('input[aria-label="新环境名称"]')`), Boolean, 'new profile dialog');
-  await evaluate<void>(`(() => {const input=document.querySelector('input[aria-label="新环境名称"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'UI 合成环境');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
-  await click('添加', `document.querySelector('[role="dialog"]')`);
+  await waitFor(() => evaluate<boolean>(`!!document.querySelector('input[aria-label="环境名称"]')`), Boolean, 'new profile dialog');
+  await evaluate<void>(`(() => {const input=document.querySelector('input[aria-label="环境名称"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'UI 合成环境');input.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+  await click('创建登录环境', `document.querySelector('[role="dialog"]')`);
   await waitFor(() => evaluate<boolean>(`!document.querySelector('[role="dialog"]') && document.querySelector('select[aria-label="登录环境"]')?.selectedOptions[0]?.textContent === 'UI 合成环境'`), Boolean, 'profile created and selected through UI');
   const createdProject = studio.projects.find(item => item.name === 'UI 新建项目');
   assert(createdProject && studio.profiles.some(item => item.name === 'UI 合成环境' && item.projectId === createdProject.id), 'New profile retains the project binding');

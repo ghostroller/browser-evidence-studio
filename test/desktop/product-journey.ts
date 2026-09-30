@@ -86,9 +86,9 @@ export async function runProductJourney(studio:Studio,reopen=false){
       // Keep the 13-frame and <10-second gap requirements; allow their collection.
       await wait(async()=>frames.length,value=>value>12,'continuous reopened-window evidence',120000);
     }else{
-    await click('新建项目');await fill('项目名称','订单金额检查');await fill('业务目标','取得当前合成账户的两条订单实付金额，单位元，按页面显示保留。');await click('创建项目');
+    await click('新建项目');await fill('项目名称','订单金额检查');await fill('目录简介','取得当前合成账户的两条订单实付金额，单位元，按页面显示保留。');await click('创建项目');
     await wait(async()=>studio.projects.length,n=>n===1,'UI-created project');
-    await click('添加环境');await fill('环境名称','合成账户环境');await fill('登录入口',site.url+'/orders');await fill('登录说明','点击登录合成账户一');await fill('登录完成标记（可选 CSS）','#logged-in');await click('添加');
+    await click('添加环境');await fill('环境名称','合成账户环境');await fill('登录入口',site.url+'/orders');await fill('登录说明','点击登录合成账户一');await disclose('高级登录检查（可选）');await fill('登录完成标记（CSS）','#logged-in');await click('创建登录环境');
     await click('打开环境');await wait(async()=>studio.state().session,Boolean,'environment page');assert.equal(studio.runs.length,0);assert.equal(studio.active,undefined);await wait(()=>read<boolean>("!document.querySelector('.statusbar').textContent.includes('正在处理')"),Boolean,'environment navigation ready');
     if(numeric){
       await clickExpression("[...document.querySelectorAll('button')].find(el=>el.textContent==='尝试错误的合成凭据')",studio.current().view.webContents);

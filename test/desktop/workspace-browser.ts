@@ -82,8 +82,8 @@ export async function runWorkspaceBrowserScenarios(studio:Studio){
   async function shortcut(keyCode:string,modifiers:Electron.InputEvent['modifiers']=['control']){const wc=studio.current().view.webContents;assertInstance(wc);studio.window.window.focus();wc.focus();wc.sendInputEvent({type:'keyDown',keyCode,modifiers});wc.sendInputEvent({type:'keyUp',keyCode,modifiers});await delay(200);}
   async function frame(name:string){const sourceId=studio.window.window.getMediaSourceId(),sources=await desktopCapturer.getSources({types:['window'],thumbnailSize:{width:1460,height:940}}),source=sources.find(item=>item.id===sourceId);assert(source&&!source.thumbnail.isEmpty(),'Capture exact synthetic native window');await writeFile(path.join(evidence,name+'.png'),source.thumbnail.toPNG());}
   try{
-    await click('新建项目');await fill('项目名称','浏览器基础交互 '+randomUUID().slice(0,8));await fill('业务目标','在合成网页浏览、查找和下载，保持原始录制与登录环境身份。');await click('创建项目');
-    await click('添加环境');await fill('环境名称','本任务隔离浏览器');await fill('登录入口',site.url+'/one');await click('添加');await click('打开环境');
+    await click('新建项目');await fill('项目名称','浏览器基础交互 '+randomUUID().slice(0,8));await fill('目录简介','在合成网页浏览、查找和下载，保持原始录制与登录环境身份。');await click('创建项目');
+    await click('添加环境');await fill('环境名称','本任务隔离浏览器');await fill('登录入口',site.url+'/one');await click('创建登录环境');await click('打开环境');
     await wait(()=>selected(),page=>!!page&&!page.loading&&page.url===site.url+'/one','initial native page');await wait(()=>read<boolean>("!!document.querySelector('[data-browser-toolbar]')"),Boolean,'integrated toolbar');
     const firstSession=studio.state().session!,storageRef=studio.profiles.find(profile=>profile.id===firstSession.profileId)!.storageRef;
     assert.equal(studio.active,undefined);report.identity={sessionId:firstSession.sessionId,projectId:firstSession.projectId,profileId:firstSession.profileId,storageRef};await frame('01-session');

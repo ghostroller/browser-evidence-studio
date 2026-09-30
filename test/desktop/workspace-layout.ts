@@ -87,9 +87,9 @@ export async function runWorkspaceLayoutScenarios(studio:Studio) {
       assert(footer.buttons.every((button:any)=>button.top>=footer.statusBottom-1&&button.right<=footer.right+1&&button.bottom<=footer.bottom+1),'History actions wrap below the status and remain inside the footer');
       await captureUiFrame(studio,'layout-empty-footer-'+width+'.png');
     }
-    await click('新建项目');await fill('项目名称','布局回放复核');await fill('业务目标','整理两个页面保存点，为其中一个补充纯文字说明。');await click('创建项目');
+    await click('新建项目');await fill('项目名称','布局回放复核');await fill('目录简介','整理两个页面保存点，为其中一个补充纯文字说明。');await click('创建项目');
     await wait(async()=>studio.projects.length,n=>n===1,'project created');
-    await click('添加环境');await fill('环境名称','合成登录页');await fill('登录入口',site.url+'/orders');await click('添加');
+    await click('添加环境');await fill('环境名称','合成登录页');await fill('登录入口',site.url+'/orders');await click('创建登录环境');
     await click('打开环境');await wait(async()=>!!studio.state().session,Boolean,'synthetic environment');
     await wait(()=>read<boolean>('!document.querySelector(".statusbar").textContent.includes("正在处理")'),Boolean,'environment settled');
     await click('开始录制');await wait(async()=>studio.active?.capture,v=>v==='recording','recording ready');
