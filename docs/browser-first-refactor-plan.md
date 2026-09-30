@@ -8,7 +8,14 @@
 
 以同一 React 工作台、共享业务服务和共享回放模块支持浏览器／Electron 两种宿主。先改善真实 UI 的开发反馈，再根据已取得的收益抽取纯 Node 服务与外部 Chromium provider。保留现有 Electron 可运行路径，不以完成 B3 为 B1 的前提。
 
-用户已要求在整理文档后开始实际重构。第一个实施包是 **B1.1：类型化 WorkbenchClient 边界与 Electron adapter，保持原行为**。它不是 B1 全部完成，也不等于浏览器版已经可用。B0 已有工具链证据，但仍需为当前候选建立可重复启动、身份与关键界面的开发基线。
+用户已要求在整理文档后开始实际重构。**B1.1：类型化 WorkbenchClient 边界与 Electron adapter 已实现**，代码节点为 `1918012`；详见[实际验收交接](refactor-handoffs/BROWSER-FIRST-B11-20260930.md)。它不是 B1 全部完成，也不等于浏览器版已经可用。B0 已有工具链证据，但仍需为当前候选建立可重复启动、身份与关键界面的开发基线。
+
+### 当前阶段状态（2026-09-30）
+
+- B0：工具链可观察性已证明；完整产品／视觉基线未全部验收
+- B1.1：90 方法契约、唯一 bridge adapter、React 注入、native capability 和缺桥诊断落地；typecheck/build、19 文件110项定向测试、blur-copy正反3轮及真实 Electron 工作区封存回放通过。workspace-browser 候选两次与旧基线一次同点 focus 断言失败，根因未定、后半段未测，不宣布全部桌面验收通过
+- B1.2／B1.3：尚未实现；下一步先定义受保护的工作台 HTTP/SSE 身份与传输契约，现有 Agent 权限不放宽
+- B2–B4：仍为后续计划；旧 profile、字段语义和数据格式未迁移
 
 依赖主线：
 
@@ -68,6 +75,8 @@ B2 隔离设计可在 B1 期间准备；B4 的 Electron 冒烟从 B1 开始持�
 ## 5. B1：同一工作台在浏览器连接真实服务
 
 ### B1.1 首个可交付切片：WorkbenchClient 与 Electron adapter
+
+**实际状态**：实现及定向／工作区纵向验证已完成，保留 workspace-browser 未通过项；精确源码／构建、失败对照和状态 DTO 的嵌套 any 债务见[交接](refactor-handoffs/BROWSER-FIRST-B11-20260930.md)。以下保留原切片范围与验收要求，不把计划中的全部退出条件自动标为已通过。
 
 **范围**：先只重构客户端边界，生产 Electron UI 行为保持，暂不新增 HTTP 信任主体、不移动业务服务、不改数据格式。
 
