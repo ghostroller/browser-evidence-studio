@@ -147,3 +147,17 @@ test('reopens a saved fixed report and ignores a late report from a different se
   await act(async () => oldReport.resolve({ reportId: 'saved-report', overall: 'fail', coverage: 'none', reasons: ['old-report-reason'] }));
   expect(screen.queryByText('old-report-reason')).toBeNull();
 });
+
+test('initial result failure is explicit and retries instead of remaining permanently loading', async () => {
+  let fail = true;
+  const call = vi.fn(async (method: string) => {
+    if (method === 'execution') { if (fail) throw new Error('Synthetic read failure'); return { status: 'completed', binding: {} }; }
+    return { items: [] };
+  });
+  setTestWorkbenchClient({ call, bounds: vi.fn() }); render(<ResultCenter projectId="project" executionId="execution"/>);
+  expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Error: Synthetic read failure');
+  expect(screen.queryByText('正在读取实际执行身份…')).toBeNull();
+  fail = false; fireEvent.click(screen.getByRole('button', { name: '重新读取执行结果' }));
+  expect(await screen.findByText('执行结果中心')).toBeTruthy();
+  await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+});

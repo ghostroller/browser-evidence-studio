@@ -11,6 +11,8 @@ import { Label } from './ui/label';
 import { NativeSelect } from './ui/native-select';
 import { MaterialWorkbench } from './material-workbench';
 import type { BrowserMaterialResult } from '@/contracts/browser-materials';
+import { ResultCenter } from './result-center';
+import type { BrowserResultResult, BrowserExecutionListItem } from '@/contracts/browser-results';
 import type { ReplayPosition } from '@/contracts/recording';
 
 const connectionLabels = { disconnected: '尚未配对', exchanging: '正在交换一次性票据', connecting: '正在读取已授权项目', connected: '已连接', stale: '连接待恢复 · 资料可能已过时', expired: '会话已结束，请重新配对', error: '连接失败' };
@@ -18,6 +20,7 @@ export function BrowserWorkbench({ client }: { client: BrowserWorkbenchClient })
   const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot, client.getSnapshot);
   const { preferences, setTheme } = usePreferences();
   const [ticket, setTicket] = useState('');
+  const materialGrant = snapshot.grant === 'project-materials' || snapshot.grant === 'project-workbench';
   const connecting = snapshot.status === 'exchanging' || snapshot.status === 'connecting';
   const attempt = useRef(false);
   useEffect(() => () => client.disconnect(), [client]);
@@ -49,10 +52,11 @@ export function BrowserWorkbench({ client }: { client: BrowserWorkbenchClient })
         <p>项目标识：<code>{snapshot.state.project.id}</code> · 版本 {snapshot.state.project.revision}</p>
         <BrowserProjectEditor key={`${snapshot.state.project.id}/${snapshot.sessionEpoch}`} client={client} project={snapshot.state.project} writable={snapshot.status === 'connected'} />
       </section>}
-      {snapshot.state && snapshot.grant === 'project-materials' && <BrowserMaterials key={`${snapshot.state.project.id}/${snapshot.sessionEpoch}`} client={client} projectId={snapshot.state.project.id} writable={snapshot.status === 'connected'} refreshToken={snapshot.refreshToken}/>}
-      <section className="browser-capabilities" aria-label="浏览器能力边界"><h3>此连接的能力范围</h3>{snapshot.grant === 'project-materials' ? <p>本次授权本项目资料编辑与发布。进入资料工作区会初始化工作副本；目录读取可能修补目录。未提交输入和操作身份仅保留于本次内存会话。</p> : <p>本次只提供已配对项目的名称、目录简介和版本。仅明确点击保存时修改元数据。</p>}<ul><li>登录环境、原生浏览器呈现和录制：请使用 Electron 工作台</li>{snapshot.grant === 'project-materials' ? <li>可编辑已封存来源的保存点、字段和纯文字注释，可复制工作副本、固定版本；历史回放和元素选择需要 Electron 工作台</li> : <li>任务资料、保存点、回放、复制和固定版本：此元数据连接尚未开放浏览器能力</li>}<li>Agent 授权和执行：此连接不具备权限</li></ul></section>
+      {snapshot.state && materialGrant && <BrowserMaterials key={`materials/${snapshot.state.project.id}/${snapshot.sessionEpoch}`} client={client} projectId={snapshot.state.project.id} writable={snapshot.status === 'connected'} refreshToken={snapshot.refreshToken}/>}
+      {snapshot.state && snapshot.grant === 'project-workbench' && <BrowserResults key={`results/${snapshot.state.project.id}/${snapshot.sessionEpoch}`} client={client} projectId={snapshot.state.project.id} readable={snapshot.status === 'connected'}/>}
+      <section className="browser-capabilities" aria-label="浏览器能力边界"><h3>此连接的能力范围</h3>{materialGrant ? <p>本次授权本项目资料编辑与发布。进入资料工作区会初始化工作副本；目录读取可能修补目录。未提交输入和操作身份仅保留于本次内存会话。</p> : <p>本次只提供已配对项目的名称、目录简介和版本。仅明确点击保存时修改元数据。</p>}<ul><li>登录环境、原生浏览器呈现和录制：请使用 Electron 工作台</li>{materialGrant ? <li>可编辑已封存来源的保存点、字段和纯文字注释，可复制工作副本、固定版本；历史回放和元素选择需要 Electron 工作台</li> : <li>任务资料、保存点、回放、复制和固定版本：此元数据连接尚未开放浏览器能力</li>}{snapshot.grant === 'project-workbench' && <li>结果只读：可查看实际执行、已提交记录和已保存报告；不能启动执行、生成验收报告或保存人工判定</li>}<li>Agent 授权和执行：此连接不具备权限</li></ul></section>
     </main>
-    <footer className="statusbar"><span>合成实例 · {snapshot.grant === 'project-materials' ? '项目资料授权' : '项目元数据配对'}</span><span>录制完成 ≠ 需求通过</span></footer>
+    <footer className="statusbar"><span>合成实例 · {snapshot.grant === 'project-workbench' ? '项目资料与只读结果授权' : materialGrant ? '项目资料授权' : '项目元数据配对'}</span><span>录制完成 ≠ 需求通过</span></footer>
   </WorkbenchShell>;
 }
 function BrowserProjectEditor({ client, project, writable }: { client: BrowserWorkbenchClient; project: BrowserProjectMetadata; writable: boolean }) {
@@ -176,4 +180,43 @@ function BrowserSourcePicker({ client, projectId, writable, onPosition }: { clie
     {positionIndex!==''&&positions.items[Number(positionIndex)]&&<p role="status">已选择真实来源：{recordingId} / {positions.items[Number(positionIndex)].position.documentId} / 事件 #{positions.items[Number(positionIndex)].position.eventSeq}</p>}
     {error&&<p role="alert">{error}</p>}
   </details>;
+}
+
+
+function BrowserResults({ client, projectId, readable }: { client: BrowserWorkbenchClient; projectId: string; readable: boolean }) {
+  const [opened, setOpened] = useState(false), [busy, setBusy] = useState(false), [loaded, setLoaded] = useState(false), [error, setError] = useState('');
+  const [executions, setExecutions] = useState<BrowserResultResult<'projectExecutions'>>({ items: [], returnedBytes: 0, outputTruncated: false });
+  const [selected, setSelected] = useState<BrowserExecutionListItem | null>(null);
+  const request = useRef(0), alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; ++request.current; }; }, []);
+  const load = async (cursor?: string) => {
+    if (!readable || !client.results.canRead()) return;
+    const token = ++request.current; setBusy(true); setError('');
+    try {
+      const value = await client.resultCall('projectExecutions', { projectId, limit: 30, maxBytes: 24576, ...(cursor ? { cursor } : {}) });
+      if (alive.current && token === request.current) { setExecutions(previous => cursor ? previous.nextCursor === cursor ? { ...value, items: [...previous.items, ...value.items] } : previous : value); setLoaded(true); }
+    } catch (failure) { if (alive.current && token === request.current) setError(String(failure)); }
+    finally { if (alive.current && token === request.current) setBusy(false); }
+  };
+  useEffect(() => {
+    if (opened && readable) void load();
+    return () => { ++request.current; };
+  }, [opened, readable, projectId]);
+  const label = (item: BrowserExecutionListItem) => `${item.mode === 'from-start-validation' ? '从头验证' : '当前页测试'} · ${new Date(item.startedAt).toLocaleString()} · ${item.status}`;
+  return <section className="browser-results form-stack" aria-label="授权项目只读结果">
+    <h2>执行与已保存结果</h2>
+    <p>只读查看本项目实际执行、已提交批次和固定报告。报告是此前保存的结果；浏览器不会重新执行或验收。</p>
+    {!opened ? <Button disabled={!readable} onClick={() => setOpened(true)}>打开只读结果</Button> : <>
+      {!readable && <p role="status">结果可能已过时；连接恢复前已暂停读取。未提交的资料输入仍留在原编辑器。</p>}
+      <div className="button-row"><Button disabled={!readable || busy} onClick={() => void load()}>刷新执行列表</Button>{executions.nextCursor && <Button disabled={!readable || busy} onClick={() => void load(executions.nextCursor)}>后续执行</Button>}</div>
+      {busy && <p role="status">正在读取项目执行列表…</p>}{error && <p role="alert">{error} 执行列表未能读取，请重试；未将失败当作空列表。</p>}
+      {!busy && loaded && !executions.items.length && !error && <p>这个项目尚无实际执行。请在 Electron 工作台完成执行并保存报告后刷新。</p>}
+      <Label>选择项目执行<NativeSelect aria-label="选择项目执行" disabled={!readable || busy} value={selected?.executionId ?? ''} onChange={event => { const item = executions.items.find(value => value.executionId === event.target.value); if (item) setSelected(item); else if (!event.target.value) setSelected(null); }}>
+        <option value="">选择实际执行</option>{selected && !executions.items.some(item => item.executionId === selected.executionId) && <option value={selected.executionId}>{label(selected)} · 当前已打开，不在本页</option>}
+        {executions.items.map(item => <option key={item.executionId} value={item.executionId}>{label(item)}</option>)}
+      </NativeSelect></Label>
+      {selected && <><p>当前执行：<code>{selected.executionId}</code> · 固定资料 <code>{selected.materialRevisionId}</code></p>
+        <fieldset className="browser-result-content" disabled={!readable} inert={!readable}><ResultCenter client={client.results} readable={readable} projectId={projectId} executionId={selected.executionId}/></fieldset></>}
+    </>}
+  </section>;
 }

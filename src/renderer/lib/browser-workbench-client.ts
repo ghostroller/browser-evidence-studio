@@ -1,5 +1,7 @@
 import { BROWSER_MATERIAL_METHODS, BROWSER_MATERIAL_WRITE_METHODS, type BrowserMaterialMethod, type BrowserMaterialInput, type BrowserMaterialResult } from '@/contracts/browser-materials';
 import { memoryEditorStorage, type MaterialWorkbenchClient, type MaterialEditorCall } from './material-workbench-client';
+import { BROWSER_RESULT_METHODS, BROWSER_RESULT_BUDGET, type BrowserResultMethod, type BrowserResultInput, type BrowserResultResult } from '@/contracts/browser-results';
+import type { ResultWorkbenchClient, ResultReadCall } from './result-workbench-client';
 import type { BrowserProjectMetadata, BrowserUpdateProject, BrowserWorkbenchErrorCode, BrowserWorkbenchSession, BrowserWorkbenchState, BrowserWorkbenchGrant } from '@/contracts/browser-workbench';
 
 export type BrowserConnectionStatus = 'disconnected' | 'exchanging' | 'connecting' | 'connected' | 'stale' | 'expired' | 'error';
@@ -49,8 +51,12 @@ export class BrowserWorkbenchClient {
       removeItem: key => this.#editorStorage.removeItem(key),
     },
     call: ((method, input) => this.materialCall(method, input)) as MaterialEditorCall,
-    canEdit: () => this.#session?.grant === 'project-materials' && this.#snapshot.status === 'connected',
+    canEdit: () => (this.#session?.grant === 'project-materials' || this.#session?.grant === 'project-workbench') && this.#snapshot.status === 'connected',
     waitAfterWrite: acknowledgement => this.waitAfterMaterialWrite(acknowledgement),
+  };
+  readonly results: ResultWorkbenchClient = {
+    host: 'browser', call: ((method, input) => this.resultCall(method, input)) as ResultReadCall,
+    canRead: () => this.#session?.grant === 'project-workbench' && this.#snapshot.status === 'connected',
   };
   readonly instanceId: string;
   readonly #fetch: typeof fetch;
@@ -133,7 +139,7 @@ export class BrowserWorkbenchClient {
       if (generation !== this.#generation) return;
       if (data.instanceId !== this.instanceId || !identifier(data.projectId) || typeof data.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(data.token) || !Number.isSafeInteger(data.expiresAt) || (data.expiresAt as number) <= Date.now() || (data.expiresAt as number) > Date.now() + 15 * 60_000) throw failure('protocol');
       const grant = data.grant === undefined ? 'project-metadata' : data.grant;
-      if (grant !== 'project-metadata' && grant !== 'project-materials') throw failure('protocol');
+      if (grant !== 'project-metadata' && grant !== 'project-materials' && grant !== 'project-workbench') throw failure('protocol');
       this.#session = { grant, token: data.token, expiresAt: data.expiresAt as number, instanceId: this.instanceId, projectId: data.projectId };
       this.#emit({ grant, sessionEpoch: generation, status: 'connecting', projectId: data.projectId, expiresAt: data.expiresAt as number });
       this.#expiry = setTimeout(() => this.#clear('expired', messages.unauthorized), Math.max(0, this.#session.expiresAt - Date.now()));
@@ -192,7 +198,7 @@ export class BrowserWorkbenchClient {
   materialCall = async <M extends BrowserMaterialMethod>(method: M, input: BrowserMaterialInput<M>): Promise<BrowserMaterialResult<M>> => {
     const generation = this.#generation, session = this.#session;
     if (!session) throw failure('unauthorized');
-    if (session.grant !== 'project-materials' || input.projectId !== session.projectId || !BROWSER_MATERIAL_METHODS.includes(method)) throw failure('forbidden');
+    if ((session.grant !== 'project-materials' && session.grant !== 'project-workbench') || input.projectId !== session.projectId || !BROWSER_MATERIAL_METHODS.includes(method)) throw failure('forbidden');
     const writes = BROWSER_MATERIAL_WRITE_METHODS.includes(method);
     // These reads need a write grant for ensure/repair, but a transport failure
     // is not a reason to recursively refresh the same directory.
@@ -219,6 +225,33 @@ export class BrowserWorkbenchClient {
         // The editor displays them, and retry is always a user action.
       }
       throw userMutation && ['network', 'protocol', 'cancelled', 'unavailable', 'internal_error'].includes(safe.code) ? new BrowserWorkbenchClientError(safe.code, true) : safe;
+    }
+  };
+  /** Read-only result calls never issue mutations or trigger refresh/read loops.
+   * A result from a cleared/replaced session cannot reach the result view. */
+  resultCall = async <M extends BrowserResultMethod>(method: M, input: BrowserResultInput<M>): Promise<BrowserResultResult<M>> => {
+    const generation = this.#generation, session = this.#session;
+    if (!session) throw failure('unauthorized');
+    if (session.grant !== 'project-workbench' || input.projectId !== session.projectId || !BROWSER_RESULT_METHODS.includes(method)) throw failure('forbidden');
+    if (!this.results.canRead()) throw failure('unavailable');
+    try {
+      const value = object(await this.#json('rpc', { instanceId: this.instanceId, method, body: input }));
+      if (!this.#active(generation)) throw failure('cancelled');
+      if (new TextEncoder().encode(JSON.stringify(value)).byteLength > BROWSER_RESULT_BUDGET.responseBytes) throw failure('protocol');
+      if (method === 'execution' || method === 'executionReport') {
+        const binding = object(value.binding);
+        if (binding.projectId !== session.projectId || binding.executionId !== (input as BrowserResultInput<'execution'>).executionId ||
+          (method === 'executionReport' && value.reportId !== (input as BrowserResultInput<'executionReport'>).reportId)) throw failure('protocol');
+      } else if (!Array.isArray(value.items) || typeof value.outputTruncated !== 'boolean' || !Number.isSafeInteger(value.returnedBytes) ||
+        (value.nextCursor !== undefined && (typeof value.nextCursor !== 'string' || !value.nextCursor.length || value.nextCursor.length > 4096))) throw failure('protocol');
+      return value as unknown as BrowserResultResult<M>;
+    } catch (error) {
+      const safe = error instanceof BrowserWorkbenchClientError ? error : failure('network');
+      if (this.#active(generation)) {
+        if (safe.code === 'unauthorized' || safe.code === 'forbidden') this.#handle(safe, generation);
+        else if (safe.code === 'network' || safe.code === 'protocol') this.#emit({ status: 'stale', error: safe.message });
+      }
+      throw safe;
     }
   };
   /** Bridge only an acknowledged write to its existing continuation. New user

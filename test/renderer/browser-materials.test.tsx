@@ -34,7 +34,7 @@ async function readyControl(find:()=>HTMLElement) {
 }
 const clickReady=async(find:()=>HTMLElement)=>{fireEvent.click(await readyControl(find));};
 const clickButton=(name:string|RegExp)=>clickReady(()=>screen.getByRole('button',{name}));
-async function fixture(empty=false) {
+async function fixture(empty=false,grant='project-materials') {
   const domain=await materialFixture({empty});
   let event!:ReadableStreamDefaultController<Uint8Array>, loseEdit=false, losePublish=false, readFailure=false;
   let collectionDelay: (()=>Promise<void>) | undefined;
@@ -42,10 +42,11 @@ async function fixture(empty=false) {
   const invalidate=()=>event.enqueue(new TextEncoder().encode('event: scope-invalidated\ndata: {"projectId":"project"}\n\n'));
   const fetcher=vi.fn(async(url:string|URL|Request,init?:RequestInit)=>{
     const envelope=JSON.parse(String(init?.body));
-    if(url==='/workbench/session')return json({token,instanceId:'instance',projectId:'project',grant:'project-materials',expiresAt:Date.now()+300_000});
+    if(url==='/workbench/session')return json({token,instanceId:'instance',projectId:'project',grant,expiresAt:Date.now()+300_000});
     if(url==='/workbench/events')return new Response(new ReadableStream<Uint8Array>({start(controller){event=controller;}}),{headers:{'content-type':'text/event-stream'}});
     const {method,body}=envelope;
     if(method==='state'){await metadataDelay?.();if(readFailure)throw new Error('connection offline');return json({project:{id:'project',name:'Orders',objective:'Amounts',revision:1}});}
+    if(method==='projectExecutions')return json({items:[],returnedBytes:55,outputTruncated:false});
     if(method==='materialRecordings')return json({items:[{recordingId:'recording',sealedAt:'2026-09-30T00:00:00Z'}],returnedBytes:100,outputTruncated:false});
     if(method==='recordingStreams')return json({items:[{first:position,last:position,events:1,monotonicTime:true}]});
     if(method==='recordingPositions')return json({items:[{position,type:2,source:0}]});
@@ -217,4 +218,16 @@ test('stream loss after a successful create reports partial completion and never
   expect(f.rpc().filter(item=>item.method==='createMaterialDraft')).toHaveLength(1);
   expect(f.rpc().filter(item=>item.method==='setWorkingMaterialDraft')).toHaveLength(0);
   expect((await f.materials.service.workingDraft('project')).draftId).toBe(f.draft.draftId);
+});
+
+
+test('opening and refreshing combined read-only results preserves a dirty material editor without writes',async()=>{
+  const f=await fixture(false,'project-workbench');await f.connect();await selectFirstCard();await clickButton('编辑保存点');
+  fireEvent.change(await screen.findByLabelText('标题'),{target:{value:'Unsaved material title'}});
+  const before=f.rpc().filter(item=>item.method==='editMaterialDraft').length;
+  await clickButton('打开只读结果');await screen.findByText(/这个项目尚无实际执行/);
+  await clickButton('刷新执行列表');await waitFor(()=>expect(f.rpc().filter(item=>item.method==='projectExecutions')).toHaveLength(2));
+  expect((screen.getByLabelText('标题') as HTMLInputElement).value).toBe('Unsaved material title');
+  expect(f.rpc().filter(item=>item.method==='editMaterialDraft')).toHaveLength(before);
+  expect((await f.get()).content.checkpoints[0].title).toBe('Example 1');
 });

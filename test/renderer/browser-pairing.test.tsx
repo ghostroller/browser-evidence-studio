@@ -62,3 +62,12 @@ test('materials permission is an explicit selection with ensure and catalog writ
   expect(screen.queryByLabelText('一次性票据')).toBeNull();
   expect(f.bridge.revoke).toHaveBeenCalledTimes(3);
 });
+
+test('combined permission is explicit and discloses read-only results without broadening the default', async () => {
+  const f = fixture(); await f.open();
+  expect((screen.getByLabelText('配对权限范围') as HTMLSelectElement).value).toBe('project-metadata');
+  fireEvent.change(screen.getByLabelText('配对权限范围'), { target: { value: 'project-workbench' } });
+  expect(screen.getByText(/只读查看本项目实际执行列表/)).toBeTruthy(); expect(f.bridge.begin).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '生成一次性配对票据' })); await screen.findByLabelText('一次性票据');
+  expect(f.bridge.begin).toHaveBeenCalledWith('project', 'project-workbench');
+});

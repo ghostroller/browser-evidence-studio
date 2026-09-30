@@ -586,3 +586,11 @@
 .browser-source-grid select { text-overflow: ellipsis; }
 .browser-materials fieldset:disabled { opacity: .72; }
 @media (max-width: 1000px) { .browser-source-grid { grid-template-columns: 1fr; } }
+
+/* The shared result view uses normal document flow in the browser shell. */
+.browser-results { grid-column: 1 / -1; min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+.browser-result-content { min-width: 0; margin: 0; padding: 0; border: 0; }
+.browser-results .result-center { max-width: none; font-size: 14px; }
+.browser-results .result-center h3 { font-size: 16px; }
+.browser-results code, .browser-results small, .browser-results .error-inline { overflow-wrap: anywhere; }
+.browser-results .result-row { flex-wrap: wrap; }
