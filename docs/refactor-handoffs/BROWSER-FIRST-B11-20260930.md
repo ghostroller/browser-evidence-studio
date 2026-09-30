@@ -53,6 +53,8 @@ B1.2 的受保护 HTTP/SSE 工作台连接尚未实现，普通浏览器缺桥�
 
 ## 证据与后续
 
+后续诊断更新：原生焦点失败已定位为 alert/confirm 的 CDP 回应与 Electron 原生模态框生命周期冲突，详见[独立问题记录](ELECTRON-DIALOG-LIFECYCLE-20260930.md)。本报告保留当时的验收边界；新诊断不将未执行场景改为通过。
+
 完整产物留在本任务仓库同级临时目录，未提交、跨环境不保证仍可访问：
 
 - 最终：`b11-regression-20260930-104350`，含 `source-before.json`、`build-identity.json`、`final-integrity.json`、`desktop-result.json`、`persistence-readback.json`、定向／重复／基线结果与分 target 图

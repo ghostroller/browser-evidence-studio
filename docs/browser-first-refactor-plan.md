@@ -14,7 +14,8 @@
 
 - B0：工具链可观察性已证明；完整产品／视觉基线未全部验收
 - B1.1：90 方法契约、唯一 bridge adapter、React 注入、native capability 和缺桥诊断落地；typecheck/build、19 文件110项定向测试、blur-copy正反3轮及真实 Electron 工作区封存回放通过。workspace-browser 候选两次与旧基线一次同点 focus 断言失败，根因未定、后半段未测，不宣布全部桌面验收通过
-- B1.2／B1.3：尚未实现；下一步先定义受保护的工作台 HTTP/SSE 身份与传输契约，现有 Agent 权限不放宽
+- B1.2：开始独立的传输核心与纯内存 fixture 验证，尚未接入应用；B1.3 尚未实现。现有 Agent 权限不放宽
+- 原生 focus 后续定位：已证实 Electron alert/confirm 的 CDP 回应未释放原生模态框，见[对话框生命周期问题](refactor-handoffs/ELECTRON-DIALOG-LIFECYCLE-20260930.md)。修复策略涉及回应所有权与自动化能力，待用户选择；不阻塞独立传输核心实施
 - B2–B4：仍为后续计划；旧 profile、字段语义和数据格式未迁移
 
 依赖主线：
