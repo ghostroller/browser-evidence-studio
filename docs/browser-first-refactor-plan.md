@@ -13,8 +13,9 @@
 ### 当前阶段状态（2026-09-30）
 
 - B0：工具链可观察性已证明；完整产品／视觉基线未全部验收
-- B1.1：90 方法契约、唯一 bridge adapter、React 注入、native capability 和缺桥诊断落地；typecheck/build、19 文件110项定向测试、blur-copy正反3轮及真实 Electron 工作区封存回放通过。workspace-browser 候选两次与旧基线一次同点 focus 断言失败，根因未定、后半段未测，不宣布全部桌面验收通过
-- B1.2：开始独立的传输核心与纯内存 fixture 验证，尚未接入应用；B1.3 尚未实现。现有 Agent 权限不放宽
+- B1.1：90 方法契约、唯一 bridge adapter、React 注入、native capability 和缺桥诊断落地；typecheck/build、19 文件110项定向测试、blur-copy正反3轮及真实 Electron 工作区封存回放通过。workspace-browser 候选两次与旧基线一次同点 focus 断言失败、后半段未测；后续诊断见下条，不宣布全部桌面验收通过
+- B1.2a：隔离 session／dispatch／HTTP／SSE 核心及纯内存 fixture 完成，最终 typecheck、7 文件56项整合测试及独立37项／反例复验通过，见[交接](refactor-handoffs/BROWSER-FIRST-B12A-20260930.md)。没有接入 app／renderer／Vite、没有 build／GUI 或真实资源访问
+- B1.2b：下一步才接受保护的合成 companion、真实 UI 配对、同源代理和 HTTP client；B1.3 尚未实现。现有 Agent 权限不放宽，领域版本／持久幂等仍由实际业务 port 负责
 - 原生 focus 后续定位：已证实 Electron alert/confirm 的 CDP 回应未释放原生模态框，见[对话框生命周期问题](refactor-handoffs/ELECTRON-DIALOG-LIFECYCLE-20260930.md)。修复策略涉及回应所有权与自动化能力，待用户选择；不阻塞独立传输核心实施
 - B2–B4：仍为后续计划；旧 profile、字段语义和数据格式未迁移
 
@@ -106,6 +107,8 @@ B2 隔离设计可在 B1 期间准备；B4 的 Electron 冒烟从 B1 开始持�
 此切片可独立提交并回退到原 adapter，不涉及用户数据迁移。它完成后应立即展示真实 Electron 证据，再进入浏览器传输实现。
 
 ### B1.2 受保护的本地工作台传输
+
+**子切片状态**：B1.2a 独立核心已完成并验证，详见[实际交接](refactor-handoffs/BROWSER-FIRST-B12A-20260930.md)；它只开放项目元数据的合成 port，不等于下面的真实接入已实现。B1.2b 负责受保护合成 companion、真实 UI 一次配对、同源代理、HTTP client 与事件重连；接入后另验真实服务／UI 生命周期，不能沿用 fixture 的通过。
 
 **依赖**：B1.1 契约、B0 可重复启动。可暂时保留 Electron companion 承载 Studio；不声称纯 Node 已成立。
 

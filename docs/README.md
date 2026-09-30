@@ -7,7 +7,8 @@
 - [共享设计页面正文](sources/browser-first-shared-design-body.md)与[来源说明](sources/browser-first-shared-design-source-notes.md)：导入可见设计原文；页面声明的三个原附件尚未取得，正文转载不能替代原件。
 - [dot 环境工具链验证补充](dot-environment-toolchain-validation.md)：当前 Electron 集成路径、临时 HTTP/SSE 拆分探针、真实公开 SPA、版本身份、安全边界和可复用测试入口。工具链可行不等于浏览器版已实现或产品验收通过。
 - [浏览器优先重构计划](browser-first-refactor-plan.md)：当前阶段与下一步的规划入口，细化 B0–B4 的依赖、交付、验收与迁移边界；首个实施切片为类型化 WorkbenchClient 与保持行为的 Electron adapter。
-- [B1.1 实现与实际验收](refactor-handoffs/BROWSER-FIRST-B11-20260930.md)：类型化 client／Electron adapter 的源码、构建与通过范围；同时保留原生 focus 失败及未测部分，B1.2 尚未实现。
+- [B1.1 实现与实际验收](refactor-handoffs/BROWSER-FIRST-B11-20260930.md)：类型化 client／Electron adapter 的源码、构建与通过范围；同时保留原生 focus 失败及未测部分。
+- [B1.2a 传输核心与验证](refactor-handoffs/BROWSER-FIRST-B12A-20260930.md)：隔离 session／dispatch／HTTP／SSE 的纯内存测试及安全反例复验；尚未接入真实应用，B1.2b 才实现保护合成 companion 与 UI 配对。
 
 本轮先让共享工作台具备低成本的真实 UI 反馈，再按阶段证据扩展受保护的浏览器连接、共享回放与独立 Node/Chromium provider。保留现有 Electron 路径，不因架构重构擅自更改下列产品语义或旧 profile 数据。
 
