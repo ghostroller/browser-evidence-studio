@@ -33,7 +33,9 @@
     "example:jd-account": "node examples/jd-account-export/standalone.mjs",
     "package": "electron-forge package",
     "make": "electron-forge make",
-    "demo:product": "node --import tsx scripts/product-demo.ts"
+    "demo:product": "node --import tsx scripts/product-demo.ts",
+    "build:node": "vite build --config vite.node.config.ts",
+    "start:node": "node .vite/node/node-studio.js"
   },
   "dependencies": {
     "ajv": "8.20.0",

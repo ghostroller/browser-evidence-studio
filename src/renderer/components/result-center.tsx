@@ -227,7 +227,7 @@ function ResultCenterView({ projectId, executionId, onOpenSource, client, native
   if (loadedScope !== scope) return <div className="result-center" role="status">{readable ? '正在读取执行身份与已保存结果…' : '连接恢复前已暂停结果读取，请先恢复授权连接。'}</div>;
   return <div className="result-center">
     <div className="detail-title"><h3>执行结果中心</h3><code>{executionId}</code></div>
-    {!nativeCall && <p className="hint">只读查看已保存执行、批次与报告；此页不启动执行、不生成验收报告或保存人工判定。来源引用保留，实际 DOM 回放与节点查验仍需 Electron 工作台。</p>}
+    {!nativeCall && <p className="hint">只读查看已保存执行、批次与报告；此页不启动执行、不生成验收报告或保存人工判定。来源引用保留；已授权项目回放的连接可在资料工作区查看离线 DOM 并查验节点。</p>}
     {error && <p className="error-inline" role="alert">{error}</p>}{notice && <p className="notice" role="status">{notice}</p>}
     {!execution ? <div><p>执行身份或结果读取失败，未将它当作空执行。</p><Button disabled={!readable || !client.canRead()} onClick={() => setRetry(value => value + 1)}>重新读取执行结果</Button></div> : <>
       <div className="result-summary"><div><span>执行</span><StatusBadge value={execution.status} /></div><div><span>资料版本</span><code>{execution.binding?.materialRevisionId || '未绑定'}</code></div>
