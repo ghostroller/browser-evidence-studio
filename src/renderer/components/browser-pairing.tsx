@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { BrowserWorkbenchPairingBridge, BrowserWorkbenchPairingStatus, BrowserWorkbenchTicket } from '@/contracts/browser-workbench';
+import type { BrowserWorkbenchPairingBridge, BrowserWorkbenchPairingStatus, BrowserWorkbenchTicket, BrowserWorkbenchGrant } from '@/contracts/browser-workbench';
 import { Button } from './ui/button';
+import { Label } from './ui/label';
+import { NativeSelect } from './ui/native-select';
 
 export function BrowserPairingButton({ bridge, disabled, onOpen }: { bridge?: BrowserWorkbenchPairingBridge; disabled: boolean; onOpen(): void }) {
   const [status, setStatus] = useState<BrowserWorkbenchPairingStatus | null>(null);
@@ -23,6 +25,7 @@ export function BrowserPairingPanel({ bridge, projectId, projectName, onError }:
   const [ticket, setTicket] = useState<BrowserWorkbenchTicket | null>(null);
   const [status, setStatus] = useState<BrowserWorkbenchPairingStatus | null>(null);
   const [busy, setBusy] = useState(false), [error, setError] = useState('');
+  const [grant, setGrant] = useState<BrowserWorkbenchGrant>('project-metadata');
   const [expired, setExpired] = useState(false);
   const generation = useRef(0), pending = useRef(false);
   const report = useRef(onError); report.current = onError;
@@ -43,7 +46,7 @@ export function BrowserPairingPanel({ bridge, projectId, projectName, onError }:
     try {
       await bridge.revoke();
       if (generation.current !== current) return;
-      const issued = await bridge.begin(projectId);
+      const issued = await bridge.begin(projectId, grant);
       if (generation.current !== current) { await bridge.revoke(); return; }
       if (issued.expiresAt <= Date.now() || issued.instanceId !== status.instanceId) throw new Error('Invalid pairing ticket');
       setTicket(issued);
@@ -54,7 +57,8 @@ export function BrowserPairingPanel({ bridge, projectId, projectName, onError }:
   };
   return <section className="overlay-body form-stack pairing-panel" aria-label="合成浏览器配对">
     <h3>配对项目：{projectName || projectId}</h3>
-    <p>仅允许读取和修改这个合成项目的名称、目录简介。不会开放登录环境、录制、资料或 Agent 权限。</p>
+    <Label>配对权限范围<NativeSelect aria-label="配对权限范围" disabled={busy} value={grant} onChange={event => { setGrant(event.target.value as BrowserWorkbenchGrant); setTicket(null); void bridge.revoke().catch(() => report.current('配对撤销未能确认，请关闭合成实例以结束所有会话。')); }}><option value="project-metadata">本项目名称与目录简介</option><option value="project-materials">本项目资料编辑与发布</option></NativeSelect></Label>
+    {grant === 'project-metadata' ? <p>仅允许读取和修改这个合成项目的名称、目录简介。不会开放登录环境、录制、资料或 Agent 权限。</p> : <p>允许编辑本项目资料、复制工作副本和发布固定版本，并读取同项目已封存来源。进入资料工作区会初始化工作副本；读取资料目录时可能修补目录。此权限包含名称和目录简介，不开放登录环境、录制采集、封存、回放或 Agent 权限。</p>}
     <p>票据只能使用一次，60 秒内有效。浏览器会话最多 5 分钟；请保持本面板打开。关闭、收起面板或退出、重载、最小化原生窗口会撤销票据和会话。</p>
     {status?.origin && <p>请手动在浏览器打开：<code className="pairing-address">{status.origin}/browser.html</code></p>}
     {status && !status.enabled && <p role="alert">此实例未启用合成浏览器配对。</p>}

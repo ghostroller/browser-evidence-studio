@@ -1,4 +1,6 @@
-import type { BrowserProjectMetadata, BrowserUpdateProject, BrowserWorkbenchErrorCode, BrowserWorkbenchSession, BrowserWorkbenchState } from '@/contracts/browser-workbench';
+import { BROWSER_MATERIAL_METHODS, BROWSER_MATERIAL_WRITE_METHODS, type BrowserMaterialMethod, type BrowserMaterialInput, type BrowserMaterialResult } from '@/contracts/browser-materials';
+import { memoryEditorStorage, type MaterialWorkbenchClient, type MaterialEditorCall } from './material-workbench-client';
+import type { BrowserProjectMetadata, BrowserUpdateProject, BrowserWorkbenchErrorCode, BrowserWorkbenchSession, BrowserWorkbenchState, BrowserWorkbenchGrant } from '@/contracts/browser-workbench';
 
 export type BrowserConnectionStatus = 'disconnected' | 'exchanging' | 'connecting' | 'connected' | 'stale' | 'expired' | 'error';
 export interface BrowserWorkbenchSnapshot {
@@ -7,6 +9,9 @@ export interface BrowserWorkbenchSnapshot {
   error: string;
   projectId?: string;
   expiresAt?: number;
+  grant?: BrowserWorkbenchGrant;
+  refreshToken?: number;
+  sessionEpoch?: number;
 }
 const messages: Record<BrowserWorkbenchErrorCode | 'network' | 'protocol', string> = {
   unauthorized: '配对已失效或会话已撤销，请重新配对。', forbidden: '此连接没有当前实例或项目的权限，请重新配对。',
@@ -17,7 +22,7 @@ const messages: Record<BrowserWorkbenchErrorCode | 'network' | 'protocol', strin
   network: '连接中断，显示的资料可能已过时；恢复读取前不能保存。', protocol: '工作台返回的数据无法验证，未将它当作空项目。',
 };
 export class BrowserWorkbenchClientError extends Error {
-  constructor(readonly code: keyof typeof messages) { super(messages[code]); this.name = 'BrowserWorkbenchClientError'; }
+  constructor(readonly code: keyof typeof messages, readonly resultUncertain = false) { super(messages[code]); this.name = 'BrowserWorkbenchClientError'; }
 }
 const failure = (code: keyof typeof messages) => new BrowserWorkbenchClientError(code);
 const object = (value: unknown): Record<string, unknown> => {
@@ -36,6 +41,17 @@ function project(value: unknown, projectId: string): BrowserProjectMetadata {
  * Electron WorkbenchClient. Credentials are private memory, never a URL or store. */
 export class BrowserWorkbenchClient {
   readonly nativePresentation = null;
+  #editorStorage = memoryEditorStorage();
+  readonly materials: MaterialWorkbenchClient = {
+    host: 'browser', storage: {
+      getItem: key => this.#session ? this.#editorStorage.getItem(key) : null,
+      setItem: (key, value) => { if (this.#session) this.#editorStorage.setItem(key, value); },
+      removeItem: key => this.#editorStorage.removeItem(key),
+    },
+    call: ((method, input) => this.materialCall(method, input)) as MaterialEditorCall,
+    canEdit: () => this.#session?.grant === 'project-materials' && this.#snapshot.status === 'connected',
+    waitAfterWrite: acknowledgement => this.waitAfterMaterialWrite(acknowledgement),
+  };
   readonly instanceId: string;
   readonly #fetch: typeof fetch;
   readonly #retryDelays: readonly number[];
@@ -45,6 +61,8 @@ export class BrowserWorkbenchClient {
   #controllers = new Set<AbortController>();
   #generation = 0;
   #readSequence = 0;
+  #reads = new Set<number>();
+  #writeAcks = new WeakMap<object, { generation: number; projectId: string }>();
   #expiry?: ReturnType<typeof setTimeout>;
   #reconnect?: ReturnType<typeof setTimeout>;
   #streamController?: AbortController;
@@ -65,6 +83,7 @@ export class BrowserWorkbenchClient {
   }
   #clear(status: BrowserConnectionStatus, error = ''): void {
     ++this.#generation; ++this.#readSequence;
+    this.#editorStorage.clear();this.#writeAcks=new WeakMap();this.#reads.clear();
     this.#session = null; this.#streamActive = false; this.#mutation = false; this.#attempt = 0;
     clearTimeout(this.#expiry); clearTimeout(this.#reconnect);
     this.#expiry = undefined; this.#reconnect = undefined;
@@ -113,8 +132,10 @@ export class BrowserWorkbenchClient {
       const data = object(await this.#json('session', { instanceId: this.instanceId, ticket }));
       if (generation !== this.#generation) return;
       if (data.instanceId !== this.instanceId || !identifier(data.projectId) || typeof data.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(data.token) || !Number.isSafeInteger(data.expiresAt) || (data.expiresAt as number) <= Date.now() || (data.expiresAt as number) > Date.now() + 15 * 60_000) throw failure('protocol');
-      this.#session = { token: data.token, expiresAt: data.expiresAt as number, instanceId: this.instanceId, projectId: data.projectId };
-      this.#emit({ status: 'connecting', projectId: data.projectId, expiresAt: data.expiresAt as number });
+      const grant = data.grant === undefined ? 'project-metadata' : data.grant;
+      if (grant !== 'project-metadata' && grant !== 'project-materials') throw failure('protocol');
+      this.#session = { grant, token: data.token, expiresAt: data.expiresAt as number, instanceId: this.instanceId, projectId: data.projectId };
+      this.#emit({ grant, sessionEpoch: generation, status: 'connecting', projectId: data.projectId, expiresAt: data.expiresAt as number });
       this.#expiry = setTimeout(() => this.#clear('expired', messages.unauthorized), Math.max(0, this.#session.expiresAt - Date.now()));
       await this.#openStream(generation);
     } catch (error) { throw this.#handle(error, generation); }
@@ -132,14 +153,16 @@ export class BrowserWorkbenchClient {
   async #read(generation: number): Promise<void> {
     const session = this.#session; if (!session || !this.#active(generation)) return;
     const sequence = ++this.#readSequence;
+    this.#reads.add(sequence);
     try {
       const data = object(await this.#json('rpc', { instanceId: this.instanceId, method: 'state', body: { projectId: session.projectId } }));
       if (!this.#active(generation) || sequence !== this.#readSequence) return;
       const next = project(data.project, session.projectId);
       const current = this.#snapshot.state?.project;
       if (current && next.revision < current.revision) throw failure('protocol');
-      this.#emit({ state: Object.freeze({ project: next }), status: this.#streamActive ? 'connected' : 'stale', error: '' });
+      this.#emit({ state: Object.freeze({ project: next }), status: this.#streamActive ? 'connected' : 'stale', error: '', refreshToken: (this.#snapshot.refreshToken ?? 0) + 1 });
     } catch (error) { if (sequence === this.#readSequence) throw this.#handle(error, generation); }
+    finally { this.#reads.delete(sequence); }
   }
   updateProject = async (input: BrowserUpdateProject): Promise<BrowserProjectMetadata> => {
     const generation = this.#generation, session = this.#session;
@@ -164,6 +187,66 @@ export class BrowserWorkbenchClient {
       if (this.#active(generation)) void this.#read(generation).catch(() => {});
       throw safe;
     } finally { if (generation === this.#generation) this.#mutation = false; }
+  };
+  /** A distinct narrow RPC surface, never a pretend full WorkbenchClient. */
+  materialCall = async <M extends BrowserMaterialMethod>(method: M, input: BrowserMaterialInput<M>): Promise<BrowserMaterialResult<M>> => {
+    const generation = this.#generation, session = this.#session;
+    if (!session) throw failure('unauthorized');
+    if (session.grant !== 'project-materials' || input.projectId !== session.projectId || !BROWSER_MATERIAL_METHODS.includes(method)) throw failure('forbidden');
+    const writes = BROWSER_MATERIAL_WRITE_METHODS.includes(method);
+    // These reads need a write grant for ensure/repair, but a transport failure
+    // is not a reason to recursively refresh the same directory.
+    const userMutation = writes && !['workingMaterialDraft', 'materialCatalog', 'materialDrafts', 'materialRevisions'].includes(method);
+    if (this.#snapshot.status !== 'connected' && (writes || this.#snapshot.status !== 'stale')) throw failure('unavailable');
+    try {
+      // The editor owns operation IDs and original parameters. Never replay an edit.
+      const value = await this.#json('rpc', { instanceId: this.instanceId, method, body: input });
+      if (!this.#active(generation)) throw failure('cancelled');
+      const result=object(value); // Empty/malformed transport payloads must not become empty materials.
+      if(writes)this.#writeAcks.set(result,{generation,projectId:session.projectId});
+      return value as BrowserMaterialResult<M>;
+    } catch (error) {
+      const safe = error instanceof BrowserWorkbenchClientError ? error : failure('network');
+      if (this.#active(generation)) {
+        if (safe.code === 'unauthorized' || safe.code === 'forbidden') this.#handle(safe, generation);
+        else if (safe.code === 'network' || safe.code === 'protocol') {
+          this.#emit({ status: 'stale', error: safe.message });
+          // A failed material read must not create a metadata-refresh -> material
+          // read loop. Manual refresh or stream reconnection resumes reads.
+          if (userMutation) void this.#read(generation).catch(() => {});
+        }
+        // Explicit domain failures leave the authenticated connection alone.
+        // The editor displays them, and retry is always a user action.
+      }
+      throw userMutation && ['network', 'protocol', 'cancelled', 'unavailable', 'internal_error'].includes(safe.code) ? new BrowserWorkbenchClientError(safe.code, true) : safe;
+    }
+  };
+  /** Bridge only an acknowledged write to its existing continuation. New user
+   * writes still fail closed while stale, and no business request is replayed. */
+  waitAfterMaterialWrite = async (acknowledgement: object): Promise<void> => {
+    const scope=this.#writeAcks.get(acknowledgement);
+    if(!scope||!this.#active(scope.generation)||this.#session?.projectId!==scope.projectId)throw failure('cancelled');
+    if(!this.#streamActive)throw failure('unavailable');
+    if(this.#snapshot.status==='connected')return;
+    if(this.#snapshot.status!=='stale')throw failure('unavailable');
+    await new Promise<void>((resolve,reject)=>{
+      let settled=false;
+      const finish=(error?:BrowserWorkbenchClientError)=>{
+        if(settled)return;settled=true;clearTimeout(timeout);unsubscribe();
+        if(error)reject(error);else resolve();
+      };
+      const check=()=>{
+        if(!this.#active(scope.generation)||this.#session?.projectId!==scope.projectId){finish(failure('cancelled'));return;}
+        if(!this.#streamActive){finish(failure('unavailable'));return;}
+        if(this.#snapshot.status==='connected')finish();
+      };
+      const unsubscribe=this.subscribe(check);
+      const timeout=setTimeout(()=>finish(failure('unavailable')),5000);
+      check();
+      // Prefer the already-running invalidation read. If there is none, perform
+      // one read-only preflight; no polling, event reconnect or mutation retries.
+      if(!settled&&!this.#reads.size)void this.#read(scope.generation).catch(error=>finish(error instanceof BrowserWorkbenchClientError?error:failure('network')));
+    });
   };
   async #openStream(generation: number): Promise<void> {
     const session = this.#session; if (!session || !this.#active(generation) || this.#streamController) return;

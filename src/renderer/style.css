@@ -570,3 +570,19 @@
 .pairing-ticket dt { margin-top: 12px; }
 .pairing-ticket code, .pairing-address { user-select: text; }
 @media (max-width: 760px) { .browser-workbench-content { grid-template-columns: 1fr; padding: 12px; gap: 12px; } .browser-workbench-shell .topbar { flex-wrap: wrap; height: auto; min-height: 48px; } }
+
+/* Shared material editor; browser source selection never pretends to replay. */
+.material-workbench, .material-edit-surface, .browser-material-controls { min-width: 0; margin: 0; border: 0; }
+.material-edit-surface, .browser-material-controls { padding: 0; }
+.browser-materials { grid-column: 1 / -1; min-width: 0; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+.browser-materials .material-workbench { height: auto; overflow: visible; font-size: 14px; }
+.browser-materials .material-workbench h3 { font-size: 16px; }
+.browser-materials .material-workbench h4 { font-size: 14px; }
+.browser-source-picker { margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); }
+.browser-source-picker summary { cursor: pointer; font-weight: 600; }
+.browser-source-grid { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 12px 0; }
+.browser-source-grid label { display: grid; gap: 6px; min-width: 0; }
+.browser-source-grid [data-slot="native-select-wrapper"] { width: 100%; min-width: 0; }
+.browser-source-grid select { text-overflow: ellipsis; }
+.browser-materials fieldset:disabled { opacity: .72; }
+@media (max-width: 1000px) { .browser-source-grid { grid-template-columns: 1fr; } }

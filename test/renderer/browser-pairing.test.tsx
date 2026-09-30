@@ -22,7 +22,7 @@ test('pairing is hidden outside enabled synthetic mode and opening does not issu
   const off = fixture(false); await act(async () => {}); expect(screen.queryByRole('button', { name: '浏览器配对' })).toBeNull(); expect(off.bridge.begin).not.toHaveBeenCalled(); off.view.unmount();
   const f = fixture(); await f.open(); expect(f.bridge.begin).not.toHaveBeenCalled(); expect(screen.queryByLabelText('一次性票据')).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: '生成一次性配对票据' })); expect(await screen.findByLabelText('一次性票据')).toBeTruthy();
-  expect(f.bridge.begin).toHaveBeenCalledWith('project'); expect(f.bridge.revoke).toHaveBeenCalledTimes(1);
+  expect(f.bridge.begin).toHaveBeenCalledWith('project', 'project-metadata'); expect(f.bridge.revoke).toHaveBeenCalledTimes(1);
   fireEvent.click(screen.getByRole('button', { name: '关闭配对' })); await waitFor(() => expect(f.bridge.revoke).toHaveBeenCalledTimes(2)); expect(screen.queryByLabelText('一次性票据')).toBeNull();
 });
 test('a displayed ticket clears at expiry without extending or revoking a paired session', async () => {
@@ -48,4 +48,17 @@ test('closing while begin is pending revokes both on close and after late issuan
 test('unmount revokes even without generating and reports a revoke failure', async () => {
   const f = fixture(); await f.open(); vi.mocked(f.bridge.revoke).mockRejectedValueOnce(new Error('gone'));
   f.view.unmount(); await waitFor(() => expect(f.onError).toHaveBeenCalledWith(expect.stringContaining('配对撤销未能确认'))); expect(f.bridge.begin).not.toHaveBeenCalled();
+});
+
+test('materials permission is an explicit selection with ensure and catalog write disclosure', async () => {
+  const f = fixture(); await f.open();
+  expect((screen.getByLabelText('配对权限范围') as HTMLSelectElement).value).toBe('project-metadata');
+  fireEvent.change(screen.getByLabelText('配对权限范围'), { target: { value: 'project-materials' } });
+  expect(screen.getByText(/进入资料工作区会初始化工作副本/)).toBeTruthy();
+  expect(f.bridge.begin).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: '生成一次性配对票据' })); await screen.findByLabelText('一次性票据');
+  expect(f.bridge.begin).toHaveBeenCalledWith('project', 'project-materials');
+  fireEvent.change(screen.getByLabelText('配对权限范围'), { target: { value: 'project-metadata' } });
+  expect(screen.queryByLabelText('一次性票据')).toBeNull();
+  expect(f.bridge.revoke).toHaveBeenCalledTimes(3);
 });
