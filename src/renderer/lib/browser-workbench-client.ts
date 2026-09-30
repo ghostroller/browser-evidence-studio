@@ -1,3 +1,4 @@
+import { WEB_REPLAY_BUDGET, type WebReplayClient, type WebReplayMethod, type WebReplayInput, type WebReplayResult } from '@/contracts/web-replay';
 import { BROWSER_MATERIAL_METHODS, BROWSER_MATERIAL_WRITE_METHODS, type BrowserMaterialMethod, type BrowserMaterialInput, type BrowserMaterialResult } from '@/contracts/browser-materials';
 import { memoryEditorStorage, type MaterialWorkbenchClient, type MaterialEditorCall } from './material-workbench-client';
 import { BROWSER_RESULT_METHODS, BROWSER_RESULT_BUDGET, type BrowserResultMethod, type BrowserResultInput, type BrowserResultResult } from '@/contracts/browser-results';
@@ -51,12 +52,12 @@ export class BrowserWorkbenchClient {
       removeItem: key => this.#editorStorage.removeItem(key),
     },
     call: ((method, input) => this.materialCall(method, input)) as MaterialEditorCall,
-    canEdit: () => (this.#session?.grant === 'project-materials' || this.#session?.grant === 'project-workbench') && this.#snapshot.status === 'connected',
+    canEdit: () => (this.#session?.grant === 'project-materials' || (this.#session?.grant === 'project-workbench' || this.#session?.grant === 'project-replay')) && this.#snapshot.status === 'connected',
     waitAfterWrite: acknowledgement => this.waitAfterMaterialWrite(acknowledgement),
   };
   readonly results: ResultWorkbenchClient = {
     host: 'browser', call: ((method, input) => this.resultCall(method, input)) as ResultReadCall,
-    canRead: () => this.#session?.grant === 'project-workbench' && this.#snapshot.status === 'connected',
+    canRead: () => (this.#session?.grant === 'project-workbench' || this.#session?.grant === 'project-replay') && this.#snapshot.status === 'connected',
   };
   readonly instanceId: string;
   readonly #fetch: typeof fetch;
@@ -122,13 +123,22 @@ export class BrowserWorkbenchClient {
     }
     return response;
   }
-  async #json(path: 'session' | 'rpc', body: unknown): Promise<unknown> {
+  async #json(path: 'session' | 'rpc', body: unknown, maximum?: number, signal?: AbortSignal): Promise<unknown> {
     const controller = new AbortController(); this.#controllers.add(controller);
+    const abort = () => controller.abort(); signal?.addEventListener('abort', abort, { once: true }); if (signal?.aborted) abort();
     try {
       const response = await this.#request(path, body, controller);
       if (!response.headers.get('content-type')?.includes('application/json')) throw failure('protocol');
-      try { return await response.json(); } catch { throw failure('protocol'); }
-    } finally { this.#controllers.delete(controller); }
+      try {
+        if (maximum === undefined) return await response.json();
+        if (!response.body || Number(response.headers.get('content-length') ?? 0) > maximum) throw failure('protocol');
+        const reader = response.body.getReader(), chunks: Uint8Array[] = []; let bytes = 0;
+        try { while (true) { const chunk = await reader.read(); if (chunk.done) break; bytes += chunk.value.byteLength; if (bytes > maximum) throw failure('protocol'); chunks.push(chunk.value); } }
+        finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+        const output = new Uint8Array(bytes); let offset = 0; for (const chunk of chunks) { output.set(chunk, offset); offset += chunk.byteLength; }
+        return JSON.parse(new TextDecoder().decode(output));
+      } catch { throw failure('protocol'); }
+    } finally { this.#controllers.delete(controller); signal?.removeEventListener('abort', abort); }
   }
   async connect(ticket: string): Promise<void> {
     this.#clear('exchanging');
@@ -139,7 +149,7 @@ export class BrowserWorkbenchClient {
       if (generation !== this.#generation) return;
       if (data.instanceId !== this.instanceId || !identifier(data.projectId) || typeof data.token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(data.token) || !Number.isSafeInteger(data.expiresAt) || (data.expiresAt as number) <= Date.now() || (data.expiresAt as number) > Date.now() + 15 * 60_000) throw failure('protocol');
       const grant = data.grant === undefined ? 'project-metadata' : data.grant;
-      if (grant !== 'project-metadata' && grant !== 'project-materials' && grant !== 'project-workbench') throw failure('protocol');
+      if (grant !== 'project-metadata' && grant !== 'project-materials' && grant !== 'project-workbench' && grant !== 'project-replay') throw failure('protocol');
       this.#session = { grant, token: data.token, expiresAt: data.expiresAt as number, instanceId: this.instanceId, projectId: data.projectId };
       this.#emit({ grant, sessionEpoch: generation, status: 'connecting', projectId: data.projectId, expiresAt: data.expiresAt as number });
       this.#expiry = setTimeout(() => this.#clear('expired', messages.unauthorized), Math.max(0, this.#session.expiresAt - Date.now()));
@@ -198,7 +208,7 @@ export class BrowserWorkbenchClient {
   materialCall = async <M extends BrowserMaterialMethod>(method: M, input: BrowserMaterialInput<M>): Promise<BrowserMaterialResult<M>> => {
     const generation = this.#generation, session = this.#session;
     if (!session) throw failure('unauthorized');
-    if ((session.grant !== 'project-materials' && session.grant !== 'project-workbench') || input.projectId !== session.projectId || !BROWSER_MATERIAL_METHODS.includes(method)) throw failure('forbidden');
+    if ((session.grant !== 'project-materials' && session.grant !== 'project-workbench' && session.grant !== 'project-replay') || input.projectId !== session.projectId || !BROWSER_MATERIAL_METHODS.includes(method)) throw failure('forbidden');
     const writes = BROWSER_MATERIAL_WRITE_METHODS.includes(method);
     // These reads need a write grant for ensure/repair, but a transport failure
     // is not a reason to recursively refresh the same directory.
@@ -232,7 +242,7 @@ export class BrowserWorkbenchClient {
   resultCall = async <M extends BrowserResultMethod>(method: M, input: BrowserResultInput<M>): Promise<BrowserResultResult<M>> => {
     const generation = this.#generation, session = this.#session;
     if (!session) throw failure('unauthorized');
-    if (session.grant !== 'project-workbench' || input.projectId !== session.projectId || !BROWSER_RESULT_METHODS.includes(method)) throw failure('forbidden');
+    if (session.grant !== 'project-workbench' && session.grant !== 'project-replay' || input.projectId !== session.projectId || !BROWSER_RESULT_METHODS.includes(method)) throw failure('forbidden');
     if (!this.results.canRead()) throw failure('unavailable');
     try {
       const value = object(await this.#json('rpc', { instanceId: this.instanceId, method, body: input }));
@@ -253,6 +263,16 @@ export class BrowserWorkbenchClient {
       }
       throw safe;
     }
+  };
+  readonly replay: WebReplayClient = { call: (method, input, signal) => this.replayCall(method, input, signal) };
+  replayCall = async <M extends WebReplayMethod>(method: M, input: WebReplayInput<M>, signal?: AbortSignal): Promise<WebReplayResult<M>> => {
+    const generation = this.#generation, session = this.#session;
+    if (!session || session.grant !== 'project-replay' || session.projectId !== input.projectId) throw failure('forbidden');
+    if (this.#snapshot.status !== 'connected') throw failure('unavailable');
+    const result = object(await this.#json('rpc', { instanceId: this.instanceId, method, body: input }, WEB_REPLAY_BUDGET.responseBytes, signal));
+    if (!this.#active(generation)) throw failure('cancelled');
+    if (result.projectId !== input.projectId || result.replayId !== input.replayId || result.generation !== input.generation || JSON.stringify(result.position) !== JSON.stringify(input.position) || new TextEncoder().encode(JSON.stringify(result)).byteLength > WEB_REPLAY_BUDGET.responseBytes) throw failure('protocol');
+    return result as unknown as WebReplayResult<M>;
   };
   /** Bridge only an acknowledged write to its existing continuation. New user
    * writes still fail closed while stale, and no business request is replayed. */

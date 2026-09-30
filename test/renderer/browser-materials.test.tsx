@@ -93,7 +93,7 @@ test('shared browser editor uses real selected source, edits fields and plain no
   await screen.findByRole('button',{name:'编辑保存点'});
   await clickButton('添加注释');
   fireEvent.change(await screen.findByLabelText('注释'),{target:{value:'Plain browser note'}});
-  expect((screen.getByRole('button',{name:'选择历史元素（可选） · 需 Electron'}) as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole('button',{name:'选择历史元素（可选） · 需回放授权'}) as HTMLButtonElement).disabled).toBe(true);
   await clickButton('保存注释');
   await screen.findByRole('button',{name:'编辑保存点'});
   saved=await f.get();expect(saved.content.fields[0].name).toBe('Amount');expect(saved.content.annotations[0]).toMatchObject({text:'Plain browser note',bindingStatus:'none'});expect(saved.content.annotations[0].target).toBeUndefined();

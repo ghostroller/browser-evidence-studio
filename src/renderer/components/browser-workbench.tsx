@@ -1,3 +1,5 @@
+import { SharedWebReplay } from './shared-web-replay';
+import type { SelectionRequest, SelectionReceipt } from '../selection-session';
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Moon, Sun } from 'lucide-react';
 import type { BrowserProjectMetadata, BrowserUpdateProject } from '@/contracts/browser-workbench';
@@ -20,7 +22,7 @@ export function BrowserWorkbench({ client }: { client: BrowserWorkbenchClient })
   const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot, client.getSnapshot);
   const { preferences, setTheme } = usePreferences();
   const [ticket, setTicket] = useState('');
-  const materialGrant = snapshot.grant === 'project-materials' || snapshot.grant === 'project-workbench';
+  const materialGrant = snapshot.grant === 'project-materials' || (snapshot.grant === 'project-workbench' || snapshot.grant === 'project-replay');
   const connecting = snapshot.status === 'exchanging' || snapshot.status === 'connecting';
   const attempt = useRef(false);
   useEffect(() => () => client.disconnect(), [client]);
@@ -53,10 +55,10 @@ export function BrowserWorkbench({ client }: { client: BrowserWorkbenchClient })
         <BrowserProjectEditor key={`${snapshot.state.project.id}/${snapshot.sessionEpoch}`} client={client} project={snapshot.state.project} writable={snapshot.status === 'connected'} />
       </section>}
       {snapshot.state && materialGrant && <BrowserMaterials key={`materials/${snapshot.state.project.id}/${snapshot.sessionEpoch}`} client={client} projectId={snapshot.state.project.id} writable={snapshot.status === 'connected'} refreshToken={snapshot.refreshToken}/>}
-      {snapshot.state && snapshot.grant === 'project-workbench' && <BrowserResults key={`results/${snapshot.state.project.id}/${snapshot.sessionEpoch}`} client={client} projectId={snapshot.state.project.id} readable={snapshot.status === 'connected'}/>}
-      <section className="browser-capabilities" aria-label="浏览器能力边界"><h3>此连接的能力范围</h3>{materialGrant ? <p>本次授权本项目资料编辑与发布。进入资料工作区会初始化工作副本；目录读取可能修补目录。未提交输入和操作身份仅保留于本次内存会话。</p> : <p>本次只提供已配对项目的名称、目录简介和版本。仅明确点击保存时修改元数据。</p>}<ul><li>登录环境、原生浏览器呈现和录制：请使用 Electron 工作台</li>{materialGrant ? <li>可编辑已封存来源的保存点、字段和纯文字注释，可复制工作副本、固定版本；历史回放和元素选择需要 Electron 工作台</li> : <li>任务资料、保存点、回放、复制和固定版本：此元数据连接尚未开放浏览器能力</li>}{snapshot.grant === 'project-workbench' && <li>结果只读：可查看实际执行、已提交记录和已保存报告；不能启动执行、生成验收报告或保存人工判定</li>}<li>Agent 授权和执行：此连接不具备权限</li></ul></section>
+      {snapshot.state && (snapshot.grant === 'project-workbench' || snapshot.grant === 'project-replay') && <BrowserResults key={`results/${snapshot.state.project.id}/${snapshot.sessionEpoch}`} client={client} projectId={snapshot.state.project.id} readable={snapshot.status === 'connected'}/>}
+      <section className="browser-capabilities" aria-label="浏览器能力边界"><h3>此连接的能力范围</h3>{materialGrant ? <p>本次授权本项目资料编辑与发布。进入资料工作区会初始化工作副本；目录读取可能修补目录。未提交输入和操作身份仅保留于本次内存会话。</p> : <p>本次只提供已配对项目的名称、目录简介和版本。仅明确点击保存时修改元数据。</p>}<ul><li>登录环境、原生浏览器呈现和录制：请使用 Electron 工作台</li>{materialGrant ? <li>可编辑已封存来源的保存点、字段和注释，可复制工作副本、固定版本；隔离历史回放及节点选择需明确的新回放授权</li> : <li>任务资料、保存点、回放、复制和固定版本：此元数据连接尚未开放浏览器能力</li>}{(snapshot.grant === 'project-workbench' || snapshot.grant === 'project-replay') && <li>结果只读：可查看实际执行、已提交记录和已保存报告；不能启动执行、生成验收报告或保存人工判定</li>}<li>Agent 授权和执行：此连接不具备权限</li></ul></section>
     </main>
-    <footer className="statusbar"><span>合成实例 · {snapshot.grant === 'project-workbench' ? '项目资料与只读结果授权' : materialGrant ? '项目资料授权' : '项目元数据配对'}</span><span>录制完成 ≠ 需求通过</span></footer>
+    <footer className="statusbar"><span>合成实例 · {(snapshot.grant === 'project-workbench' || snapshot.grant === 'project-replay') ? '项目资料与只读结果授权' : materialGrant ? '项目资料授权' : '项目元数据配对'}</span><span>录制完成 ≠ 需求通过</span></footer>
   </WorkbenchShell>;
 }
 function BrowserProjectEditor({ client, project, writable }: { client: BrowserWorkbenchClient; project: BrowserProjectMetadata; writable: boolean }) {
@@ -99,6 +101,13 @@ function BrowserMaterials({ client, projectId, writable, refreshToken }: { clien
   const [view, setView] = useState<'checkpoints' | 'archives'>('checkpoints');
   const [position, setPosition] = useState<ReplayPosition | null>(null);
   const [notice, setNotice] = useState('');
+  const [replayPosition, setReplayPosition] = useState<ReplayPosition | null>(null);
+  const [selectionRequest, setSelectionRequest] = useState<SelectionRequest | null>(null);
+  const [selectionReceipt, setSelectionReceipt] = useState<SelectionReceipt | null>(null);
+  const replayOrigin = document.querySelector<HTMLMetaElement>('meta[name="workbench-replay-origin"]')?.content;
+  const canReplay = client.getSnapshot().grant === 'project-replay' && !!replayOrigin;
+  const openReplay = (next: ReplayPosition) => { if (!canReplay) { setNotice('历史回放需要在可信 Electron UI 重新选择隔离回放配对权限。'); return; } setSelectionRequest(null); setSelectionReceipt(null); setReplayPosition(next); };
+  const selectTarget = (request: SelectionRequest) => { if (!canReplay) return; setSelectionReceipt(null); setSelectionRequest(request); setReplayPosition(request.anchor); };
   const transition = useRef<(() => Promise<boolean>) | null>(null);
   const switchView = async (next: typeof view) => {
     if (!writable || editorBusy || !client.materials.canEdit()) return;
@@ -111,12 +120,13 @@ function BrowserMaterials({ client, projectId, writable, refreshToken }: { clien
       <p role="status">{writable ? '资料连接已就绪' : '资料可能已过时；编辑和保存已暂停，重连后权威回读。'}</p>
       <fieldset className="browser-material-controls" disabled={!writable||editorBusy} inert={!writable||editorBusy}>
         <nav className="material-actions" aria-label="资料视图"><Button aria-pressed={view === 'checkpoints'} onClick={() => void switchView('checkpoints')}>保存点与字段</Button><Button aria-pressed={view === 'archives'} onClick={() => void switchView('archives')}>资料存档</Button></nav>
-        <BrowserSourcePicker client={client} projectId={projectId} writable={writable&&!editorBusy} onPosition={setPosition}/>
+        <BrowserSourcePicker client={client} projectId={projectId} writable={writable&&!editorBusy} onPosition={value => { setPosition(value); setReplayPosition(null); setSelectionRequest(null); }}/>{canReplay && <Button disabled={!position} onClick={() => position && openReplay(position)}>打开所选历史</Button>}
       </fieldset>
       {notice && <p role="status">{notice}</p>}
-      <MaterialWorkbench client={client.materials} projectId={projectId} position={position} view={view} writable={writable} refreshToken={refreshToken} transitionRef={transition} onBusyChange={setEditorBusy}
-        onOpenReplay={() => setNotice('历史回放需要 Electron 工作台；浏览器当前仅使用真实封存来源位置，不呈现回放。')}
-        onSelectTarget={() => setNotice('历史元素选择和来源节点核验需要 Electron 工作台。')}
+      {replayPosition && canReplay && <SharedWebReplay client={client.replay} projectId={projectId} instanceId={client.instanceId} origin={replayOrigin!} position={replayPosition} request={selectionRequest} readable={writable} onPosition={setPosition} onSelection={setSelectionReceipt} onClose={() => { setReplayPosition(null); setSelectionRequest(null); setSelectionReceipt(null); }}/>}
+      <MaterialWorkbench historicalSelection={canReplay} selectedTarget={selectionReceipt} client={client.materials} projectId={projectId} position={position} view={view} writable={writable} refreshToken={refreshToken} transitionRef={transition} onBusyChange={setEditorBusy}
+        onOpenReplay={openReplay}
+        onSelectTarget={selectTarget}
         onEditWorkspace={() => setView('checkpoints')}
         recordingArchive={<p>原始录制管理需要 Electron 工作台。可在上方选择本项目已封存来源。</p>}/>
     </>}
@@ -169,7 +179,7 @@ function BrowserSourcePicker({ client, projectId, writable, onPosition }: { clie
     finally{if(alive.current&&token===selection.current)setBusy(false);}
   };
   return <details className="browser-source-picker" open><summary>已封存来源位置</summary>
-    <p>按录制、文档流和真实事件边界选择来源，再新增保存点。完整快照前的事件不能作为保存点来源。这不是历史回放；回放与元素选择需 Electron。</p>
+    <p>按录制、文档流和真实事件边界选择来源，再新增保存点。完整快照前的事件不能作为保存点来源。这只是来源索引；取得隔离回放授权后，可打开所选历史并选择节点。</p>
     <div className="browser-source-grid">
       <Label>来源录制<NativeSelect aria-label="来源录制" value={recordingId} disabled={!writable||busy} onChange={event=>void chooseRecording(event.target.value)}><option value="">选择已封存录制</option>{recordings.items.map(item=><option key={item.recordingId} value={item.recordingId}>{item.recordingId} · {new Date(item.sealedAt).toLocaleString()}</option>)}</NativeSelect></Label>
       <Label>来源文档流<NativeSelect aria-label="来源文档流" value={streamIndex} disabled={!writable||busy||!recordingId} onChange={event=>void chooseStream(event.target.value)}><option value="">选择文档流</option>{streams.items.map((stream,index)=><option key={index} value={String(index)}>{stream.first.pageId} / {stream.first.documentId} · {stream.events} 个事件</option>)}</NativeSelect></Label>
