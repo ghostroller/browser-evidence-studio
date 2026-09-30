@@ -1,6 +1,7 @@
 import type { DatasetIdentity } from './execution';
 import type { BrowserSessionStatus } from '../main/browser/browser-controls';
 import type { Project, Profile } from '../main/services/workspace-management';
+import type { NODE_HOST_CAPABILITIES } from './host-capabilities';
 /** Separate short-lived local-owner surface. Never exposed by Electron or project workbench grants. */
 export interface NodeOwnerSessionIdentity {projectId:string;profileId:string;sessionId:string;leaseEpoch:number}
 export interface NodeOwnerIdentity extends NodeOwnerSessionIdentity {
@@ -16,7 +17,7 @@ export interface NodeExecutionPolicy {
 }
 export interface NodeOwnerState {
   instanceId:string;backendKind:'node';runtimeProvider:'chromium';providerStatus:'not-open'|'connected'|'disconnected'|'renderer-failed';
-  capabilities:NodeExecutionPolicy&{nativeEmbedding:false;nativeDialogs:false;downloads:'denied';popups:'rejected';persistentProfiles:true};
+  capabilities:NodeExecutionPolicy&typeof NODE_HOST_CAPABILITIES;
   projects:Project[];profiles:Profile[];
   session:BrowserSessionStatus|null;
   active:null|{id:string;projectId:string;profileId:string;controller:string;leaseEpoch:number;capture:string;execution:string;locked:boolean;selectedPageId:string;checkpoint:unknown};

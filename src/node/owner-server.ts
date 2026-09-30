@@ -9,13 +9,14 @@ import { WorkbenchError } from '../main/workbench/errors';
 import { StudioError, ensure } from '@/shared/errors';
 import type { NodeOwnerMethod, NodeOwnerState } from '@/contracts/node-owner';
 import type { ChromiumStudio } from './chromium-studio';
+import { NODE_HOST_CAPABILITIES } from '@/contracts/host-capabilities';
 
 const methods=new Set<NodeOwnerMethod>(['state','createProject','registerWorkflow','createProfile','openEnvironment','startRun','browserCommand','checkpoint','seal','closeSession','saveProfile','endInterruptedSession','startValidation','stopRunner','executionDatasets','assessExecution','pairWorkbench','revokeWorkbench','revokeOwner','shutdown']);
 const common=['projectId','profileId','sessionId','leaseEpoch'],pageKeys=[...common,'pageId','targetId','generation'];
 const messages:Record<string,string>={unauthorized:'Local owner session expired or was revoked. Enter a new console ticket.',forbidden:'Owner identity or origin is not authorized.',invalid_request:'Owner request fields are invalid.',conflict:'The browser identity or operation changed. Refresh and retry.',busy:'Another operation is in progress.',unavailable:'Node service is unavailable.',internal_error:'The operation failed; inspect local diagnostics.'};
 export function ownerState(studio:ChromiumStudio):NodeOwnerState {
   const state=studio.state();
-  return {instanceId:studio.instanceId,backendKind:'node',runtimeProvider:'chromium',providerStatus:studio.providerStatus,capabilities:{nativeEmbedding:false,nativeDialogs:false,downloads:'denied',popups:'rejected',persistentProfiles:true,...studio.executionPolicy},
+  return {instanceId:studio.instanceId,backendKind:'node',runtimeProvider:'chromium',providerStatus:studio.providerStatus,capabilities:{...NODE_HOST_CAPABILITIES,...studio.executionPolicy},
     projects:state.projects,profiles:state.profiles,session:state.session,active:state.active?{id:state.active.id,projectId:state.active.projectId,profileId:state.active.profileId,controller:state.active.controller,leaseEpoch:state.active.leaseEpoch,capture:state.active.capture,execution:state.active.execution,locked:state.active.locked,selectedPageId:state.active.selectedPageId,checkpoint:state.active.checkpoint}:null,
     runs:state.runs.map(({id,projectId,profileId,status,kind,capture,execution})=>({id,projectId,profileId,status,kind,capture,execution})),
     validations:state.validations.map(({id,runId,projectId,status,executionId,validation})=>({id,runId,projectId,status,executionId,validation})),validationStarting:state.validationStarting};

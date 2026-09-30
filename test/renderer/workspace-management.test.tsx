@@ -146,3 +146,12 @@ test('IA17: a stale project form preserves input and reports CAS conflict', asyn
   await screen.findByRole('alert');
   expect((screen.getByLabelText('项目名称') as HTMLInputElement).value).toBe('My attempted name'); expect(f.host.projects[0].name).toBe('Concurrent change');
 });
+
+test('Chromium profiles can be managed in Electron without offering incompatible open', async () => {
+  const f=await fixture(); f.host.profiles[0].provider='chromium'; render(<f.Harness />);
+  fireEvent.click(screen.getByRole('button',{name:'Orders account'}));
+  expect(await screen.findByText(/当前宿主不能打开/)).toBeTruthy();
+  expect((screen.getByRole('button',{name:'打开环境'}) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.click(screen.getByRole('button',{name:'打开环境'})); expect(f.call.mock.calls.some(([method])=>method==='openEnvironment')).toBe(false);
+  expect((screen.getByRole('button',{name:'保存环境修改'}) as HTMLButtonElement).disabled).toBe(false);
+});

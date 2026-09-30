@@ -1,4 +1,5 @@
 import type { BrowserWorkbenchPairingBridge } from '@/contracts/browser-workbench';
+import { workbenchHost } from '@/contracts/host-capabilities';
 import type { NativeBounds, WorkbenchCall, WorkbenchClient, WorkbenchInput, WorkbenchMethod, WorkbenchResult } from '@/contracts/workbench';
 
 /** The only renderer boundary allowed to read the isolated Electron preload. */
@@ -18,6 +19,7 @@ export function createElectronWorkbenchClient(bridge: ElectronWorkbenchBridge | 
   // rejection, call order, changed-listener lifetime and fire-and-forget bounds.
   const call = <M extends WorkbenchMethod>(method: M, body?: WorkbenchInput<M>) => bridge.call(method, body === undefined ? {} : body) as Promise<WorkbenchResult<M>>;
   return {
+    host: workbenchHost('electron'),
     call: call as WorkbenchCall,
     onChanged: listener => bridge.onChanged(listener),
     nativePresentation: { bounds: rect => bridge.bounds(rect), set: body => call('presentation', body) },

@@ -1,12 +1,14 @@
 import type { EvidenceStore } from '@/evidence/store';
 import type { BrowserDownloadStatus } from './browser-controls';
 import { ensure } from '@/shared/errors';
+import { compatibleProfileProvider, type RuntimeProvider } from '@/contracts/host-capabilities';
+export type { RuntimeProvider } from '@/contracts/host-capabilities';
 
-export type RuntimeProvider = 'electron' | 'chromium';
 /** Missing provider is the historical Electron format. Reading does not migrate it. */
 export function profileProvider(profile: { provider?: RuntimeProvider;storageRef?:string }): RuntimeProvider {
-  ensure(profile.provider === undefined || profile.provider === 'electron' || profile.provider === 'chromium', 'Unsupported browser environment provider', 409);
-  return profile.provider ?? 'electron';
+  const provider = compatibleProfileProvider(profile);
+  ensure(provider !== null, 'Unsupported browser environment provider', 409);
+  return provider;
 }
 export function assertProfileProvider(profile: {provider?:RuntimeProvider;storageRef?:string}, provider:RuntimeProvider) {
   ensure(profileProvider(profile) === provider, 'This environment belongs to a different browser provider; create a new environment. Existing storage was not migrated.', 409);

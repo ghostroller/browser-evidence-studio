@@ -19,6 +19,7 @@ import type { StepSummary, DatasetSummary } from '@/runner/manager';
 import type { ValidationReport } from '@/validator/types';
 import type { WriterLockInspection } from '@/evidence/writer-lock';
 import type { JsonValue } from './workflow';
+import type { WorkbenchHost } from './host-capabilities';
 import type { ArtifactReadOptions, Checkpoint, QueryOptions, QueryPage } from '@/evidence/contracts';
 
 export type WorkbenchOperation<Input, Result> = { input: Input; result: Result };
@@ -99,6 +100,7 @@ export interface NativePresentation {
   set(body: WorkbenchInput<'presentation'>): Promise<WorkbenchResult<'presentation'>>;
 }
 export interface WorkbenchClient {
+  readonly host: WorkbenchHost;
   call: WorkbenchCall;
   onChanged(listener: () => void): () => void;
   /** null means the host cannot embed native browser/replay surfaces. */

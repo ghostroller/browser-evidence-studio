@@ -1,3 +1,4 @@
+import { HostCapabilitiesSummary } from './host-capabilities';
 import { SharedWebReplay } from './shared-web-replay';
 import type { SelectionRequest, SelectionReceipt } from '../selection-session';
 import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
@@ -17,7 +18,7 @@ import { ResultCenter } from './result-center';
 import type { BrowserResultResult, BrowserExecutionListItem } from '@/contracts/browser-results';
 import type { ReplayPosition } from '@/contracts/recording';
 
-const nodeBackend=()=>document.querySelector<HTMLMetaElement>('meta[name="workbench-backend-kind"]')?.content==='node';
+
 const connectionLabels = { disconnected: '尚未配对', exchanging: '正在交换一次性票据', connecting: '正在读取已授权项目', connected: '已连接', stale: '连接待恢复 · 资料可能已过时', expired: '会话已结束，请重新配对', error: '连接失败' };
 export function BrowserWorkbench({ client }: { client: BrowserWorkbenchClient }) {
   const snapshot = useSyncExternalStore(client.subscribe, client.getSnapshot, client.getSnapshot);
@@ -41,7 +42,7 @@ export function BrowserWorkbench({ client }: { client: BrowserWorkbenchClient })
         <h2>浏览器工作台</h2>
         <p role="status" aria-live="polite">{connectionLabels[snapshot.status]}</p>
         <p>实例标识：<code>{client.instanceId}</code></p>
-        <p className="hint">{nodeBackend()?'在此 Node 实例的本机控制页面签发项目回放票据，核对实例标识后手动输入。会话最多 15 分钟，控制会话撤销或到期也会撤销项目访问。':'在此合成实例的 Electron 工作台打开“浏览器配对”，核对实例标识后手动输入一次性票据。会话最多 5 分钟，原生配对面板需保持打开。'}</p>
+        <p className="hint">{client.host.backend === 'node'?'在此 Node 实例的本机控制页面签发项目回放票据，核对实例标识后手动输入。会话最多 15 分钟，控制会话撤销或到期也会撤销项目访问。':'在此合成实例的 Electron 工作台打开“浏览器配对”，核对实例标识后手动输入一次性票据。会话最多 5 分钟，原生配对面板需保持打开。'}</p>
         {!snapshot.projectId && <form className="form-stack" autoComplete="off" onSubmit={event => { event.preventDefault(); if (ticket.trim() && !connecting) void connect(); }}>
           <Label>一次性配对票据<Input aria-label="一次性配对票据" type="password" autoComplete="off" spellCheck={false} value={ticket} onChange={event => setTicket(event.target.value)} maxLength={128} disabled={connecting} /></Label>
           <Button type="submit" disabled={!ticket.trim() || connecting}>连接合成项目</Button>
@@ -57,7 +58,8 @@ export function BrowserWorkbench({ client }: { client: BrowserWorkbenchClient })
       </section>}
       {snapshot.state && materialGrant && <BrowserMaterials key={`materials/${snapshot.state.project.id}/${snapshot.sessionEpoch}`} client={client} projectId={snapshot.state.project.id} writable={snapshot.status === 'connected'} refreshToken={snapshot.refreshToken}/>}
       {snapshot.state && (snapshot.grant === 'project-workbench' || snapshot.grant === 'project-replay') && <BrowserResults key={`results/${snapshot.state.project.id}/${snapshot.sessionEpoch}`} client={client} projectId={snapshot.state.project.id} readable={snapshot.status === 'connected'}/>}
-      <section className="browser-capabilities" aria-label="浏览器能力边界"><h3>此连接的能力范围</h3>{materialGrant ? <p>本次授权本项目资料编辑与发布。进入资料工作区会初始化工作副本；目录读取可能修补目录。未提交输入和操作身份仅保留于本次内存会话。</p> : <p>本次只提供已配对项目的名称、目录简介和版本。仅明确点击保存时修改元数据。</p>}<ul><li>{nodeBackend()?'专用 Chromium 环境与录制：请使用本实例的本机控制页面；实时页面在独立 Chromium 窗口':'登录环境、原生浏览器呈现和录制：请使用 Electron 工作台'}</li>{materialGrant ? <li>可编辑已封存来源的保存点、字段和注释，可复制工作副本、固定版本；隔离历史回放及节点选择需明确的新回放授权</li> : <li>任务资料、保存点、回放、复制和固定版本：此元数据连接尚未开放浏览器能力</li>}{(snapshot.grant === 'project-workbench' || snapshot.grant === 'project-replay') && <li>结果只读：可查看实际执行、已提交记录和已保存报告；不能启动执行、生成验收报告或保存人工判定</li>}<li>Agent 授权和执行：此连接不具备权限</li></ul></section>
+      <HostCapabilitiesSummary host={client.host} embedded={false} />
+      <section className="browser-capabilities" aria-label="浏览器能力边界"><h3>此连接的能力范围</h3>{materialGrant ? <p>本次授权本项目资料编辑与发布。进入资料工作区会初始化工作副本；目录读取可能修补目录。未提交输入和操作身份仅保留于本次内存会话。</p> : <p>本次只提供已配对项目的名称、目录简介和版本。仅明确点击保存时修改元数据。</p>}<ul><li>{client.host.backend === 'node'?'专用 Chromium 环境与录制：请使用本实例的本机控制页面；实时页面在独立 Chromium 窗口':'登录环境、原生浏览器呈现和录制：请使用 Electron 工作台'}</li>{materialGrant ? <li>可编辑已封存来源的保存点、字段和注释，可复制工作副本、固定版本；隔离历史回放及节点选择需明确的新回放授权</li> : <li>任务资料、保存点、回放、复制和固定版本：此元数据连接尚未开放浏览器能力</li>}{(snapshot.grant === 'project-workbench' || snapshot.grant === 'project-replay') && <li>结果只读：可查看实际执行、已提交记录和已保存报告；不能启动执行、生成验收报告或保存人工判定</li>}<li>Agent 授权和执行：此连接不具备权限</li></ul></section>
     </main>
     <footer className="statusbar"><span>合成实例 · {(snapshot.grant === 'project-workbench' || snapshot.grant === 'project-replay') ? '项目资料与只读结果授权' : materialGrant ? '项目资料授权' : '项目元数据配对'}</span><span>录制完成 ≠ 需求通过</span></footer>
   </WorkbenchShell>;

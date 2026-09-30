@@ -4,6 +4,7 @@ import { memoryEditorStorage, type MaterialWorkbenchClient, type MaterialEditorC
 import { BROWSER_RESULT_METHODS, BROWSER_RESULT_BUDGET, type BrowserResultMethod, type BrowserResultInput, type BrowserResultResult } from '@/contracts/browser-results';
 import type { ResultWorkbenchClient, ResultReadCall } from './result-workbench-client';
 import type { BrowserProjectMetadata, BrowserUpdateProject, BrowserWorkbenchErrorCode, BrowserWorkbenchSession, BrowserWorkbenchState, BrowserWorkbenchGrant } from '@/contracts/browser-workbench';
+import { workbenchHost, type WorkbenchHost, type WorkbenchBackend } from '@/contracts/host-capabilities';
 
 export type BrowserConnectionStatus = 'disconnected' | 'exchanging' | 'connecting' | 'connected' | 'stale' | 'expired' | 'error';
 export interface BrowserWorkbenchSnapshot {
@@ -43,6 +44,7 @@ function project(value: unknown, projectId: string): BrowserProjectMetadata {
 /** B1.2's scoped HTTP client intentionally does not implement the 90-method
  * Electron WorkbenchClient. Credentials are private memory, never a URL or store. */
 export class BrowserWorkbenchClient {
+  readonly host: WorkbenchHost;
   readonly nativePresentation = null;
   #editorStorage = memoryEditorStorage();
   readonly materials: MaterialWorkbenchClient = {
@@ -76,9 +78,10 @@ export class BrowserWorkbenchClient {
   #streamActive = false;
   #attempt = 0;
   #mutation = false;
-  constructor(options: { instanceId: string; fetch?: typeof fetch; retryDelaysMs?: readonly number[] }) {
+  constructor(options: { instanceId: string; backend?: Exclude<WorkbenchBackend, 'electron'>; fetch?: typeof fetch; retryDelaysMs?: readonly number[] }) {
     if (!identifier(options.instanceId)) throw failure('protocol');
     this.instanceId = options.instanceId;
+    this.host = workbenchHost(options.backend ?? 'electron-companion');
     this.#fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.#retryDelays = options.retryDelaysMs ?? [250, 500, 1000, 2000, 4000, 8000];
   }

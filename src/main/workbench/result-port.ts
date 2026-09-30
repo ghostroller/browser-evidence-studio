@@ -27,10 +27,10 @@ function diagnostic(text: string): string {
   if (typeof text !== 'string') throw new WorkbenchError('unavailable');
   // All three ValidatorService exception-bearing reason paths are fixed here,
   // regardless of the error body's spelling or credential format.
-  if (/(?:Human review|Dataset|Original-source) read failed:/i.test(text)) return '原件读取失败；详细宿主异常请在 Electron 工作台检查，未将失败当作空值。';
+  if (/(?:Human review|Dataset|Original-source) read failed:/i.test(text)) return '原件读取失败；详细异常保留于宿主诊断，未将失败当作空值。';
   // Do not try to partially redact unknown exception syntax: JSON quoting,
   // nested causes and Basic authentication can leave secret suffixes behind.
-  if (/(?:file:\/\/|[A-Za-z]:[\\/]|(^|[\s"'(=:])\/(?!\/)|\b(?:bearer|basic|token|password|secret|authorization|cookie|credential|api[_-]?key)\b)/i.test(text)) return '诊断包含宿主路径或敏感信息，请在 Electron 工作台检查原件。';
+  if (/(?:file:\/\/|[A-Za-z]:[\\/]|(^|[\s"'(=:])\/(?!\/)|\b(?:bearer|basic|token|password|secret|authorization|cookie|credential|api[_-]?key)\b)/i.test(text)) return '诊断包含宿主路径或敏感信息；详情保留于宿主原件，不在浏览器连接中展示。';
   return text;
 }
 const binding = (value: ExecutionBinding) => pick(value, ['schemaVersion', 'executionId', 'projectId', 'materialRevisionId', 'materialContentHash', 'codeFingerprint', 'inputFingerprint', 'mode']);
@@ -43,7 +43,7 @@ function execution(value: ExecutionSummary) {
 }
 function step(value: StepSummary) {
   return { ...pick(value, ['state', 'occurredAt', 'resultValueState', 'handoffId']), identity: stepIdentity(value.identity),
-    ...(value.error ? { error: { name: 'ExecutionError', message: '步骤记录了原始错误；详细异常请在 Electron 工作台检查。' } } : {}),
+    ...(value.error ? { error: { name: 'ExecutionError', message: '步骤记录了原始错误；详细异常保留于宿主原件，不在浏览器连接中展示。' } } : {}),
     ...(value.dependencies ? { dependencies: value.dependencies.map(stepIdentity) } : {}) };
 }
 function dataset(value: DatasetSummary) {

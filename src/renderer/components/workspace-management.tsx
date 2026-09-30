@@ -1,3 +1,4 @@
+import { profileCanOpen, profileProviderLabel, compatibleProfileProvider } from '@/contracts/host-capabilities';
 import { useWorkbenchClient } from '../lib/workbench-client';
 import type { WorkbenchInput, WorkbenchMethod } from '@/contracts/workbench';
 import React, { useEffect, useRef, useState } from 'react';
@@ -94,7 +95,7 @@ export function WorkspaceManagementPanel({ state, projectId, onSelectProject, on
     {project && !newProject && <>
       <h3>登录环境</h3>
       <Button disabled={busy || project.lifecycle === 'archived'} onClick={() => choose(() => { setProfileId(''); setNewProfile(true); loadProfile(); setConfirmation(null); })}>添加登录环境</Button>
-      <ul aria-label="登录环境目录">{visibleProfiles.map(item => <li key={item.id}><Button variant={item.id === profileId ? 'default' : 'outline'} disabled={busy} onClick={() => choose(() => { setProfileId(item.id); setNewProfile(false); setConfirmation(null); })}>{item.name}{item.lifecycle === 'disabled' ? ' · 已停用' : ''}{item.id === state.session?.profileId ? ' · 正在使用' : ''}</Button><small>{item.entryUrl || 'about:blank'} · {status(item)}{item.checkedAt ? ` · 最近检查 ${new Date(item.checkedAt).toLocaleString()}` : ' · 尚未检查'}</small></li>)}</ul>
+      <ul aria-label="登录环境目录">{visibleProfiles.map(item => <li key={item.id}><Button variant={item.id === profileId ? 'default' : 'outline'} disabled={busy} onClick={() => choose(() => { setProfileId(item.id); setNewProfile(false); setConfirmation(null); })}>{item.name}{item.lifecycle === 'disabled' ? ' · 已停用' : ''}{item.id === state.session?.profileId ? ' · 正在使用' : ''}</Button><small>{profileProviderLabel(item)} · {item.entryUrl || 'about:blank'} · {status(item)}{item.checkedAt ? ` · 最近检查 ${new Date(item.checkedAt).toLocaleString()}` : ' · 尚未检查'}</small></li>)}</ul>
       {!visibleProfiles.length && <p className="hint">当前筛选没有登录环境。</p>}
     </>}
     {project && (profile || newProfile) && <form className="form-stack" onSubmit={event => { event.preventDefault(); void perform(async () => {
@@ -115,11 +116,12 @@ export function WorkspaceManagementPanel({ state, projectId, onSelectProject, on
       {profile && !newProfile && <>
         <p>{status(profile)}{profile.checkReason ? `：${profile.checkReason}` : ''}{profile.checkedAt ? `；检查时间 ${new Date(profile.checkedAt).toLocaleString()}，配置 ${profile.checkedConfigRevision ?? '旧记录未注明'}` : ''}</p>
         <div className="button-row">
-          {!activeProfile && <Button type="button" disabled={busy || !!state.session || profile.lifecycle === 'disabled' || project.lifecycle === 'archived'} onClick={() => void perform(async () => { await call('openEnvironment', { projectId: project.id, profileId: profile.id }, false); await refreshed('环境已打开，尚未录制。'); })}>打开环境</Button>}
+          {!activeProfile && <Button type="button" disabled={busy || !!state.session || !profileCanOpen(profile, client.host.provider) || project.lifecycle === 'archived'} onClick={() => void perform(async () => { await call('openEnvironment', { projectId: project.id, profileId: profile.id }, false); await refreshed('环境已打开，尚未录制。'); })}>打开环境</Button>}
           {activeProfile && <><Button type="button" disabled={busy} onClick={() => void perform(async () => { await call('checkEnvironment', {}, false); await refreshed('检查完成，以当前环境结果为准。'); })}>检查登录状态</Button><Button type="button" disabled={busy} onClick={() => void perform(async () => { await call('saveProfile', {}, false); await refreshed('持久登录状态已保存，不代表登录仍有效。'); })}>保存登录状态</Button><Button type="button" disabled={busy} onClick={() => void requestLifecycle('close', 'close', profile)}>关闭环境</Button></>}
           {profile.lifecycle === 'disabled' ? <Button type="button" disabled={busy || project.lifecycle === 'archived'} onClick={() => void restore('profile', profile)}>恢复环境</Button> : <Button type="button" disabled={busy} onClick={() => void requestLifecycle('profile', 'disable', profile)}>停用环境</Button>}
           <Button type="button" disabled={busy} onClick={() => void requestLifecycle('profile', 'delete', profile)}>检查并删除未使用配置</Button>
         </div>
+        {compatibleProfileProvider(profile) !== client.host.provider && <p className="hint">此环境属于 {profileProviderLabel(profile)}，当前宿主不能打开。配置和历史仍可管理，原存储身份保持不变。</p>}
         {state.session && !activeProfile && <p className="hint">另一个环境仍打开。请先选择正在使用的环境并明确关闭，再打开此环境。</p>}
       </>}
     </form>}

@@ -14,7 +14,9 @@ async function start() {
     if (host === 'browser') {
       const instanceId = document.querySelector<HTMLMetaElement>('meta[name="workbench-instance"]')?.content;
       if (!instanceId) throw new Error('浏览器工作台未配置合成实例，请使用合成启动器提供的 browser.html 地址。');
-      const client = new BrowserWorkbenchClient({ instanceId });
+      const backend = document.querySelector<HTMLMetaElement>('meta[name="workbench-backend-kind"]')?.content;
+      if (backend !== 'node' && backend !== 'electron-companion') throw new Error('浏览器工作台未配置受支持的后端身份，请使用当前启动器提供的地址。');
+      const client = new BrowserWorkbenchClient({ instanceId, backend });
       document.documentElement.classList.remove('dark');
       document.documentElement.style.colorScheme = 'light';
       root.render(<SessionThemeProvider><App host="browser" client={client} /></SessionThemeProvider>);

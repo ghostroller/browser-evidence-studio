@@ -139,3 +139,23 @@ test('disconnect discards a delayed mutation result and cannot restore the old s
   fireEvent.click(screen.getByRole('button',{name:'清除本页凭据'}));resolve({id:'late',name:'Late',objective:'',createdAt:'2026-09-30'});
   await waitFor(()=>expect(screen.getByRole('button',{name:'连接 Node 实例'})).toBeTruthy());expect(screen.queryByRole('heading',{name:'项目与环境'})).toBeNull();
 });
+
+test('legacy and disabled profiles remain visible but cannot start an incompatible browser', async () => {
+  const f=fixture(), value=state();
+  value.profiles=[{id:'legacy',projectId:'project',name:'Legacy login',storageRef:'persist:unchanged',loginStatus:'unknown'},
+    {id:'disabled',projectId:'project',name:'Disabled Chromium',provider:'chromium',lifecycle:'disabled',loginStatus:'unknown'},
+    {id:'supported',projectId:'project',name:'Supported Chromium',provider:'chromium',loginStatus:'unknown'}];
+  f.setState(value); await f.connect(); fireEvent.change(screen.getByLabelText('当前项目'),{target:{value:'project'}});
+  const options=Array.from((screen.getByLabelText('Chromium 环境') as HTMLSelectElement).options);
+  expect(options.find(option=>option.value==='legacy')?.disabled).toBe(true);
+  expect(options.find(option=>option.value==='legacy')?.textContent).toContain('Electron');
+  expect(options.find(option=>option.value==='disabled')?.disabled).toBe(true);
+  expect(options.find(option=>option.value==='supported')?.disabled).toBe(false);
+  fireEvent.change(screen.getByLabelText('Chromium 环境'),{target:{value:'legacy'}});
+  fireEvent.click(screen.getByRole('button',{name:'打开环境'})); fireEvent.click(screen.getByRole('button',{name:'开始录制并导航'}));
+  expect(f.fetcher.mock.calls.some(([,init])=>['openEnvironment','startRun'].includes(JSON.parse(String(init?.body)).method))).toBe(false);
+  fireEvent.change(screen.getByLabelText('Chromium 环境'),{target:{value:'supported'}});
+  expect((screen.getByRole('button',{name:'打开环境'}) as HTMLButtonElement).disabled).toBe(false);
+  value.projects[0].lifecycle='archived'; f.setState(value); fireEvent.click(screen.getByRole('button',{name:'刷新运行状态'}));
+  await waitFor(()=>expect((screen.getByRole('button',{name:'打开环境'}) as HTMLButtonElement).disabled).toBe(true));
+});
