@@ -211,3 +211,16 @@ node test/dual-host/legacy-profile.mjs --output=/absolute/new/proof-directory
 独立 legacy-profile 入口仅新造旧格式 metadata 和自定义 partition，以合成站点正常登录表单建立测试 Cookie；不读取／复制真实账号 profile，也不执行迁移。在 `AWAITING_NATIVE_CLOSE` 时按输出 PID 核对当前合成 Electron 窗口，通过原生窗口控件关闭。保持站点 origin，分别验证同进程重开、独立环境隔离和不同进程重开。它不意味着已验证任意旧 Electron 二进制或真实账号升级。
 
 命令工具与原生桌面可能处于不同执行上下文；若命令上下文无法取得 OS writer guard，保留失败并在获授权桌面上下文执行相同测试，不跳过锁或改数据保护。不要仅为展示进度用 GUI 输入所有命令。当前实际通过／失败和源码身份见 [B4 交接](refactor-handoffs/BROWSER-FIRST-B4-20260930.md)。
+
+
+## 管理与存档界面回归
+
+```sh
+npm run typecheck
+npm run build
+node test/desktop/launch.js --management-archive
+```
+
+此入口在既有BES_TEST隔离数据根运行真实生产界面，项目／环境／录制／副本都通过正常UI建立。内部可访问实际BrowserWindow以设置1100×760和1450×935，不新增生产RPC。一次性提交前拒绝／延迟属于明确测试故障注入，都会恢复原方法，不冒称自然故障。
+
+输出记录每个阶段、布局、身份和原件／固定版hash。需可用的原生桌面与匹配Node/npm；命令上下文无法获取OS writer guard时在获授权桌面上下文运行，不绕锁。截图明确区分renderer与独立native surface，整窗捕获失败不能包装成整窗通过。相关共享浏览器兼容另用 `npm run test:dual-host -- --chromium=/absolute/path/to/chromium`；具体结果见[交接](refactor-handoffs/MANAGEMENT-ARCHIVE-UX-20260930.md)。

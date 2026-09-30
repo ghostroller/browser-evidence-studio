@@ -1,5 +1,9 @@
 # 当前进度与接续
 
+## 2026-09-30 管理与存档重设计
+
+管理与存档重设计已完成：管理采用目录／单详情、统一快捷创建与未保存离开保护；存档分版本／原件／副本目录详情并显式保存取消，布局放大／还原和滚动上下文明确；字符按钮复用已有Lucide SVG。最终48文件396项、typecheck、双构建、新15阶段桌面旅程、workspace-layout及Electron／Node三态纵向通过，原件／固定版hash不变。见[本轮交接](refactor-handoffs/MANAGEMENT-ARCHIVE-UX-20260930.md)；截图范围、失败历史和未测矩阵单列，旧native modal保持原约定。
+
 ## 2026-09-30 浏览器优先重构当前入口
 
 B4 双宿主兼容收口已完成：共享能力提示、Node资料SSE和跨adapter提交事件已统一；42文件326项定向测试、typecheck及双构建通过。最终真实Electron／Node同输入主链两端均得到pass／fail／inconclusive；旧B2/B3存档只读且全量hash不变，新造旧格式custom-partition通过合成登录隔离与跨进程持久化，两次原生窗口关闭正常排空。见[B4完整验收](refactor-handoffs/BROWSER-FIRST-B4-20260930.md)。Node仍是非独占协作开发模式，旧Electron对话框及未测的平台／账号迁移／长测范围保留，不宣布M1最终产品门通过。

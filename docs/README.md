@@ -2,7 +2,12 @@
 
 本文件是当前规范与进度的索引，不复制全部实现历史。每次接续只读取当前任务需要的文档。
 
-## 当前任务：浏览器优先工作台与双宿主渐进重构
+## 当前任务：项目管理与存档交互重设计
+
+- [管理与存档交接](refactor-handoffs/MANAGEMENT-ARCHIVE-UX-20260930.md)：本轮问题实证、目录／详情重设计、显式保存取消、统一图标及真实桌面回归。B4通过不自动覆盖这轮界面变更；最终测试状态见交接
+- [交互规格](refactor/14-interaction-spec-and-acceptance.md#2026-09-30管理与存档重设计约定)：新的管理离开保护、目录metadata保存及布局要求
+
+## 已完成的架构基线：浏览器优先工作台与双宿主渐进重构
 
 - [共享设计页面正文](sources/browser-first-shared-design-body.md)与[来源说明](sources/browser-first-shared-design-source-notes.md)：保留共享页正文及获取记录；三份现有 Library 源材料已按原字节导入，含完整 F01–F14。
 - [dot 环境工具链验证补充](dot-environment-toolchain-validation.md)：当前 Electron 集成路径、临时 HTTP/SSE 拆分探针、真实公开 SPA、版本身份、安全边界和可复用测试入口。工具链可行不等于浏览器版已实现或产品验收通过。

@@ -20,6 +20,14 @@ B1采用同一React入口及共享项目表单／MaterialWorkbench／ResultCente
 
 两端组装复用 `connectMaterialChanges`：真实资料提交／修补触发工作台失效通知，客户端仍须权威回读。资料编辑与发布的 taskChanges 通知移入共享 `ProjectMaterials` 提交后钩子，避免 IPC 有通知而 HTTP 缺失。普通读取和 CAS 冲突不发提交事件，观察者异常不能把已持久化成功反转成写入失败。同一 operationId 发布返回原固定版，但通知沿用可重复语义，不承诺 exactly-once。Node 现有全项目状态刷新可能带来冗余失效通知；每条流仍只收到其授权项目的通知，后续读取重新校验作用域。
 
+### 管理与存档的UI状态边界
+
+管理面板统一常规目录和快捷创建表单，quick intent只在初始创建上下文有效，导航到别的对象后回到普通管理语义。目录选中、工作台当前浏览及真实session分别标识；外层关闭与内部导航共同处理dirty/pending，不改变域服务或profile存储归属。
+
+`MaterialArchivePanel`负责共享版本／副本目录及详情呈现；`RecordingArchive`负责原件目录侧栏信息，均明确保存／取消。目录名称备注还是现有sidecar，不写固定内容或原件。异步响应按项目编辑会话／generation限制，项目切换不继承旧catalog或发布确认。来源目录和工作副本bootstrap完成前不提供短暂可点窗口。
+
+存档使用现有SplitPane的imperative layout，保持编辑器挂载；`workspace-archive`保存存档拖动比例，`workspace`继续保存普通工作区比例。偏好白名单只增加这个有界key，未知key仍拒绝，其他原件／资料／profile schema未迁移。返回工作区或查看来源恢复普通比例，原生bounds沿现有通知链更新。图标复用已有lucide-react，不新增依赖或UI平台。
+
 ## 1. 技术决策
 
 - 开发及独立交付脚本：当前 Node LTS + 捆绑 npm，初始 24.21.0 / 11.19.0。
