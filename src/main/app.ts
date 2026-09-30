@@ -11,10 +11,20 @@ import { LifecycleLog } from './lifecycle-log';
 import { isTrustedUiSender } from './ui-ipc';
 import { configureBrowserEnvironment } from './browser/environment';
 import { resolveStudioDataRoot } from './test-mode';
+import { resolveSyntheticWorkbenchMode } from './workbench/synthetic-mode';
+import { WorkbenchHttpTransport } from './workbench/http';
+import { WorkbenchSessions } from './workbench/session';
+import { WorkbenchPairing } from './workbench/pairing';
+import { createPairingHandlers } from './workbench/pairing-ipc';
+import { createProjectMetadataPort } from './workbench/project-port';
 
 configureBrowserEnvironment();
+const syntheticWorkbench=(()=>{
+  try{return resolveSyntheticWorkbenchMode(process.env,app.getPath('appData'),app.isPackaged);}
+  catch(error){console.error('Browser workbench startup refused: '+String(error));process.exit(2);}
+})();
 const dataRoot=(()=>{
-  try{return resolveStudioDataRoot(process.env,app.getPath('appData'),app.isPackaged);}
+  try{return syntheticWorkbench?.dataRoot ?? resolveStudioDataRoot(process.env,app.getPath('appData'),app.isPackaged);}
   catch(error){console.error('Browser Evidence Studio startup refused: '+String(error));process.exit(2);}
 })();
 app.setPath('userData',dataRoot);
@@ -28,6 +38,7 @@ protocol.registerSchemesAsPrivileged([
   {scheme:'bes-resource',privileges:{standard:true,secure:true,corsEnabled:true,supportFetchAPI:true}}
 ]);
 let studio:Studio|undefined;let api:ApiHandle|undefined;let quitting=false;let lifecycle:LifecycleLog|undefined;
+let workbench:WorkbenchHttpTransport|undefined;let pairing:WorkbenchPairing|undefined;
 let visibleEvidence:Awaited<ReturnType<typeof import('../../test/desktop/native-window-evidence').recordNativeWindow>>|undefined;
 let shutdownTask:Promise<void>|undefined;let shutdownExitCode=0;
 async function endpoint(){for(let i=0;i<100;i++){try{const [port,browserPath]=(await readFile(path.join(dataRoot,'DevToolsActivePort'),'utf8')).trim().split(/\r?\n/);const url=`http://127.0.0.1:${port}/json/version`;const data=await fetch(url).then(r=>r.json()) as any;if(data.webSocketDebuggerUrl)return `ws://127.0.0.1:${port}${browserPath}`;}catch{}await new Promise(resolve=>setTimeout(resolve,100));}throw new Error('Internal CDP endpoint did not become ready');}
@@ -38,7 +49,24 @@ else app.whenReady().then(async()=>{
   const recoveryObserver=testPhase==='recovery-crash'?(await import('../../test/desktop/recovery-scenarios')).recoveryObserver(dataRoot,async(stage)=>{await lifecycle?.record('recovery-test-cut',{stage});},()=>{ensure(studio,'Synthetic recovery requires initialized Studio');return studio;}):undefined;
   const window=new StudioWindow();studio=new Studio(dataRoot,window,await endpoint(),recoveryObserver);
   await lifecycle.record('workspace-opening');await studio.init();await lifecycle.record('workspace-opened');
-  studio.onChanged=()=>{if(!quitting&&!window.window.isDestroyed())window.window.webContents.send('studio:changed');};
+  if(syntheticWorkbench){
+    const sessions=new WorkbenchSessions({instanceId:studio.instanceId});
+    workbench=new WorkbenchHttpTransport({origin:syntheticWorkbench.origin,sessions,projectPort:createProjectMetadataPort(studio.management)});
+    pairing=new WorkbenchPairing(sessions,studio.management,syntheticWorkbench.origin);
+    const address=await workbench.start();
+    // Discovery contains no ticket, session token, Agent token or credential.
+    await mkdir(path.join(dataRoot,'connection'),{recursive:true,mode:0o700});
+    await writeFile(path.join(dataRoot,'connection','workbench.json'),JSON.stringify({...address,processId:process.pid}),{flag:'wx',mode:0o600});
+  }
+  let metadata=new Map(studio.projects.map(project=>[project.id,JSON.stringify([project.name,project.objective,project.revision])]));
+  studio.onChanged=()=>{
+    if(workbench){
+      const next=new Map(studio!.projects.map(project=>[project.id,JSON.stringify([project.name,project.objective,project.revision])]));
+      for(const id of new Set([...metadata.keys(),...next.keys()]))if(metadata.get(id)!==next.get(id))workbench.invalidate(id);
+      metadata=next;
+    }
+    if(!quitting&&!window.window.isDestroyed())window.window.webContents.send('studio:changed');
+  };
   const dispatch=makeDispatch(studio);api=await startApi({root:dataRoot,instanceId:studio.instanceId,dispatch});studio.connection={address:api.address,file:api.connectionFile};
   protocol.handle('bes-artifact',async request=>{try{
     const u=new URL(request.url),reader=studio!.reader(u.hostname),id=u.pathname.slice(1),metadata=await reader.artifactMetadata(id);
@@ -51,6 +79,15 @@ else app.whenReady().then(async()=>{
     return dispatch(method,body,'ui');
   });
   ipcMain.on('studio:bounds',(event,rect)=>{if(!quitting&&isTrustedUiSender(event,window))window.bounds(rect);});
+  const pairingHandlers=createPairingHandlers(window,pairing,()=>quitting);
+  ipcMain.handle('studio:workbench-pairing:status',pairingHandlers.status);
+  ipcMain.handle('studio:workbench-pairing:begin',pairingHandlers.begin);
+  ipcMain.handle('studio:workbench-pairing:revoke',pairingHandlers.revoke);
+  window.window.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)pairing?.revoke();});
+  window.window.webContents.on('render-process-gone',()=>pairing?.revoke());
+  window.window.on('minimize',()=>pairing?.revoke());
+  window.window.on('hide',()=>pairing?.revoke());
+  window.window.on('close',()=>pairing?.revoke());
   const startupReload = testPhase==='startup-reload'||testPhase==='startup-failed' ? (await import('../../test/desktop/startup')).prepareStartupReload(window,testPhase==='startup-failed') : undefined;
   try{await window.load();}
   catch(error){await lifecycle.record('ui-startup-failed',window.startupStatus());throw error;}
@@ -171,15 +208,20 @@ app.on('render-process-gone',(_event,contents,details)=>{
   if(!quitting)void lifecycle?.record('renderer-gone',{webContentsId:contents.id,reason:details.reason,exitCode:details.exitCode}).catch(error=>console.error('Lifecycle diagnostic could not be saved',error));
 });
 app.on('before-quit',event=>{event.preventDefault();void shutdown('app-quit');});
+if(syntheticWorkbench){
+  process.on('SIGTERM',()=>{void shutdown('synthetic-launcher-stop');});
+  process.on('SIGINT',()=>{void shutdown('synthetic-launcher-interrupt');});
+}
 function shutdown(reason:string,code=0):Promise<void>{
   shutdownExitCode=Math.max(shutdownExitCode,code);
   if(shutdownTask)return shutdownTask;
   quitting=true;
+  pairing?.revoke();
   shutdownTask=(async()=>{
     const record=async(stage:string,details:Record<string,unknown>={})=>{try{await lifecycle?.record(stage,{reason,...details});}catch(error){shutdownExitCode=1;console.error('Lifecycle diagnostic could not be saved',error);}};
     await record('shutdown-requested',{exitCode:shutdownExitCode,runId:studio?.active?.id,execution:studio?.active?.execution});
     if(visibleEvidence){visibleEvidence.mark('Application shutdown: '+reason);try{await visibleEvidence.stop({kind:'independent visible demonstration',automatedJourney:false});}catch(error){console.error('Visible evidence finalization failed',error);}}
-    for(const [stage,close] of [['api',()=>api?.close()],['studio',()=>studio?.close()]] as const){
+    for(const [stage,close] of [['workbench',()=>workbench?.dispose()],['api',()=>api?.close()],['studio',()=>studio?.close()]] as const){
       await record('closing-'+stage);
       try{await close();await record(stage+'-closed');}
       catch(error){shutdownExitCode=1;console.error(stage+' shutdown failed',error);await record(stage+'-close-failed');}

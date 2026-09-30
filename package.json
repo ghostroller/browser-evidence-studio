@@ -15,6 +15,7 @@
   "scripts": {
     "start": "electron-forge start",
     "start:agent": "node scripts/start-agent.mjs",
+    "start:workbench": "node scripts/start-workbench.mjs",
     "browser:baseline": "node scripts/browser-baseline.mjs",
     "build": "vite build --config vite.main.config.ts && vite build --config vite.preload.config.ts && vite build --config vite.renderer.config.ts && vite build --config vite.portable.config.ts",
     "typecheck": "tsc --noEmit",
