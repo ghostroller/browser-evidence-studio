@@ -554,3 +554,19 @@
 .replay-stream-controls > label { flex: 1; min-width: 180px; }
 .replay-stream-controls [data-slot="native-select-wrapper"], .replay-stream-controls select { width: 100%; max-width: none; }
 .replay-sequence { max-height: 88px; }
+
+/* The browser host shares chrome and metadata fields, without native surfaces. */
+.browser-workbench-shell { min-height: 100vh; grid-template-rows: minmax(40px, auto) minmax(0, 1fr) 24px; }
+.browser-workbench-content { flex: 1; min-height: 0; overflow: auto; padding: 24px; display: grid; grid-template-columns: minmax(280px, 380px) minmax(320px, 640px); align-content: start; gap: 24px; }
+.browser-connection, .browser-project, .browser-capabilities { padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); overflow-wrap: anywhere; }
+.browser-capabilities { grid-column: 1 / -1; }
+.browser-capabilities ul { padding-left: 20px; list-style: disc; }
+.browser-capabilities li { margin: 8px 0; }
+.browser-workbench-content h2 { font-size: 20px; }
+.browser-workbench-content h3 { font-size: 16px; }
+.browser-workbench-content p { line-height: 1.6; }
+.browser-workbench-content [role="alert"] { color: var(--destructive); }
+.pairing-ticket { padding: 16px; border: 1px solid var(--border); background: var(--muted); overflow-wrap: anywhere; }
+.pairing-ticket dt { margin-top: 12px; }
+.pairing-ticket code, .pairing-address { user-select: text; }
+@media (max-width: 760px) { .browser-workbench-content { grid-template-columns: 1fr; padding: 12px; gap: 12px; } .browser-workbench-shell .topbar { flex-wrap: wrap; height: auto; min-height: 48px; } }

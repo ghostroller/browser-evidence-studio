@@ -1,3 +1,8 @@
+import type { BrowserWorkbenchPairingBridge } from '@/contracts/browser-workbench';
+import { BrowserWorkbenchClient } from './lib/browser-workbench-client';
+import { BrowserWorkbench } from './components/browser-workbench';
+import { BrowserPairingButton, BrowserPairingPanel } from './components/browser-pairing';
+import { WorkbenchShell, WorkbenchHeader } from './components/workbench-shell';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Moon, Sun, PanelLeft, Plus, Settings } from 'lucide-react';
 import { Button } from './components/ui/button';
@@ -32,7 +37,10 @@ const EMPTY_ITEMS: any[] = [];
 const items = (value: any): any[] => Array.isArray(value) ? value : value?.items || EMPTY_ITEMS;
 const short = (value: unknown, length = 90) => { const text = typeof value === 'string' ? value : JSON.stringify(value); return text?.length > length ? text.slice(0, length) + '…' : text ?? '—'; };
 const time = (value: string | undefined) => value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
-export function App() {
+export function App(props: { host?: 'electron'; pairing?: BrowserWorkbenchPairingBridge } | { host: 'browser'; client: BrowserWorkbenchClient } = {}) {
+  return props.host === 'browser' ? <BrowserWorkbench client={props.client} /> : <ElectronWorkbench pairing={props.pairing} />;
+}
+function ElectronWorkbench({ pairing }: { pairing?: BrowserWorkbenchPairingBridge }) {
   const client = useWorkbenchClient();
   const stateRequest=useRef(0);
   const initialProjectSelected=useRef(false);
@@ -274,12 +282,13 @@ export function App() {
     setReplayPosition(null);
     setReplayState(null);
   };
-  return <BrowserPresentation browserBox={browserBox} revision={revision} overlay={overlay} onError={setError}><div className="app-shell">
-    <header className="topbar"><div className="brand"><strong>Browser Evidence Studio</strong></div><div className="topbar-spacer" /><Button disabled={stopping||!liveSession&&!state.validationStarting} onClick={()=>void stopExecution()}>全局停止自动化</Button>
+  return <BrowserPresentation browserBox={browserBox} revision={revision} overlay={overlay} onError={setError}><WorkbenchShell>
+    <WorkbenchHeader><Button disabled={stopping||!liveSession&&!state.validationStarting} onClick={()=>void stopExecution()}>全局停止自动化</Button>
       <Button variant="ghost" size="icon" aria-label="恢复默认布局" title="恢复默认布局" onClick={() => perform(resetLayout)}><PanelLeft /></Button>
       <Button variant="ghost" size="icon" aria-label={preferences.theme === 'light' ? '切换为暗色主题' : '切换为亮色主题'} title={preferences.theme === 'light' ? '切换为暗色主题' : '切换为亮色主题'} onClick={() => perform(() => setTheme(preferences.theme === 'light' ? 'dark' : 'light'))}>{preferences.theme === 'light' ? <Moon /> : <Sun />}</Button>
       <Button onClick={()=>setOverlay('management')}>项目与环境管理</Button><Separator orientation="vertical" className="topbar-separator" /><Button variant="ghost" disabled={!projectId} onClick={() => setOverlay('tasks')}>任务授权</Button><Button variant="ghost" onClick={() => setOverlay('setup')}><Settings />连接信息</Button>
-    </header>
+      <BrowserPairingButton bridge={pairing} disabled={!projectId} onOpen={() => setOverlay('pairing')} />
+    </WorkbenchHeader>
     <main className="workspace">{liveSession&&liveSession.projectId!==projectId&&<p role="status">正在浏览其他项目；实时浏览器仍属于 {projects.find(p=>p.id===liveSession.projectId)?.name}，不能向当前项目记录此现场。</p>}<SplitPane key={revision} name="workspace" label="调整工作台与浏览器宽度" initial={Math.min(440, Math.max(320, window.innerWidth * .3)) / window.innerWidth * 100} minFirst="320px" minSecond="400px" first={<aside className="workspace-panel" inert={selectingHistory || !!inspectPage?.inspecting} data-selection-locked={selectingHistory || !!inspectPage?.inspecting || undefined} data-selection-label={selectingHistory?'正在历史页选择元素 · 按 Esc 取消':'正在实时页选择元素 · 按 Esc 取消'}>
       <div className="project-controls"><div className="selector-row"><span className="context-label">项目</span><NativeSelect aria-label="项目" title={project?.objective || project?.name} value={projectId} onChange={event => {const id=event.target.value;perform(async()=>{if(!projectId||!materialTransition.current||await materialTransition.current())setProjectId(id);});}}>{!projectId&&<option value="">选择项目</option>}{projects.map((entry: any) => <option key={entry.id} value={entry.id}>{entry.name}</option>)}</NativeSelect><Button size="icon" aria-label="新建项目" title="新建项目" onClick={() => setOverlay('project')}><Plus /></Button></div>
       <div className="selector-row"><span className="context-label">环境</span><NativeSelect aria-label="登录环境" value={profileId} onChange={event => setProfileId(event.target.value)}>{profiles.length ? profiles.map((profile: any) => <option key={profile.id} value={profile.id}>{profile.name}</option>) : <option value="">选择登录环境</option>}</NativeSelect><Button size="icon" aria-label="添加环境" title="添加环境" disabled={!projectId} onClick={() => setOverlay('profile')}><Plus /></Button></div>
@@ -311,13 +320,14 @@ export function App() {
     <footer className="statusbar"><span role="status">{busy ? '正在处理：' + busy : notice || '就绪'}{active ? ' · ' + label(active.controller) : ''}</span><span>录制完成 ≠ 需求通过</span></footer>
     {(error || preferenceError) && <Alert variant="destructive" className="workspace-error"><AlertDescription><strong>操作未完成</strong><span>{error || preferenceError}</span><Button variant="ghost" onClick={() => {setError('');clearPreferenceError();}}>关闭</Button></AlertDescription></Alert>}
     <Dialog open={!!overlay} onOpenChange={open => { if (!open) closeOverlay(); }}><DialogContent className={'overlay-panel ' + (['setup','recovery','project','profile'].includes(overlay || '') ? 'narrow' : '')} showCloseButton={false}>
-      <div className="overlay-heading"><Button disabled={stopping||!liveSession&&!state.validationStarting} onClick={()=>void stopExecution()}>全局停止自动化</Button><DialogTitle>{overlay === 'evidence' ? '证据与验收存档' : overlay === 'results' ? '固定版本结果中心' : overlay === 'tasks' ? '任务授权与撤销' : overlay === 'recovery' ? '检查与恢复存档' : overlay === 'management' ? '项目与环境管理' : overlay === 'project' ? '新建项目' : overlay === 'profile' ? '添加登录环境' : '连接信息'}</DialogTitle><Button onClick={closeOverlay}>返回工作台</Button></div>
+      <div className="overlay-heading"><Button disabled={stopping||!liveSession&&!state.validationStarting} onClick={()=>void stopExecution()}>全局停止自动化</Button><DialogTitle>{overlay === 'evidence' ? '证据与验收存档' : overlay === 'results' ? '固定版本结果中心' : overlay === 'tasks' ? '任务授权与撤销' : overlay === 'recovery' ? '检查与恢复存档' : overlay === 'pairing' ? '合成浏览器配对' : overlay === 'management' ? '项目与环境管理' : overlay === 'project' ? '新建项目' : overlay === 'profile' ? '添加登录环境' : '连接信息'}</DialogTitle><Button onClick={closeOverlay}>返回工作台</Button></div>
       {error && <Alert variant="destructive"><AlertDescription>{error}<Button variant="ghost" onClick={() => setError('')}>关闭错误</Button></AlertDescription></Alert>}
       <DialogDescription className="sr-only">{overlay === 'project' ? '设置项目名称与业务目标' : overlay === 'profile' ? '创建按项目隔离的命名登录环境' : '读取本地存档、连接信息或已保存材料'}</DialogDescription>
       {overlay === 'project' && <form className="overlay-body form-stack" onSubmit={event => {event.preventDefault();perform(async () => {const result = await call('createProject', {name:newProject,objective});setProjectId(result.id);setNewProject('');setObjective('');setOverlay(null);});}}><Label>项目名称<Input autoFocus value={newProject} onChange={event => setNewProject(event.target.value)} placeholder="例如：订单采集验收" /></Label><Label>业务目标<Textarea value={objective} onChange={event => setObjective(event.target.value)} placeholder="要取得什么数据，如何判断完成" rows={3} /></Label><Button variant="default" type="submit" className="primary" disabled={!newProject.trim() || !!busy}>创建项目</Button></form>}
       {overlay === 'profile' && <form className="overlay-body form-stack" onSubmit={event => {event.preventDefault();perform(async () => {const result = await call('createProfile', {projectId,name:newProfile,entryUrl:environmentUrl||url,instructions:environmentInstructions,checkSelector:environmentCheck});setProfileId(result.id);setNewProfile('');setOverlay(null);});}}><Label>环境名称<Input autoFocus aria-label="新环境名称" value={newProfile} onChange={event => setNewProfile(event.target.value)} placeholder="新环境名称" /></Label><Label>登录入口<Input aria-label="登录入口" value={environmentUrl} onChange={event=>setEnvironmentUrl(event.target.value)} placeholder={url}/></Label><Label>登录说明<Textarea value={environmentInstructions} onChange={event=>setEnvironmentInstructions(event.target.value)}/></Label><Label>登录完成标记（可选 CSS）<Input value={environmentCheck} onChange={event=>setEnvironmentCheck(event.target.value)}/></Label><p className="hint">默认未录制。没有完成检查时状态保持未知；保存持久状态不代表登录成功。</p><Button variant="default" type="submit" className="primary" disabled={!projectId || !newProfile.trim() || !!busy}>添加</Button></form>}
             {overlay === 'recovery' && <RunRecoveryView key={recoveryRunId} runId={recoveryRunId} active={!!active} onRecovered={refresh} onOpen={() => openHistory(recoveryRunId)} />}
       {overlay === 'management' && <div className="overlay-body"><WorkspaceManagementPanel state={state} projectId={projectId} onSelectProject={async id=>{if(projectId&&materialTransition.current&&!await materialTransition.current())throw new Error("当前工作区尚未保存，请先处理未保存编辑。");setProjectId(id);}} onRefresh={refresh} onError={setError}/></div>}
+      {overlay === 'pairing' && pairing && <BrowserPairingPanel bridge={pairing} projectId={projectId} projectName={project?.name || ''} onError={setError} />}
       {overlay === 'setup' && <div className="overlay-body"><p>Agent 使用单一本机 HTTP 接口；可信工作台使用窄 IPC。连接文件只供本机当前用户读取。</p><Label>连接文件<code className="block-code">{state.connection?.file || '启动后生成'}</code></Label><Label>地址<code className="block-code">{state.connection?.address || '尚未准备'}</code></Label><h3>运行版本</h3><JsonView value={state.versions || {}} /><p className="hint">连接 token 是本机管理凭据，不复制到网页或项目源码。</p></div>}
       {overlay === 'tasks' && <TaskAuthorizations projectId={projectId} session={state.session} active={active} project={project} onChanged={refresh} />}
       {overlay === 'results' && fixedExecutionId && <div className="overlay-body"><ResultCenter key={`${projectId}/${fixedExecutionId}`} projectId={projectId} executionId={fixedExecutionId} onOpenSource={location => { setResultSource(location); setSelectingHistory(false); setSelectionSession(null); openReplayPosition(location.position); closeOverlay(); }} /></div>}
@@ -331,5 +341,5 @@ export function App() {
       </div></Tabs>}
 
     </DialogContent></Dialog>
-  </div></BrowserPresentation>;
+  </WorkbenchShell></BrowserPresentation>;
 }

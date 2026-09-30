@@ -3,6 +3,7 @@ import type { WorkbenchInput, WorkbenchMethod } from '@/contracts/workbench';
 import React, { useEffect, useRef, useState } from 'react';
 import type { ManagementDependencies, Profile, Project } from '@/main/services/workspace-management';
 import { Button } from './ui/button';
+import { ProjectMetadataForm } from './project-metadata-form';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
@@ -80,22 +81,16 @@ export function WorkspaceManagementPanel({ state, projectId, onSelectProject, on
     <div className="button-row"><Button disabled={busy} onClick={() => choose(() => { setSelected(''); setProfileId(''); loadProject(); loadProfile(); setNewProject(true); setNewProfile(false); setConfirmation(null); })}>新建项目</Button></div>
     <ul aria-label="项目目录">{visibleProjects.map(item => <li key={item.id}><Button variant={item.id === selected ? 'default' : 'outline'} disabled={busy} onClick={() => choose(() => { setSelected(item.id); setProfileId(''); setNewProject(false); setNewProfile(false); setConfirmation(null); })}>{item.name}{item.lifecycle === 'archived' ? ' · 已归档' : ''}{item.id === projectId ? ' · 当前浏览' : ''}</Button></li>)}</ul>
     {!visibleProjects.length && <p className="hint">当前筛选没有项目。</p>}
-    {(project || newProject) && <form className="form-stack" onSubmit={event => { event.preventDefault(); void perform(async () => {
+    {(project || newProject) && <ProjectMetadataForm name={projectName} objective={objective} onName={setProjectName} onObjective={setObjective} dirty={projectDirty} busy={busy} creating={newProject} onCancel={() => { loadProject(project); setFailure(''); }} onSubmit={() => { void perform(async () => {
       const result = await call(newProject ? 'createProject' : 'updateProject', { ...(newProject ? {} : { projectId: project!.id, expectedRevision: projectBaseline.current?.revision ?? 0 }), name: projectName, objective });
       loadProject(result); setSelected(result.id); setNewProject(false); await refreshed(newProject ? '项目已创建，可继续修改资料或设为当前浏览项目。' : '项目名称和简介已保存。');
     }); }}>
-      <h3>{newProject ? '创建项目' : '项目资料'}</h3>
-      {newProject && <p className="hint">创建后先整理项目资料；设为当前浏览项目后开始整理保存点。</p>}
-      <Label>项目名称<Input aria-label="项目名称" value={projectName} onChange={event => setProjectName(event.target.value)} maxLength={200} disabled={busy} /></Label>
-      <Label>目录简介<Textarea aria-label="目录简介" value={objective} onChange={event => setObjective(event.target.value)} maxLength={4000} disabled={busy} /></Label>
-      <Button type="submit" disabled={busy || !projectName.trim()}>{newProject ? '创建项目' : '保存项目修改'}</Button>
-      {projectDirty && <Button type="button" disabled={busy} onClick={() => { loadProject(project); setFailure(''); }}>撤销项目输入</Button>}
       {project && !newProject && <div className="button-row">
         <Button type="button" disabled={busy} onClick={() => void perform(async () => { await onSelectProject(project.id); setMessage('已切换浏览项目；打开的浏览器环境保持原归属。'); })}>设为当前浏览项目</Button>
         {project.lifecycle === 'archived' ? <Button type="button" disabled={busy} onClick={() => void restore('project', project)}>恢复项目</Button> : <Button type="button" disabled={busy} onClick={() => void requestLifecycle('project', 'archive', project)}>归档项目</Button>}
         <Button type="button" disabled={busy} onClick={() => void requestLifecycle('project', 'delete', project)}>检查并删除空项目</Button>
       </div>}
-    </form>}
+    </ProjectMetadataForm>}
     {project && !newProject && <>
       <h3>登录环境</h3>
       <Button disabled={busy || project.lifecycle === 'archived'} onClick={() => choose(() => { setProfileId(''); setNewProfile(true); loadProfile(); setConfirmation(null); })}>添加登录环境</Button>
