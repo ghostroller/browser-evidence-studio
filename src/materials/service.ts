@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -72,7 +73,7 @@ async function createJson(file: string, value: unknown): Promise<void> {
   if (failure) throw failure;
 }
 
-interface ProjectPaths { material: string; drafts: string; revisions: string }
+interface ProjectPaths { projectId: string; material: string; drafts: string; revisions: string }
 export type DraftSummary = { draftId: string; status: 'available'; draftRevision: number; updatedAt: string; author: MaterialAuthor; baseRevisionId?: string; name?: string; hidden?: boolean; current?: boolean } |
   { draftId: string; status: 'unavailable'; reason: string };
 export type RevisionSummary = { revisionId: string; status: 'available'; contentHash: string; createdAt: string; author: MaterialAuthor; parentRevisionId?: string; name?: string; hidden?: boolean; displayNumber?: number } |
@@ -82,7 +83,28 @@ export interface MaterialSourceVerifier {
   position(position: ReplayPosition): Promise<'reliable' | 'gap' | 'unsupported'>;
   target(target: HistoricalTarget): Promise<boolean>;
 }
+/** Optional scoped browser authority. Existing Electron callers are unchanged.
+ * A check at read entry is not a write permit: locked() checks again after the
+ * domain writer is acquired, immediately before invoking the real operation. */
+export interface MaterialAccessScope {
+  authorize(): void;
+  verifyRecording(projectId: string, recordingId: string): Promise<void>;
+}
 export class FileMaterialService implements MaterialService {
+  onChanged: (projectId: string) => void = () => {};
+  private changed(projectId: string): void { try { this.onChanged(projectId); } catch { /* A notification cannot roll back an atomic write. */ } }
+  private readonly access = new AsyncLocalStorage<MaterialAccessScope>();
+  withAccess<T>(scope: MaterialAccessScope, operation: () => Promise<T>): Promise<T> {
+    return this.access.run(scope, operation);
+  }
+  private async checkScopedSources(projectId: string, content: MaterialContent): Promise<void> {
+    const scope = this.access.getStore();
+    if (!scope) return;
+    const refs = new Set([...content.recordingRefs, ...content.checkpoints.map(card => card.anchor.recordingId),
+      ...content.annotations.flatMap(note => note.target ? [note.target.position.recordingId] : []),
+      ...content.fields.flatMap(field => [...(field.target ? [field.target.position.recordingId] : []), ...(field.examples ?? []).map(example => example.target.position.recordingId)])]);
+    for (const recordingId of refs) await scope.verifyRecording(projectId, recordingId);
+  }
   constructor(private readonly dataRoot: string, private readonly sourceVerifier?: MaterialSourceVerifier) {}
 
   private async readCatalog(root: string, paths: ProjectPaths): Promise<MaterialCatalog> {
@@ -104,6 +126,7 @@ export class FileMaterialService implements MaterialService {
   }
   private async saveCatalog(paths: ProjectPaths, catalog: MaterialCatalog) {
     await atomicJson(path.join(paths.material, 'catalog.json'), { ...catalog, catalogRevision: catalog.catalogRevision + 1 });
+    this.changed(paths.projectId);
   }
   private async fileIds(folder: string) {
     const result: string[] = [];
@@ -189,7 +212,8 @@ export class FileMaterialService implements MaterialService {
       catch(error){
         if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND')throw error;
         if(!receipt.copy||receipt.copy.projectId!==projectId||receipt.copy.draftId!==receipt.draftId)throw new MaterialError('INVALID_RECORD','Copy receipt is damaged.',409);
-        await createJson(path.join(paths.drafts,`${receipt.draftId}.json`),receipt.copy);copy=receipt.copy;
+        validateContent(receipt.copy.content);await this.checkScopedSources(projectId,receipt.copy.content);
+        await createJson(path.join(paths.drafts,`${receipt.draftId}.json`),receipt.copy);this.changed(projectId);copy=receipt.copy;
       }
       // The receipt owns both content and its initial directory entry. Retry a
       // partially saved copy under this writer without overwriting later edits.
@@ -272,14 +296,17 @@ export class FileMaterialService implements MaterialService {
       workspace.projects.filter(item => isRecord(item) && item.id === projectId).length !== 1) {
       throw new MaterialError('UNKNOWN_PROJECT', 'Project is not registered in this data root.', 404);
     }
+    this.access.getStore()?.authorize();
     const projects = await directory(root, 'projects');
     const project = await directory(projects, projectId);
     const material = await directory(project, 'materials');
-    return { material, drafts: await directory(material, 'drafts'), revisions: await directory(material, 'revisions') };
+    return { projectId, material, drafts: await directory(material, 'drafts'), revisions: await directory(material, 'revisions') };
   }
   private async withProject<T>(projectId: string, operation: (root: string, paths: ProjectPaths) => Promise<T>): Promise<T> {
+    this.access.getStore()?.authorize();
     const root = await this.root();
     const paths = await this.project(root, projectId);
+    this.access.getStore()?.authorize();
     return operation(root, paths);
   }
   private async locked<T>(projectId: string, operation: (root: string, paths: ProjectPaths) => Promise<T>): Promise<T> {
@@ -293,7 +320,7 @@ export class FileMaterialService implements MaterialService {
         }
       }
       if (!lock) throw new MaterialError('WRITER_BUSY', 'Material writer did not become available.', 409);
-      try { return await operation(root, paths); } finally { await lock.release(); }
+      try { this.access.getStore()?.authorize(); return await operation(root, paths); } finally { await lock.release(); }
     });
   }
   private async storedDraft(projectId: string, draftId: string, root: string, paths: ProjectPaths): Promise<TaskMaterialDraft> {
@@ -304,6 +331,7 @@ export class FileMaterialService implements MaterialService {
       (raw.baseRevisionId !== undefined && typeof raw.baseRevisionId !== 'string') ||
       typeof raw.updatedAt !== 'string') throw new MaterialError('INVALID_RECORD', 'Draft identity or schema is damaged.', 500);
     const content = validateContent(raw.content);
+    await this.checkScopedSources(projectId, content);
     return { schemaVersion: 1, projectId, draftId, draftRevision: raw.draftRevision as number,
       ...(raw.baseRevisionId === undefined ? {} : { baseRevisionId: id(raw.baseRevisionId, 'baseRevisionId') }),
       author: authorOf(raw.author), updatedAt: raw.updatedAt, content };
@@ -316,6 +344,7 @@ export class FileMaterialService implements MaterialService {
       throw new MaterialError('INVALID_RECORD', 'Revision identity or schema is damaged.', 500);
     }
     const content = validateContent(raw.content);
+    await this.checkScopedSources(projectId, content);
     const contentHash = checkHash(raw.contentHash);
     if (materialContentHash(content) !== contentHash) throw new MaterialError('HASH_MISMATCH', 'Revision content differs from its immutable hash.', 409);
     return { schemaVersion: 1, projectId, revisionId,
@@ -323,6 +352,7 @@ export class FileMaterialService implements MaterialService {
       contentHash, createdAt: raw.createdAt, author: authorOf(raw.author), content };
   }
   private async checkRecordingRefs(root: string, projectId: string, content: MaterialContent, previous?: MaterialContent): Promise<void> {
+    await this.checkScopedSources(projectId, content);
     for (const recordingId of content.recordingRefs) {
       if(previous?.recordingRefs.includes(recordingId))continue;
       id(recordingId, 'recordingId');
@@ -377,7 +407,8 @@ export class FileMaterialService implements MaterialService {
         if(receipt.projectId!==projectId||receipt.author!==author||receipt.baseRevisionId!==baseRevisionId||receipt.draftId!==`create-${operationId}`)throw new MaterialError('OPERATION_CONFLICT','Creation operation belongs to another request.',409);
         try{return await this.storedDraft(projectId,receipt.draftId,root,paths);}
         catch(error){if(!(error instanceof MaterialError)||error.code!=='NOT_FOUND')throw error;}
-        validateContent(receipt.content);await createJson(path.join(paths.drafts,`${receipt.draftId}.json`),receipt);return receipt;
+        validateContent(receipt.content);await this.checkScopedSources(projectId,receipt.content);
+        await createJson(path.join(paths.drafts,`${receipt.draftId}.json`),receipt);this.changed(projectId);return receipt;
       }
     }
     const base = baseRevisionId === undefined ? undefined : await this.storedRevision(projectId, baseRevisionId, root, paths);
@@ -387,6 +418,7 @@ export class FileMaterialService implements MaterialService {
       content: clone(base?.content ?? { ...EMPTY, taskBrief: { objective: workspace.projects.find(p => p.id === projectId)?.objective ?? '', scope: '' } }) };
     if(receiptFile)await atomicJson(receiptFile,draft);
     await createJson(path.join(paths.drafts, `${draft.draftId}.json`), draft);
+    this.changed(projectId);
     return draft;
   }
   async createDraft(projectId: string, author: MaterialAuthor, baseRevisionId?: string, operationId?:string): Promise<TaskMaterialDraft> {
@@ -405,6 +437,7 @@ export class FileMaterialService implements MaterialService {
       await this.checkRecordingRefs(root, projectId, validated, current.content);
       const draft: TaskMaterialDraft = { ...current, draftRevision: current.draftRevision + 1, author, updatedAt: new Date().toISOString(), content: validated };
       await atomicJson(path.join(paths.drafts, `${draftId}.json`), draft);
+      this.changed(projectId);
       return { status: 'saved', draft };
     });
   }
@@ -456,12 +489,16 @@ export class FileMaterialService implements MaterialService {
         revision={schemaVersion:1,projectId,revisionId:randomUUID(),...(draft.baseRevisionId?{parentRevisionId:draft.baseRevisionId}:{}),contentHash:materialContentHash(draft.content),createdAt:new Date().toISOString(),author,content:clone(draft.content)};
         if(journalFile)await atomicJson(journalFile,{draftId,expectedDraftRevision,author,revision});
       }
-      try { await createJson(path.join(paths.revisions,`${revision.revisionId}.json`),revision); }
+      // Recovery uses the original journal snapshot, but a narrower browser
+      // grant must recheck that snapshot before restoring a missing manifest.
+      await this.checkScopedSources(projectId, revision.content);
+      try { await createJson(path.join(paths.revisions,`${revision.revisionId}.json`),revision); this.changed(projectId); }
       catch(error) { if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;const stored=await this.storedRevision(projectId,revision.revisionId,root,paths);if(stable(stored)!==stable(revision))throw new MaterialError('OPERATION_CONFLICT','Saved archive manifest differs from its operation receipt.',409); }
       try {
         if(draft.draftRevision===expectedDraftRevision) {
           if(materialContentHash(draft.content)!==revision.contentHash)throw new MaterialError('OPERATION_CONFLICT','Draft content differs from the saved archive operation.',409);
           await atomicJson(path.join(paths.drafts,`${draftId}.json`),{...draft,draftRevision:draft.draftRevision+1,baseRevisionId:revision.revisionId,updatedAt:new Date().toISOString(),author} satisfies TaskMaterialDraft);
+          this.changed(projectId);
         } else if(!journalFile)throw new MaterialConflictError(draft,expectedDraftRevision);
         // On retry after later edits, only complete the directory. Never rewind a draft.
         await this.catalog(projectId,root,paths);

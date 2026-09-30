@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import type { BrowserWorkbenchSession, BrowserWorkbenchTicket } from '../../contracts/browser-workbench';
+import type { BrowserWorkbenchGrant, BrowserWorkbenchSession, BrowserWorkbenchTicket } from '../../contracts/browser-workbench';
 import { WorkbenchError } from './errors';
 import { identifier } from './validation';
 
@@ -7,9 +7,10 @@ export interface WorkbenchSessionContext {
   readonly instanceId: string;
   readonly projectId: string;
   readonly expiresAt: number;
+  readonly grant: BrowserWorkbenchGrant;
   readonly issuerEpoch: number;
 }
-interface TicketRecord { projectId: string; expiresAt: number; issuerEpoch: number }
+interface TicketRecord { projectId: string; grant: BrowserWorkbenchGrant; expiresAt: number; issuerEpoch: number }
 interface SessionRecord { context: WorkbenchSessionContext; listeners: Set<() => void> }
 export interface WorkbenchSessionOptions {
   instanceId: string;
@@ -62,14 +63,15 @@ export class WorkbenchSessions {
     this.windowStart = this.now();
   }
 
-  begin(projectId: string): BrowserWorkbenchTicket {
+  begin(projectId: string, grant: BrowserWorkbenchGrant = 'project-metadata'): BrowserWorkbenchTicket {
     this.ensureLive();
     identifier(projectId);
+    if (grant !== 'project-metadata' && grant !== 'project-materials') throw new WorkbenchError('invalid_request');
     this.sweep();
     if (this.tickets.size >= this.maxTickets) throw new WorkbenchError('busy');
     const ticket = randomBytes(32).toString('base64url');
     const expiresAt = this.now() + this.ticketTtlMs;
-    this.tickets.set(digest(ticket), { projectId, expiresAt, issuerEpoch: this.issuerEpoch });
+    this.tickets.set(digest(ticket), { projectId, grant, expiresAt, issuerEpoch: this.issuerEpoch });
     this.schedule();
     return { ticket, expiresAt, instanceId: this.instanceId };
   }
@@ -89,12 +91,12 @@ export class WorkbenchSessions {
     if (this.sessions.size >= this.maxSessions) { this.schedule(); throw new WorkbenchError('busy'); }
     const token = randomBytes(32).toString('base64url');
     const expiresAt = now + this.sessionTtlMs;
-    const context = Object.freeze({ instanceId: this.instanceId, projectId: entry.projectId, expiresAt, issuerEpoch: this.issuerEpoch });
+    const context = Object.freeze({ instanceId: this.instanceId, projectId: entry.projectId, grant: entry.grant, expiresAt, issuerEpoch: this.issuerEpoch });
     const tokenKey = digest(token);
     this.sessions.set(tokenKey, { context, listeners: new Set() });
     this.identities.set(context, tokenKey);
     this.schedule();
-    return { token, expiresAt, instanceId: this.instanceId, projectId: entry.projectId };
+    return { token, expiresAt, instanceId: this.instanceId, projectId: entry.projectId, grant: entry.grant };
   }
 
   authenticate(token: unknown, instanceId: string): WorkbenchSessionContext {

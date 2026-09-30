@@ -1,3 +1,4 @@
+import { createBrowserMaterialPort } from './workbench/material-port';
 import { app, ipcMain, protocol, net } from 'electron';
 import path from 'node:path';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
@@ -51,7 +52,7 @@ else app.whenReady().then(async()=>{
   await lifecycle.record('workspace-opening');await studio.init();await lifecycle.record('workspace-opened');
   if(syntheticWorkbench){
     const sessions=new WorkbenchSessions({instanceId:studio.instanceId});
-    workbench=new WorkbenchHttpTransport({origin:syntheticWorkbench.origin,sessions,projectPort:createProjectMetadataPort(studio.management)});
+    workbench=new WorkbenchHttpTransport({origin:syntheticWorkbench.origin,sessions,projectPort:createProjectMetadataPort(studio.management),materialPort:createBrowserMaterialPort(studio.root,studio.materials)});
     pairing=new WorkbenchPairing(sessions,studio.management,syntheticWorkbench.origin);
     const address=await workbench.start();
     // Discovery contains no ticket, session token, Agent token or credential.
@@ -59,6 +60,7 @@ else app.whenReady().then(async()=>{
     await writeFile(path.join(dataRoot,'connection','workbench.json'),JSON.stringify({...address,processId:process.pid}),{flag:'wx',mode:0o600});
   }
   let metadata=new Map(studio.projects.map(project=>[project.id,JSON.stringify([project.name,project.objective,project.revision])]));
+  studio.materials.service.onChanged=projectId=>{workbench?.invalidate(projectId);studio?.onChanged();};
   studio.onChanged=()=>{
     if(workbench){
       const next=new Map(studio!.projects.map(project=>[project.id,JSON.stringify([project.name,project.objective,project.revision])]));

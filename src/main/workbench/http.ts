@@ -1,3 +1,6 @@
+import { isMaterialMethod } from './material-validation';
+import { BROWSER_MATERIAL_BUDGET } from '../../contracts/browser-materials';
+import type { BrowserMaterialPort } from './material-port';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Socket } from 'node:net';
 import { WorkbenchDispatcher, type ProjectMetadataPort } from './dispatch';
@@ -13,6 +16,7 @@ export interface WorkbenchHttpOptions {
   origin: string;
   sessions: WorkbenchSessions;
   projectPort: ProjectMetadataPort;
+  materialPort?: BrowserMaterialPort;
   maxRequests?: number;
   maxStreams?: number;
   maxStreamsPerSession?: number;
@@ -58,7 +62,7 @@ export class WorkbenchHttpTransport {
     this.maxStreamsPerSession = budget(options.maxStreamsPerSession, 2, 4);
     this.maxBodyBytes = budget(options.maxBodyBytes, 16_384, 65_536);
     this.requestTimeoutMs = budget(options.requestTimeoutMs, 5_000, 30_000);
-    this.dispatcher = new WorkbenchDispatcher(options.sessions, options.projectPort, projectId => this.invalidate(projectId));
+    this.dispatcher = new WorkbenchDispatcher(options.sessions, options.projectPort, projectId => this.invalidate(projectId), options.materialPort);
     // Node checks incomplete headers/requests periodically. Bound that sweep
     // too: expiry is the deadline plus at most one sweep (and event-loop delay).
     this.server = createServer({ maxHeaderSize: 8_192, requestTimeout: this.requestTimeoutMs,
@@ -157,7 +161,8 @@ export class WorkbenchHttpTransport {
       response.once('close', disconnected);
       // Authenticate before allocating a body buffer on RPC and event routes.
       const context = request.url === WORKBENCH_PATHS.session ? undefined : this.authenticate(request);
-      const body = await this.readBody(request);
+      const materialGrant = context?.grant === 'project-materials' && request.url === WORKBENCH_PATHS.rpc;
+      const body = await this.readBody(request, materialGrant);
       if (controller.signal.aborted) throw new WorkbenchError('cancelled');
       if (request.url === WORKBENCH_PATHS.session) {
         const input = record(body);
@@ -201,7 +206,7 @@ export class WorkbenchHttpTransport {
     if (!authorization?.startsWith('Bearer ')) throw new WorkbenchError('unauthorized');
     return this.options.sessions.authenticate(authorization.slice(7), this.options.sessions.instanceId);
   }
-  private readBody(request: IncomingMessage): Promise<unknown> {
+  private readBody(request: IncomingMessage, materialGrant = false): Promise<unknown> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
       let size = 0;
@@ -216,13 +221,15 @@ export class WorkbenchHttpTransport {
       const fail = () => finish(new WorkbenchError('invalid_request'));
       const data = (chunk: Buffer) => {
         size += chunk.length;
-        if (size > this.maxBodyBytes) { request.pause(); finish(new WorkbenchError('invalid_request')); }
+        if (size > (materialGrant ? BROWSER_MATERIAL_BUDGET.requestBytes : this.maxBodyBytes)) { request.pause(); finish(new WorkbenchError('invalid_request')); }
         else chunks.push(chunk);
       };
       const end = () => {
         try {
           const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          checkJsonBudget(value);
+          if (materialGrant && !isMaterialMethod(record(value).method) && size > this.maxBodyBytes) throw new WorkbenchError('invalid_request');
+          if (materialGrant) checkJsonBudget(value, BROWSER_MATERIAL_BUDGET.depth, BROWSER_MATERIAL_BUDGET.nodes);
+          else checkJsonBudget(value);
           finish(undefined, value);
         } catch { finish(new WorkbenchError('invalid_request')); }
       };

@@ -15,12 +15,14 @@ export class WorkbenchPairing {
     return { enabled: true, instanceId: this.sessions.instanceId, origin: this.origin, tickets, sessions };
   }
   async begin(input: unknown, assertTrusted: () => void): Promise<BrowserWorkbenchTicket> {
-    const body = record(input); exactKeys(body, ['projectId']); const projectId = identifier(body.projectId);
+    const body = record(input); exactKeys(body, ['projectId'], ['grant']); const projectId = identifier(body.projectId);
+    const grant = body.grant ?? 'project-metadata';
+    if (grant !== 'project-metadata' && grant !== 'project-materials') throw new WorkbenchError('invalid_request');
     this.revoke(); const generation = this.generation;
     await this.management.readProject(projectId, { start: operation => { assertTrusted(); return operation(); } });
     assertTrusted();
     if (generation !== this.generation) throw new WorkbenchError('cancelled');
-    return this.sessions.begin(projectId);
+    return this.sessions.begin(projectId, grant);
   }
   revoke(): void { this.generation++; this.sessions.revokeIssuer(); }
 }

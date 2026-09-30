@@ -6,6 +6,6 @@ contextBridge.exposeInMainWorld('studio', {
 });
 contextBridge.exposeInMainWorld('workbenchPairing', {
   status: () => ipcRenderer.invoke('studio:workbench-pairing:status'),
-  begin: (projectId: string) => ipcRenderer.invoke('studio:workbench-pairing:begin', { projectId }),
+  begin: (projectId: string, grant: 'project-metadata' | 'project-materials' = 'project-metadata') => ipcRenderer.invoke('studio:workbench-pairing:begin', { projectId, grant }),
   revoke: () => ipcRenderer.invoke('studio:workbench-pairing:revoke'),
 });

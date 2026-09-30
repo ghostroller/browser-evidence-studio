@@ -1,6 +1,7 @@
 /** B1.2a's deliberately narrow, JSON-only browser transport contract.
  * This is not WorkbenchClient or the trusted Electron/Agent API surface.
  */
+export type BrowserWorkbenchGrant = 'project-metadata' | 'project-materials';
 export interface BrowserProjectMetadata {
   id: string;
   name: string;
@@ -20,6 +21,7 @@ export type BrowserWorkbenchRequest =
 export interface BrowserWorkbenchState { project: BrowserProjectMetadata }
 export interface BrowserWorkbenchSession {
   token: string;
+  grant: BrowserWorkbenchGrant;
   expiresAt: number;
   instanceId: string;
   projectId: string;
@@ -35,7 +37,7 @@ export interface BrowserWorkbenchPairingStatus {
 }
 export interface BrowserWorkbenchPairingBridge {
   status(): Promise<BrowserWorkbenchPairingStatus>;
-  begin(projectId: string): Promise<BrowserWorkbenchTicket>;
+  begin(projectId: string, grant?: BrowserWorkbenchGrant): Promise<BrowserWorkbenchTicket>;
   revoke(): Promise<void>;
 }
 export type BrowserWorkbenchErrorCode =

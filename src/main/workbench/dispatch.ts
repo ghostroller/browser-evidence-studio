@@ -1,3 +1,5 @@
+import { isMaterialMethod, parseMaterialRequest } from './material-validation';
+import type { BrowserMaterialPort } from './material-port';
 import type { BrowserProjectMetadata, BrowserUpdateProject, BrowserWorkbenchRequest, BrowserWorkbenchState } from '../../contracts/browser-workbench';
 import { WorkbenchError, publicError } from './errors';
 import { WorkbenchSessions, type WorkbenchSessionContext } from './session';
@@ -20,6 +22,7 @@ export interface ProjectMetadataPort {
 
 export function parseWorkbenchRequest(value: unknown): BrowserWorkbenchRequest {
   checkJsonBudget(value);
+  if (Buffer.byteLength(JSON.stringify(value)) > 16_384) throw new WorkbenchError('invalid_request');
   const envelope = record(value);
   exactKeys(envelope, ['instanceId', 'method', 'body']);
   const instanceId = identifier(envelope.instanceId);
@@ -48,9 +51,10 @@ function projectDto(value: BrowserProjectMetadata, projectId: string): BrowserPr
 /** No Studio import, generic dispatch, retry, business lock or deduplication here. */
 export class WorkbenchDispatcher {
   constructor(private readonly sessions: WorkbenchSessions, private readonly port: ProjectMetadataPort,
-    private readonly changed: (projectId: string) => void = () => {}) {}
+    private readonly changed: (projectId: string) => void = () => {}, private readonly materials?: BrowserMaterialPort) {}
 
-  async dispatch(value: unknown, context: WorkbenchSessionContext, signal?: AbortSignal): Promise<BrowserWorkbenchState | BrowserProjectMetadata> {
+  async dispatch(value: unknown, context: WorkbenchSessionContext, signal?: AbortSignal): Promise<unknown> {
+    if (value && typeof value === 'object' && isMaterialMethod((value as Record<string, unknown>).method)) return this.dispatchMaterials(value, context, signal);
     const request = parseWorkbenchRequest(value);
     this.sessions.assertActive(context);
     if (request.instanceId !== context.instanceId || request.body.projectId !== context.projectId) throw new WorkbenchError('forbidden');
@@ -95,4 +99,27 @@ export class WorkbenchDispatcher {
       signal?.removeEventListener('abort', cancelPending);
     }
   }
+  private async dispatchMaterials(value: unknown, context: WorkbenchSessionContext, signal?: AbortSignal): Promise<unknown> {
+    this.sessions.assertActive(context);
+    if (context.grant !== 'project-materials') throw new WorkbenchError('forbidden');
+    const request = parseMaterialRequest(value);
+    if (request.instanceId !== context.instanceId || request.body.projectId !== context.projectId) throw new WorkbenchError('forbidden');
+    if (!this.materials) throw new WorkbenchError('unavailable');
+    // Every real FileMaterialService boundary checks this callback. Reads before
+    // a write do not consume its permit; the lock owner rechecks immediately
+    // before the atomic operation, with no await in between. Once started that
+    // operation may finish after revocation; a lost response is not a rollback.
+    const access = Object.freeze({ authorize: () => {
+      this.sessions.assertActive(context);
+      if (signal?.aborted) throw new WorkbenchError('cancelled');
+    } });
+    access.authorize();
+    const result = await this.materials.execute(request, access);
+    // Read/ensure endpoints may repair a catalog, but their read payload is
+    // still withheld on expiry. Any repair already started is not rolled back.
+    const explicitWrites = ['manageMaterialCatalog', 'setWorkingMaterialDraft', 'createMaterialDraft', 'copyMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft'];
+    if (!explicitWrites.includes(request.method)) access.authorize();
+    return result;
+  }
+
 }
