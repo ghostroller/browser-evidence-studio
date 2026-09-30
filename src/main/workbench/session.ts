@@ -66,7 +66,7 @@ export class WorkbenchSessions {
   begin(projectId: string, grant: BrowserWorkbenchGrant = 'project-metadata'): BrowserWorkbenchTicket {
     this.ensureLive();
     identifier(projectId);
-    if (grant !== 'project-metadata' && grant !== 'project-materials') throw new WorkbenchError('invalid_request');
+    if (grant !== 'project-metadata' && grant !== 'project-materials' && grant !== 'project-workbench') throw new WorkbenchError('invalid_request');
     this.sweep();
     if (this.tickets.size >= this.maxTickets) throw new WorkbenchError('busy');
     const ticket = randomBytes(32).toString('base64url');

@@ -1,4 +1,5 @@
 import { createBrowserMaterialPort } from './workbench/material-port';
+import { createBrowserResultPort } from './workbench/result-port';
 import { app, ipcMain, protocol, net } from 'electron';
 import path from 'node:path';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
@@ -52,7 +53,7 @@ else app.whenReady().then(async()=>{
   await lifecycle.record('workspace-opening');await studio.init();await lifecycle.record('workspace-opened');
   if(syntheticWorkbench){
     const sessions=new WorkbenchSessions({instanceId:studio.instanceId});
-    workbench=new WorkbenchHttpTransport({origin:syntheticWorkbench.origin,sessions,projectPort:createProjectMetadataPort(studio.management),materialPort:createBrowserMaterialPort(studio.root,studio.materials)});
+    workbench=new WorkbenchHttpTransport({origin:syntheticWorkbench.origin,sessions,projectPort:createProjectMetadataPort(studio.management),materialPort:createBrowserMaterialPort(studio.root,studio.materials),resultPort:createBrowserResultPort(studio.executions)});
     pairing=new WorkbenchPairing(sessions,studio.management,syntheticWorkbench.origin);
     const address=await workbench.start();
     // Discovery contains no ticket, session token, Agent token or credential.

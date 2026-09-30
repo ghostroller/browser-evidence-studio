@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readdir, readFile, stat } from 'node:fs/promises';
+import { lstat, mkdir, open, opendir, readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { DatasetIdentity, ExecutionBinding, ExecutionMode } from '@/contracts/execution';
 import { sameReplayPosition, type BoundedPage, type HistoricalElementRef, type ReadBudget } from '@/contracts/recording';
@@ -21,6 +21,7 @@ import { SourceModel } from '@/replay/source-model';
 import type { CaptureCoordinator } from '@/capture/coordinator';
 import type { CheckpointHostScope } from '@/runner/manager';
 import { datasetCatalog, type DatasetCatalogIssue } from './dataset-catalog';
+import type { BrowserExecutionListItem } from '@/contracts/browser-results';
 
 const hash=(value:unknown)=>createHash('sha256').update(canonicalJson(value)).digest('hex');
 interface HostExecution {
@@ -107,6 +108,7 @@ export class ProjectExecutions {
     const directory=await this.directory(id),value=await this.json<HostExecution>(directory,'host-state.json');
     ensure(value.binding.projectId===projectId&&value.binding.executionId===id,'Execution belongs to another project',403);
     const binding=await this.json<ExecutionBinding>(directory,'binding.json');ensure(canonicalJson(value.binding)===canonicalJson(binding),'Execution projection binding mismatch',409);
+    ensure(Array.isArray(value.steps)&&value.steps.every(item=>item.identity?.executionId===id)&&Array.isArray(value.datasets)&&value.datasets.every(item=>item.executionId===id),'Execution projection contains a foreign identity',409);
     const catalog=await datasetCatalog(directory,id,await this.dataReader(id));
     if(!value.finishedAt){
       if(!this.active.has(id))value.status='interrupted';
@@ -132,6 +134,34 @@ export class ProjectExecutions {
     return value;
   }
   async summary(projectId:string,id:string){return summary(await this.state(projectId,id));}
+  /** A descriptor-only, bounded catalog for selecting an actual execution. It
+   * does not scan batches, open code snapshots, create directories or repair
+   * state. Detailed reads retain state()/data()/report() integrity checks. */
+  async list(projectId:string,budget:ReadBudget,authorize:()=>void=()=>{}):Promise<BoundedPage<BrowserExecutionListItem>>{
+    executionId(projectId);authorize();
+    const directory=path.join(this.root,'executions');let folder;
+    try{const info=await lstat(directory);ensure(info.isDirectory()&&!info.isSymbolicLink(),'Execution catalog must be a real directory',403);folder=await opendir(directory);}
+    catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){authorize();return boundedItems([],`${projectId}/executions`,budget);}throw error;}
+    const items:BrowserExecutionListItem[]=[];let scanned=0,bytes=0;
+    for await(const entry of folder){
+      authorize();ensure(++scanned<=2000,'Execution catalog exceeds 2000 entries',413);
+      ensure(entry.isDirectory()&&!entry.isSymbolicLink(),'Execution catalog contains an invalid entry',409);executionId(entry.name);
+      const bindingFile=await safeFile(this.root,`executions/${entry.name}/binding.json`),bindingBytes=(await stat(bindingFile)).size;
+      ensure(bindingBytes<=16*1024&&(bytes+=bindingBytes)<=8*1024*1024,'Execution catalog descriptor budget exceeded',413);
+      const binding=(await this.dataReader(entry.name)).binding;authorize();
+      if(binding.projectId!==projectId)continue;
+      const hostFile=await safeFile(this.root,`executions/${entry.name}/host-state.json`),hostBytes=(await stat(hostFile)).size;
+      ensure(hostBytes<=2*1024*1024&&(bytes+=hostBytes)<=8*1024*1024,'Execution catalog descriptor budget exceeded',413);
+      const value=await this.json<HostExecution>(path.dirname(hostFile),'host-state.json');authorize();
+      ensure(canonicalJson(value.binding)===canonicalJson(binding),'Execution projection binding mismatch',409);
+      ensure(typeof value.startedAt==='string'&&Number.isFinite(Date.parse(value.startedAt))&&typeof value.status==='string'&&value.status.length>0&&value.status.length<=64&&
+        (value.finishedAt===undefined||typeof value.finishedAt==='string'&&Number.isFinite(Date.parse(value.finishedAt))),'Execution descriptor is corrupt',409);
+      items.push({executionId:binding.executionId,status:!value.finishedAt&&!this.active.has(binding.executionId)?'interrupted':value.status,startedAt:value.startedAt,
+        ...(value.finishedAt?{finishedAt:value.finishedAt}:{}),materialRevisionId:binding.materialRevisionId,mode:binding.mode});
+    }
+    authorize();items.sort((a,b)=>b.startedAt.localeCompare(a.startedAt)||a.executionId.localeCompare(b.executionId));
+    return boundedItems(items,`${projectId}/executions`,budget);
+  }
   async items(projectId:string,id:string,collection:'steps'|'datasets',budget:ReadBudget){ensure(collection==='steps'||collection==='datasets','Unknown execution collection');const value=await this.state(projectId,id);return boundedItems<StepSummary|DatasetSummary>(value[collection],`${id}/${collection}`,budget);}
   private async data(projectId:string,identity:DatasetIdentity){const value=await this.state(projectId,identity.executionId);const item=value.datasets.find(item=>item.attemptId===identity.attemptId&&item.datasetId===identity.datasetId);ensure(item||!value.finishedAt,'Dataset is not in the persisted execution result',404);ensure(!item?.diagnostic,`Dataset ${item?.status}: ${item?.diagnostic?.code}`,409);return PersistentDatasetService.openReader(this.root,identity.executionId);}
   async batches(projectId:string,identity:DatasetIdentity,budget:ReadBudget){return (await this.data(projectId,identity)).batches(identity,budget);}
@@ -206,13 +236,23 @@ export class ProjectExecutions {
     const sourceRef=`dom-${randomUUID()}`,sample:StoredSample={sourceRef,target,scope:{executionId:id,attemptId,recordingId:value.runId},createdAt:new Date().toISOString()};
     const directory=await this.directory(id);current();await this.original(directory,`sample-${sourceRef}.json`,sample);current();return sourceRef;
   }
-  private async report(projectId:string,id:string,reportId:string){await this.state(projectId,id);const stored=await this.json<StoredReport>(await this.directory(id),`report-${executionId(reportId)}.json`);ensure(stored.reportId===reportId&&stored.report.binding.executionId===id&&stored.report.binding.projectId===projectId&&hash(stored.report)===stored.contentHash,'Fixed report integrity check failed',409);return stored;}
+  private async report(projectId:string,id:string,reportId:string){
+    const value=await this.state(projectId,id),stored=await this.json<StoredReport>(await this.directory(id),`report-${executionId(reportId)}.json`),report=stored.report;
+    ensure(stored.reportId===reportId&&canonicalJson(report.binding)===canonicalJson(value.binding)&&report.attemptId===value.workflowAttemptId&&hash(report)===stored.contentHash,'Fixed report integrity check failed',409);
+    ensure(Array.isArray(report.datasets)&&report.datasets.every(item=>item.identity?.executionId===id)&&Array.isArray(report.requirements),'Fixed report contains a foreign dataset identity',409);
+    const identities=new Set(report.datasets.map(item=>canonicalJson(item.identity)));
+    for(const requirement of report.requirements){
+      ensure((requirement.fieldDiagnostics??[]).every(item=>item.identity?.executionId===id&&identities.has(canonicalJson(item.identity))),'Fixed report contains a foreign diagnostic identity',409);
+      ensure((requirement.humanReviews??[]).every(review=>review.requirementId===requirement.requirementId&&review.executionId===id&&review.attemptId===report.attemptId&&review.materialRevisionId===value.binding.materialRevisionId&&review.materialContentHash===value.binding.materialContentHash&&review.codeFingerprint===value.binding.codeFingerprint&&review.inputFingerprint===value.binding.inputFingerprint),'Fixed report contains a foreign review binding',409);
+    }
+    return stored;
+  }
   async reportSummary(projectId:string,id:string,reportId:string){return reportSummary(await this.report(projectId,id,reportId));}
   async reports(projectId:string,id:string,budget:ReadBudget){
     await this.state(projectId,id);const directory=await this.directory(id),files=(await readdir(directory)).filter(name=>/^report-[a-f0-9-]{36}\.json$/.test(name)).sort();
     ensure(files.length<=1000,'Report catalog exceeds 1000 reports; use an exact report ID',413);
     const ids=boundedItems(files,`${id}/reports`,{...budget,maxBytes:Math.min(budget.maxBytes,4096)});
-    const items:ReportSummary[]=[];for(const file of ids.items){const stored=await this.json<StoredReport>(directory,file);ensure(hash(stored.report)===stored.contentHash,'Report integrity check failed',409);items.push(reportSummary(stored));}
+    const items:ReportSummary[]=[];for(const file of ids.items){const stored=await this.report(projectId,id,file.slice(7,-5));items.push(reportSummary(stored));}
     const result={...ids,items,returnedBytes:0};let bytes=Buffer.byteLength(JSON.stringify(result));while(bytes!==result.returnedBytes){result.returnedBytes=bytes;bytes=Buffer.byteLength(JSON.stringify(result));}ensure(bytes<=budget.maxBytes,'Report summaries exceed budget; request fewer items',413);return result;
   }
   async reportItems(projectId:string,id:string,reportId:string,collection:'requirements'|'datasets',budget:ReadBudget){ensure(collection==='requirements'||collection==='datasets','Unknown report collection');const stored=await this.report(projectId,id,reportId);return boundedItems<ValidationReport['requirements'][number]|ValidationReport['datasets'][number]>(stored.report[collection],`${id}/${reportId}/${collection}`,budget);}

@@ -1,5 +1,7 @@
 import { isMaterialMethod, parseMaterialRequest } from './material-validation';
 import type { BrowserMaterialPort } from './material-port';
+import { isResultMethod, parseResultRequest } from './result-validation';
+import type { BrowserResultPort } from './result-port';
 import type { BrowserProjectMetadata, BrowserUpdateProject, BrowserWorkbenchRequest, BrowserWorkbenchState } from '../../contracts/browser-workbench';
 import { WorkbenchError, publicError } from './errors';
 import { WorkbenchSessions, type WorkbenchSessionContext } from './session';
@@ -51,9 +53,10 @@ function projectDto(value: BrowserProjectMetadata, projectId: string): BrowserPr
 /** No Studio import, generic dispatch, retry, business lock or deduplication here. */
 export class WorkbenchDispatcher {
   constructor(private readonly sessions: WorkbenchSessions, private readonly port: ProjectMetadataPort,
-    private readonly changed: (projectId: string) => void = () => {}, private readonly materials?: BrowserMaterialPort) {}
+    private readonly changed: (projectId: string) => void = () => {}, private readonly materials?: BrowserMaterialPort, private readonly results?: BrowserResultPort) {}
 
   async dispatch(value: unknown, context: WorkbenchSessionContext, signal?: AbortSignal): Promise<unknown> {
+    if (value && typeof value === 'object' && isResultMethod((value as Record<string, unknown>).method)) return this.dispatchResults(value, context, signal);
     if (value && typeof value === 'object' && isMaterialMethod((value as Record<string, unknown>).method)) return this.dispatchMaterials(value, context, signal);
     const request = parseWorkbenchRequest(value);
     this.sessions.assertActive(context);
@@ -101,7 +104,7 @@ export class WorkbenchDispatcher {
   }
   private async dispatchMaterials(value: unknown, context: WorkbenchSessionContext, signal?: AbortSignal): Promise<unknown> {
     this.sessions.assertActive(context);
-    if (context.grant !== 'project-materials') throw new WorkbenchError('forbidden');
+    if (context.grant !== 'project-materials' && context.grant !== 'project-workbench') throw new WorkbenchError('forbidden');
     const request = parseMaterialRequest(value);
     if (request.instanceId !== context.instanceId || request.body.projectId !== context.projectId) throw new WorkbenchError('forbidden');
     if (!this.materials) throw new WorkbenchError('unavailable');
@@ -119,6 +122,19 @@ export class WorkbenchDispatcher {
     // still withheld on expiry. Any repair already started is not rolled back.
     const explicitWrites = ['manageMaterialCatalog', 'setWorkingMaterialDraft', 'createMaterialDraft', 'copyMaterialDraft', 'editMaterialDraft', 'publishMaterialDraft'];
     if (!explicitWrites.includes(request.method)) access.authorize();
+    return result;
+  }
+
+  private async dispatchResults(value: unknown, context: WorkbenchSessionContext, signal?: AbortSignal): Promise<unknown> {
+    this.sessions.assertActive(context);
+    if (context.grant !== 'project-workbench') throw new WorkbenchError('forbidden');
+    const request = parseResultRequest(value);
+    if (request.instanceId !== context.instanceId || request.body.projectId !== context.projectId) throw new WorkbenchError('forbidden');
+    if (!this.results) throw new WorkbenchError('unavailable');
+    const access = Object.freeze({ authorize: () => { this.sessions.assertActive(context); if (signal?.aborted) throw new WorkbenchError('cancelled'); } });
+    access.authorize();
+    const result = await this.results.execute(request, access);
+    access.authorize();
     return result;
   }
 
