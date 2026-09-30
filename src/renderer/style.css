@@ -219,7 +219,7 @@
 .execution-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
 .danger-quiet { color: var(--destructive); }
 .evidence-strip { display: flex; flex-shrink: 0; align-items: center; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--border); flex-wrap: wrap; }
-.evidence-strip > div { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; flex-wrap: wrap; }
+.evidence-strip > div { display: flex; align-items: center; gap: 6px; flex: 1 0 100%; min-width: 0; flex-wrap: wrap; }
 .evidence-strip strong { font-size: 12px; font-weight: 500; }
 .evidence-strip span { font-size: 12px; color: var(--muted-foreground); }
 .evidence-strip [data-slot="button"] { min-height: 28px; height: 28px; padding: 0 6px; border: 1px solid var(--border); background: var(--background); color: var(--foreground); }
