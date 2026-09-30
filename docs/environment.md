@@ -192,3 +192,22 @@ npm run start:node -- --dev-cooperative-input
 Node/Electron/Puppeteer/rrweb 升级至少复跑目标身份、导航/弹窗、网络正文、rrweb 录制回放、checkpoint 控制边界、profile 持久化、人工交接能力、取消和关闭清理。Electron 保留输入隔离回归；Node 协作模式验证非独占提示、逻辑边界及不支持交接的明确失败，不冒称物理锁通过。记录实际运行时版本及 lockfile hash，按失败范围调整当前受支持组合，不引入旧 Node/Puppeteer 兼容层。
 
 依赖选择参考 [Node 发布政策](https://nodejs.org/en/about/previous-releases)、[Electron 稳定发布](https://releases.electronjs.org/release?channel=stable)、[Puppeteer 环境要求](https://pptr.dev/guides/system-requirements) 和 [浏览器映射](https://pptr.dev/supported-browsers)。不凭 `latest` 标签自动升级，也不采用 alpha/beta 作为基础依赖。Windows ZIP 是当前分发形式，签名、自动更新和真实账号场景验收仍须分别安排。
+
+
+## 双宿主兼容回归入口（B4）
+
+在具备原生 Linux 桌面、匹配 Node/npm 与已安装 Chromium 的环境运行：
+
+```sh
+npm run typecheck
+npm run build
+npm run build:node
+npm run test:dual-host -- --chromium=/absolute/path/to/chromium
+node test/dual-host/legacy-profile.mjs --output=/absolute/new/proof-directory
+```
+
+主回归在同一源码／构建下串行启动 Electron companion 与显式协作式 Node 入口，同一合成 HTTP origin 与业务输入验证录制、离线精确选取、字段／固定版以及 pass／fail／inconclusive；运行期间不要修改源码、测试或构建。`--host=electron|node|both`、输出目录和证据范围见 [回归说明](../test/dual-host/README.md)。结果目录不得覆盖已有失败记录。
+
+独立 legacy-profile 入口仅新造旧格式 metadata 和自定义 partition，以合成站点正常登录表单建立测试 Cookie；不读取／复制真实账号 profile，也不执行迁移。在 `AWAITING_NATIVE_CLOSE` 时按输出 PID 核对当前合成 Electron 窗口，通过原生窗口控件关闭。保持站点 origin，分别验证同进程重开、独立环境隔离和不同进程重开。它不意味着已验证任意旧 Electron 二进制或真实账号升级。
+
+命令工具与原生桌面可能处于不同执行上下文；若命令上下文无法取得 OS writer guard，保留失败并在获授权桌面上下文执行相同测试，不跳过锁或改数据保护。不要仅为展示进度用 GUI 输入所有命令。当前实际通过／失败和源码身份见 [B4 交接](refactor-handoffs/BROWSER-FIRST-B4-20260930.md)。

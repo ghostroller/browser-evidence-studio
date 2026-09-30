@@ -14,6 +14,12 @@ B1采用同一React入口及共享项目表单／MaterialWorkbench／ResultCente
 
 这一步不迁移旧profile的partition/storageRef，不改变Electron对话框交互。B2将可信controller／呈现／选取核心抽为双宿主共用，Web壳使用不同loopback origin及无脚本的录制子iframe，Native保留既有独立partition／bes-resource。控制消息的source/origin/replay/generation/command与编辑器selection所有权共同限制迟到选取；原始数据仍由同一SourceModel核验。B3首节点已把领域编排提取为StudioCore，Electron子类保留原生呈现，PageIdentity明确区分Electron与Chromium身份。旧profile缺省provider仍为Electron，不迁移partition/storageRef。Node开发模式按17:32用户决定采用非独占的有头输入：明确提示避让，保留逻辑lease／generation／取消和证据检查，不承诺检测全部人工干扰。启动须显式opt-in，可视人工交接暂不支持；B2实际通过与未测范围单列，不能从接口数推定完成。当前源码、实际验收和后续依赖以 [重构计划](browser-first-refactor-plan.md)为准，运行入口见 [环境](environment.md#浏览器工作台的隔离合成入口)。
 
+### B4 双宿主一致性
+
+`contracts/host-capabilities.ts` 统一 backend/provider 与宿主能力事实，client 的 `nativePresentation` 另表示当前 UI 是否能嵌入原生视图。Electron companion 后端有原生能力，不代表连接它的浏览器页面也有；能力报告不授予权限。`nativeDialogs` 仅说明宿主设施，不代表所有网页对话框均支持，更不代表既有 alert/confirm 生命周期问题已修复。旧 profile 缺省 provider 仍按 Electron 读取，未知 provider 不猜测，不兼容或已停用的环境保留显示但不能启动。
+
+两端组装复用 `connectMaterialChanges`：真实资料提交／修补触发工作台失效通知，客户端仍须权威回读。资料编辑与发布的 taskChanges 通知移入共享 `ProjectMaterials` 提交后钩子，避免 IPC 有通知而 HTTP 缺失。普通读取和 CAS 冲突不发提交事件，观察者异常不能把已持久化成功反转成写入失败。同一 operationId 发布返回原固定版，但通知沿用可重复语义，不承诺 exactly-once。Node 现有全项目状态刷新可能带来冗余失效通知；每条流仍只收到其授权项目的通知，后续读取重新校验作用域。
+
 ## 1. 技术决策
 
 - 开发及独立交付脚本：当前 Node LTS + 捆绑 npm，初始 24.21.0 / 11.19.0。

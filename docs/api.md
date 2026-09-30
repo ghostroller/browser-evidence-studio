@@ -10,11 +10,13 @@ Node 入口另提供同源 `POST /owner/session` 和 `POST /owner/rpc`，不是�
 
 owner 票据 60 秒、会话最多 15 分钟；撤销／到期取消受其控制的启动或执行并撤销派生工作台访问。不可保存票据／Bearer 到 URL、构建或日志。owner 状态返回的是本地控制投影，当前整列表无分页，客户端上限 2 MiB；不能把它描述成已有 B1 预算保证的资料读取接口。
 
+宿主能力事实见 `src/contracts/host-capabilities.ts`，Node owner 的 capabilities 与 browser client 的 backend 使用同一来源；不是新的权限授予接口。未知／缺失 backend 启动失败，不自动猜为 Electron。Electron companion 的 nativeEmbedding 指后端能力，当前 browser surface 仍无原生嵌入。
+
 ## 浏览器工作台连接（B1，2026-09-30）
 
 此入口与下文的业务 Agent `/v1` API 是不同权限主体。`npm run start:workbench` 使用隔离 Electron companion；B3 的 `npm run start:node -- --dev-cooperative-input` 使用独立 Node／Chromium 开发实例。普通 Electron 客户端不额外开放工作台监听。Vite 使用受控同源代理，不开放通用跨域 CORS 或任意可信 UI dispatch。
 
-工作台使用 `POST /workbench/session` 交换一次配对票据、`POST /workbench/rpc` 调用显式方法、`POST /workbench/events` 读取认证后的 SSE。可信 Electron 主窗口正常 UI 明确选择项目与权限，票据／会话绑定实例和项目；短期凭据仅在内存中使用，不放 URL、构建产物或日志。关闭、隐藏、最小化或重载配对窗口会撤销关联授权。精确 Host／Origin、过期和主体校验同时适用于事件流。
+工作台使用 `POST /workbench/session` 交换一次配对票据、`POST /workbench/rpc` 调用显式方法、`POST /workbench/events` 读取认证后的 SSE。可信 Electron 主窗口正常 UI 明确选择项目与权限，票据／会话绑定实例和项目；短期凭据仅在内存中使用，不放 URL、构建产物或日志。关闭、隐藏、最小化或重载配对窗口会撤销关联授权。新的正常配对先撤销该签发器的旧授权，不能以两次正常配对冒充同时有效的多用户会话。精确 Host／Origin、过期和主体校验同时适用于事件流。
 
 - `project-metadata`：项目摘要读取与名称／简介修改
 - `project-materials`：增加真实资料编辑／发布、目录和同项目 sealed 来源读取；初始化工作副本／目录修补仍是写语义
@@ -23,7 +25,9 @@ owner 票据 60 秒、会话最多 15 分钟；撤销／到期取消受其控制
 
 资料方法、输入和预算见 `src/contracts/browser-materials.ts`；结果的八方法白名单见 `src/contracts/browser-results.ts`：`projectExecutions`、`execution`、`executionItems`、`datasetBatches`、`datasetRecords`、`executionReports`、`executionReport`、`executionReportItems`。结果页本身不提供执行启动、生成报告或人工判定。历史 DOM 回放由 B2 的独立授权模块提供；执行／报告生成由对应宿主的可信控制入口提供，不能由旧工作台 grant 越权调用。
 
-结果列表及读取复用真实 `ProjectExecutions`，核对项目／执行、固定绑定、报告 hash 和条目身份。损坏、缺失和预算不足返回错误，不折叠为空结果。投影去除宿主环境路径、批次文件路径和原始异常；业务 JSON 值、缺失字段语义及来源引用保持，不承诺对任意业务值做通用敏感信息识别。原始异常详情保留在 Electron 端。结果请求上限16 KiB；有界集合1–28 KiB／1–100项，详情响应另限64 KiB。组合权限不提高旧 metadata 请求上限；资料请求仍有独立64 KiB限制。
+结果列表及读取复用真实 `ProjectExecutions`，核对项目／执行、固定绑定、报告 hash 和条目身份。损坏、缺失和预算不足返回错误，不折叠为空结果。投影去除宿主环境路径、批次文件路径和原始异常；业务 JSON 值、缺失字段语义及来源引用保持，不承诺对任意业务值做通用敏感信息识别。原始异常详情保留在对应宿主的本地证据中；Node 用户不被指引到不存在的 Electron 页面。结果请求上限16 KiB；有界集合1–28 KiB／1–100项，详情响应另限64 KiB。组合权限不提高旧 metadata 请求上限；资料请求仍有独立64 KiB限制。
+
+B4 将编辑／发布的提交后 taskChanges 统一到共享领域服务，并补齐 Node 资料变更的 SSE 失效通知。SSE 是重新读取提示，不是业务结果或 exactly-once 提交收据；订阅者应在原授权范围内权威回读。重试同一发布 operationId 保留同一固定版，事件可重复，CAS 冲突不发成功事件。
 
 B2新增 `webReplayBundle` 与 `webReplaySelection` 两个只读方法，输入绑定project／replayId／generation／精确ReplayPosition，选取另带nodeId；后端从原始SourceModel重建frame与mirror scope，并拒绝不完整元数据／结构缺口。回放包只含有界离线事件与已验证归档资源，16 MiB总输出／8 MiB事件窗／8 MiB资源／128唯一资源；这不扩大旧方法预算。撤销／取消在返回前重新核验，已开始的部分归档IO不能保证抢占停止。
 

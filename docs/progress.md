@@ -2,7 +2,7 @@
 
 ## 2026-09-30 浏览器优先重构当前入口
 
-B3 显式有头协作开发／测试模式已实现并通过指定真实纵向：纯 Node 录制／离线回放／字段固定版，当前页及从入口的真实点击、输入与来源核验，停止、观察到的导航干扰、目标关闭及崩溃恢复。最终 27 文件／233 项定向测试、类型检查、两种构建及 Electron 旅程／重开通过。Node 不拦截人工输入，检测仅部分覆盖，报告不证明无人干扰。见[当前计划](browser-first-refactor-plan.md)和[B3最终验收及历史失败](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)；旧 Electron 对话框、完整兼容及长期矩阵仍保留，B4未展开。
+B4 双宿主兼容收口已完成：共享能力提示、Node资料SSE和跨adapter提交事件已统一；42文件326项定向测试、typecheck及双构建通过。最终真实Electron／Node同输入主链两端均得到pass／fail／inconclusive；旧B2/B3存档只读且全量hash不变，新造旧格式custom-partition通过合成登录隔离与跨进程持久化，两次原生窗口关闭正常排空。见[B4完整验收](refactor-handoffs/BROWSER-FIRST-B4-20260930.md)。Node仍是非独占协作开发模式，旧Electron对话框及未测的平台／账号迁移／长测范围保留，不宣布M1最终产品门通过。
 
 ## 当前：工作区布局与历史图标补修（2026-09-30）
 

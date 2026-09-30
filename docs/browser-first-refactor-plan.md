@@ -21,7 +21,7 @@
 - 原生 focus 后续定位：已证实 Electron alert/confirm 的 CDP 回应未释放原生模态框，见[对话框生命周期问题](refactor-handoffs/ELECTRON-DIALOG-LIFECYCLE-20260930.md)。用户已选择保留问题记录、继续浏览器拆分，暂不改变 Electron 对话框交互；失败门禁继续保留
 - B2：用户确认后完成共享回放核心、独立origin、精确节点绑定／固定版／刷新及Native同源回读，最终attempt9实测正确／错误／无来源三态为pass／fail／inconclusive，见[B2交接](refactor-handoffs/BROWSER-FIRST-B2-20260930.md)。后端仍为electron-companion，窗口与未测矩阵按交接限定
 - B3：已按17:32用户确认的显式有头协作开发模式交付。当前页／从入口真实交互、固定资料来源核验、取消／观察到的导航干扰／目标关闭、renderer及provider中断恢复通过；27文件233项、两种构建及Electron旅程／重开通过。无物理输入独占或通用干扰识别，详见[B3验收与限制](refactor-handoffs/BROWSER-FIRST-B3-20260930.md)
-- B4：仍为后续计划；旧profile、字段语义和原件未迁移
+- B4：共享能力和通知差异已修复；42文件326项、typecheck及双构建通过，旧B2/B3存档现行reader验证通过，真实双端同输入三态／旧格式profile隔离和跨进程持久化已通过，见[B4交接](refactor-handoffs/BROWSER-FIRST-B4-20260930.md)。旧profile、字段语义和原件未迁移
 
 依赖主线：
 
@@ -180,6 +180,8 @@ B2 隔离设计可在 B1 期间准备；B4 的 Electron 冒烟从 B1 开始持�
 **完成判据**：无 Electron 仍可完成上述真实链路且身份／权限一致，才称纯 Node 后端成立。仅能打开 Chromium 或落盘一次不够；现有 Electron 启动脚本也不能冒充独立 provider 测试。
 
 ## 8. B4：保持双端，但不维护两套产品
+
+**当前状态**：已实施共享能力报告、Node资料失效通知及跨adapter提交事件一致性修复。指定真实兼容回归已通过，精确证据和未测边界见[B4交接](refactor-handoffs/BROWSER-FIRST-B4-20260930.md)。下列原验收条件不因接口或单测通过而自动完成。
 
 **贯穿执行**：从 B1 起保留小型 Electron 冒烟；最终以同一领域服务、client 契约、React 工作台和回放模块运行两种宿主。差异集中在 adapter 与显式能力报告。
 
