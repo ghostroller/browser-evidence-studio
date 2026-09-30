@@ -114,7 +114,7 @@ UI路径和视觉检查通过不代替用户对体验的认可。后续只在用
 
 ```sh
 npm run typecheck
-npm test -- test/renderer test/unit/workspace-management.test.ts test/unit/workspace-catalog.test.ts test/unit/materials.test.ts test/unit/material-source-contracts.test.ts test/unit/material-enum-validation.test.ts test/unit/ui-preferences.test.ts test/unit/managed-browser-controls.test.ts test/unit/workbench-*.test.ts test/unit/browser-*-client.test.ts --reporter=json --outputFile=/workspace/scratch/76bf966566eb/ui-management-proof/gate-round5/result.json
+npm test -- test/renderer test/unit/workspace-management.test.ts test/unit/workspace-catalog.test.ts test/unit/materials.test.ts test/unit/material-source-contracts.test.ts test/unit/material-enum-validation.test.ts test/unit/ui-preferences.test.ts test/unit/managed-browser-controls.test.ts test/unit/workbench-*.test.ts test/unit/browser-*-client.test.ts
 npm run build
 npm run build:node
 node test/desktop/launch.js --management-archive
