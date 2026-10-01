@@ -101,3 +101,9 @@ test('archive panel ratio persists independently from the regular workspace rati
  try { const preferences=new UiPreferencesStore(root);await preferences.update({layout:{workspace:[30,70]}});await preferences.update({layout:{'workspace-archive':[64,36]}});assert.deepEqual(new UiPreferencesStore(root).read().layout,{workspace:[30,70],'workspace-archive':[64,36]}); }
  finally { await rm(root,{recursive:true,force:true}); }
 });
+
+test('implementation focus layout persists separately from ordinary and archive workspace ratios',async()=>{
+ const root=await mkdtemp(path.join(os.tmpdir(),'bes-ui-implementation-'));
+ try {const preferences=new UiPreferencesStore(root);await preferences.update({layout:{workspace:[30,70],'workspace-archive':[64,36],'workspace-implementation':[62,38]}});assert.deepEqual(new UiPreferencesStore(root).read().layout,{workspace:[30,70],'workspace-archive':[64,36],'workspace-implementation':[62,38]});}
+ finally {await rm(root,{recursive:true,force:true});}
+});

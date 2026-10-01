@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
 import React from 'react';
-import { act, cleanup, render, screen, waitFor } from './workbench-test-client';
+import { act, cleanup, fireEvent, render, screen, waitFor } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { ReplayWorkspace } from '@/renderer/components/replay-workspace';
 import type { ReplayPosition } from '@/contracts/recording';
@@ -334,4 +334,51 @@ test('an older seek response cannot replace a newer exact event position', async
   await act(async () => second.resolve(host(at(2), 2)));
   expect(screen.getByText(/event #3/)).toBeTruthy();
   expect(onPosition.mock.calls.at(-1)?.[0]).toEqual(at(3));
+});
+
+test.each(['read-failure', 'empty-streams', 'open-failure', 'opening'])('return to live remains available during replay %s', async scenario => {
+  const opening = deferred<ReturnType<typeof host>>();
+  const onClose = vi.fn();
+  const call = vi.fn(async (method: string, body?: any) => {
+    if (method === 'recordingForeground') return { status: 'legacy', items: [] };
+    if (method === 'recordingStreams') {
+      if (scenario === 'read-failure') throw new Error('Synthetic initial read failed');
+      return { items: scenario === 'empty-streams' ? [] : [{ first: at(1), last: at(1), events: 1, monotonicTime: true }] };
+    }
+    if (method === 'recordingPositions') return { items: [{ position: at(1), type: 2, source: -1 }] };
+    if (method === 'openReplay') { if (scenario === 'open-failure') throw new Error('Synthetic open failed'); return opening.promise; }
+    if (method === 'closeReplay') return { ...host(at(1), 1), replayId: body.replayId, status: 'closed' };
+    throw new Error(method);
+  });
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
+  const view = render(<ReplayWorkspace projectId="project-one" recordingId="run-one" selecting={false} canStop={false}
+    onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={onClose}/>);
+  if (scenario === 'read-failure') await screen.findByText(/Synthetic initial read failed/);
+  else if (scenario === 'empty-streams') await screen.findByText(/没有可读取的历史页面流/);
+  else if (scenario === 'open-failure') await screen.findByText(/Synthetic open failed/);
+  else await waitFor(() => expect(call).toHaveBeenCalledWith('openReplay', expect.anything()));
+  const button = screen.getByRole('button', { name: '返回实时页面' }); expect((button as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(button); expect(onClose).toHaveBeenCalledTimes(1); view.unmount();
+  if (scenario === 'opening') { await act(async () => opening.resolve(host(at(1), 1))); await waitFor(() => expect(call).toHaveBeenCalledWith('closeReplay', expect.objectContaining({ replayId: 'replay-one' }))); }
+});
+
+test('an initial read failure can retry the same recording without creating a replacement source', async () => {
+  let failed = false;
+  const call = vi.fn(async (method: string, body?: any) => {
+    if (method === 'recordingForeground') return { status: 'legacy', items: [] };
+    if (method === 'recordingStreams') { if (!failed) { failed = true; throw new Error('First read refused'); } return { items: [{ first: at(1), last: at(1), events: 1, monotonicTime: true }] }; }
+    if (method === 'recordingPositions') return { items: [{ position: at(1), type: 2, source: -1 }] };
+    if (method === 'openReplay' || method === 'replayStatus' || method === 'selectReplay') return host(at(1), 1);
+    if (method === 'closeReplay') return { ...host(at(1), 1), status: 'closed' };
+    throw new Error(method);
+  });
+  setTestWorkbenchClient({ call, bounds: vi.fn() });
+  render(<ReplayWorkspace projectId="project-one" recordingId="run-one" selecting={false} canStop={false}
+    onPosition={vi.fn()} onTarget={vi.fn()} onSelectionReady={vi.fn()} onCancelSelection={vi.fn()} onStop={vi.fn()} onClose={vi.fn()}/>);
+  await screen.findByText(/First read refused/); expect(screen.getByText('回放未能打开')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: '重新读取历史回放' }));
+  await waitFor(() => expect(screen.getByText(/event #1/)).toBeTruthy());
+  expect(screen.queryByText(/First read refused/)).toBeNull();
+  expect(call.mock.calls.filter(([method]) => method === 'recordingStreams')).toHaveLength(2);
+  expect(call).toHaveBeenCalledWith('openReplay', expect.objectContaining({ projectId: 'project-one', position: at(1) }));
 });

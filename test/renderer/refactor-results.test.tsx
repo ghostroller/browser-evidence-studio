@@ -23,7 +23,7 @@ test('C19: fixed requirement examples and actual verification sources navigate t
   });
   setTestWorkbenchClient({call,bounds:vi.fn()});render(<ResultCenter projectId="project" executionId="x" onOpenSource={open}/>);
   fireEvent.click(await screen.findByRole('button',{name:'r · fail'}));
-  expect(await screen.findByText('逐条核对到账元')).toBeTruthy();
+  expect(await screen.findByRole('heading', { name: '逐条核对到账元' })).toBeTruthy();
   expect(screen.getByText(/业务范围尚缺证明/)).toBeTruthy();
   fireEvent.click(screen.getByRole('button',{name:'需求示例：第二行例证'}));
   await waitFor(()=>expect(open).toHaveBeenCalledWith(expect.objectContaining({position,target:example,label:expect.stringContaining('需求示例')})));

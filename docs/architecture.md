@@ -26,7 +26,9 @@ B1采用同一React入口及共享项目表单／MaterialWorkbench／ResultCente
 
 `MaterialArchivePanel`负责共享版本／副本目录及详情呈现；`RecordingArchive`负责原件目录侧栏信息，均明确保存／取消。目录名称备注还是现有sidecar，不写固定内容或原件。异步响应按项目编辑会话／generation限制，项目切换不继承旧catalog或发布确认。来源目录和工作副本bootstrap完成前不提供短暂可点窗口。
 
-存档使用现有SplitPane的imperative layout，保持编辑器挂载；`workspace-archive`保存存档拖动比例，`workspace`继续保存普通工作区比例。偏好白名单只增加这个有界key，未知key仍拒绝，其他原件／资料／profile schema未迁移。返回工作区或查看来源恢复普通比例，原生bounds沿现有通知链更新。图标复用已有lucide-react，不新增依赖或UI平台。
+存档使用现有SplitPane的imperative layout，保持编辑器挂载；`workspace-archive`保存存档拖动比例，`workspace`继续保存普通工作区比例。偏好白名单仅接受明确的有界布局key，未知key仍拒绝，其他原件／资料／profile schema未迁移。返回工作区或查看来源恢复普通比例，原生bounds沿现有通知链更新。图标复用已有lucide-react，不新增依赖或UI平台。
+
+2026-10-01前端恢复补充：同一SplitPane另以可选`workspace-implementation`保存实现与结果阅读比例，明确来源查看恢复普通比例。ResultCenter将报告读取token与在途写入归属分开，执行初始化代次隔离旧响应；人工判定输入／反馈属于当前报告。ReplayWorkspace初始读取失败可重读或退出，退出继续使迟到host失效并关闭。管理表单项目／环境回填在paint前完成，保留原有对象身份、dirty与CAS检查，避免可输入后旧effect覆盖新值。详见[本轮交接](refactor-handoffs/FRONTEND-INTEGRATION-UX-20261001.md)。
 
 ## 1. 技术决策
 

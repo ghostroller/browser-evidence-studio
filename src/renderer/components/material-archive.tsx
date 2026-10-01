@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Archive, ArrowLeft, Copy, FileText, FolderOpen, Plus, RefreshCw } from 'lucide-react';
 import type { DraftSummary, RevisionSummary } from '@/contracts/workbench-project';
 import type { MaterialCatalog } from '@/contracts/workspace';
@@ -54,7 +54,8 @@ export function MaterialArchivePanel(props: Props) {
     wasActive.current = props.active; revealedContext.current = context;
   }, [props.active, context]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  useEffect(() => {
+  // Hydrate the selected metadata before a newly visible form accepts input.
+  useLayoutEffect(() => {
     if (lastContext.current !== context || !dirty) {
       const next = { name: entry?.name || '', note: entry?.note || '' };
       setName(next.name); setNote(next.note); setBaseline(next);

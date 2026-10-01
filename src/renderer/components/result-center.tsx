@@ -43,7 +43,6 @@ function ResultCenterView({ projectId, executionId, onOpenSource, client, native
   const [batch, setBatch] = useState<Batch | null>(null);
   const [records, setRecords] = useState<Page<any>>(empty);
   const [assessment, setAssessment] = useState<Assessment | null>(null);
-  const [assessedSelection, setAssessedSelection] = useState('');
   const [report, setReport] = useState<any>(null);
   const [savedReports, setSavedReports] = useState<Page<SavedReport>>(empty);
   const [requirements, setRequirements] = useState<Page<ValidatedRequirement>>(empty);
@@ -54,6 +53,7 @@ function ResultCenterView({ projectId, executionId, onOpenSource, client, native
   const [pending, setPending] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [reviewError, setReviewError] = useState('');
   const [loadedScope, setLoadedScope] = useState('');
   const [retry, setRetry] = useState(0);
   const request = useRef(0);
@@ -61,6 +61,10 @@ function ResultCenterView({ projectId, executionId, onOpenSource, client, native
   const recordRequest = useRef(0);
   const reportRequest = useRef(0);
   const reviewRequest = useRef(0);
+  // Mutation ownership is independent of whichever read-only report is visible.
+  const pendingWrite = useRef<{ reportId?: string } | null>(null);
+  const reviewDraftRef = useRef('');
+  reviewDraftRef.current = JSON.stringify({ reviewId, decision, reason });
   const scope = `${projectId}/${executionId}`;
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
@@ -80,7 +84,8 @@ function ResultCenterView({ projectId, executionId, onOpenSource, client, native
     datasetRef.current = ''; batchRef.current = ''; reportRef.current = '';
     setLoadedScope(''); setExecution(null); setSteps(empty()); setDatasets(empty()); setSelected({});
     setActiveDataset(null); setBatches(empty()); setBatch(null); setRecords(empty());
-    setAssessment(null); setAssessedSelection(''); setReport(null); setSavedReports(empty()); setRequirements(empty()); setReportDatasets(empty()); setError(''); setNotice(''); setPending('');
+    setAssessment(null); setReport(null); setSavedReports(empty()); setRequirements(empty()); setReportDatasets(empty()); setError(''); setNotice(''); setReviewError(''); setPending(''); pendingWrite.current = null;
+    setReviewId(''); setDecision('accept'); setReason('');
     void Promise.all([call('execution'), readItems('steps'), readItems('datasets'), call('executionReports', { limit: 20, maxBytes: 24576 })]).then(([head, stepPage, datasetPage, saved]) => {
       if (token !== request.current || !current(scope)) return;
       setExecution(head); setSteps(stepPage); setDatasets(datasetPage); setSavedReports(saved); setLoadedScope(scope);
@@ -108,25 +113,30 @@ function ResultCenterView({ projectId, executionId, onOpenSource, client, native
     if (current(scope) && token === reportRequest.current && reportRef.current === id) { setReport(head); setRequirements(reqs); setReportDatasets(data); }
   };
   const assess = async () => {
-    if (!nativeCall) return;
-    const token = ++reportRequest.current;
+    if (!nativeCall || pendingWrite.current) return;
+    const write = {}; pendingWrite.current = write;
+    const token = ++reportRequest.current, scopeToken = request.current;
+    ++reviewRequest.current; setReviewId(''); setDecision('accept'); setReason(''); setNotice(''); setReviewError('');
     const selection = JSON.stringify(selectedRef.current);
     setPending('固定资料验收'); setError('');
     try {
       const identities: DatasetIdentity[] = Object.entries(selectedRef.current).map(([datasetId, attemptId]) => ({ executionId, datasetId, attemptId }));
       const next: Assessment = await nativeCall('assessExecution', { datasetIdentities: identities });
-      if (!current(scope) || token !== reportRequest.current || selection !== JSON.stringify(selectedRef.current)) return;
-      reportRef.current = next.reportId; setAssessment(next); setAssessedSelection(selection); setReport(null); setRequirements(empty()); setReportDatasets(empty());
-      await readReport(next.reportId, token);
+      if (!current(scope) || scopeToken !== request.current) return;
+      if (token === reportRequest.current && selection === JSON.stringify(selectedRef.current)) {
+        reportRef.current = next.reportId; setAssessment(next); setReport(null); setRequirements(empty()); setReportDatasets(empty());
+        await readReport(next.reportId, token);
+      }
       const saved = await call('executionReports', { limit: 20, maxBytes: 24576 });
-      if (current(scope) && token === reportRequest.current) setSavedReports(saved);
+      if (current(scope) && scopeToken === request.current) setSavedReports(saved);
     } catch (failure) { if (current(scope) && token === reportRequest.current) setError(String(failure)); }
-    finally { if (current(scope) && token === reportRequest.current) setPending(''); }
+    finally { if (pendingWrite.current === write) { pendingWrite.current = null; if (current(scope)) setPending(''); } }
   };
   const openSavedReport = async (id: string) => {
     const token = ++reportRequest.current;
+    ++reviewRequest.current; setReviewId(''); setDecision('accept'); setReason(''); setNotice(''); setReviewError('');
     reportRef.current = id; setReport(null); setRequirements(empty()); setReportDatasets(empty()); setError('');
-    setAssessment({ reportId: id }); setAssessedSelection(JSON.stringify(selectedRef.current));
+    setAssessment({ reportId: id });
     try { await readReport(id, token); }
     catch (failure) { if (current(scope) && token === reportRequest.current && reportRef.current === id) setError(String(failure)); }
   };
@@ -158,17 +168,19 @@ function ResultCenterView({ projectId, executionId, onOpenSource, client, native
     catch (failure) { if (current(scope) && token === recordRequest.current && datasetRef.current === identity) setError(String(failure)); }
   };
   const review = async () => {
-    if (!nativeCall || !assessment || assessedSelection !== JSON.stringify(selectedRef.current) || !reason.trim() || !reviewId) return;
-    const token = ++reviewRequest.current, reportId = assessment.reportId;
-    setPending('保存人工判定'); setError('');
+    if (!nativeCall || pendingWrite.current || !assessment || report?.reportId !== assessment.reportId || reportRef.current !== assessment.reportId || !requirements.items.some(item => item.requirementId === reviewId) || !reason.trim()) return;
+    const write = { reportId: assessment.reportId }; pendingWrite.current = write;
+    const token = ++reviewRequest.current, reportId = assessment.reportId, submittedDraft = reviewDraftRef.current;
+    setPending('保存人工判定'); setError(''); setReviewError(''); setNotice('');
     try { await nativeCall('reviewExecution', { reportId, requirementId: reviewId, decision, reason: reason.trim() });
-      if (current(scope) && token === reviewRequest.current && reportRef.current === reportId) { setNotice('人工判定已追加保存；机器报告未改变。重新验收可读取新判定。'); setReason(''); } }
-    catch (failure) { if (current(scope) && token === reviewRequest.current) setError(String(failure)); }
-    finally { if (current(scope) && token === reviewRequest.current) setPending(''); }
+      if (current(scope) && token === reviewRequest.current && reportRef.current === reportId) { const unchanged = reviewDraftRef.current === submittedDraft; setNotice('人工判定已追加保存；机器报告未改变。重新验收可读取新判定。' + (unchanged ? '' : '提交后输入的新内容尚未保存。')); if (unchanged) setReason(''); } }
+    catch (failure) { if (current(scope) && token === reviewRequest.current) setReviewError(String(failure)); }
+    finally { if (pendingWrite.current === write) { pendingWrite.current = null; if (current(scope)) setPending(''); } }
   };
   const selectDatasetAttempt = (item: Dataset) => {
     ++reportRequest.current; ++reviewRequest.current; reportRef.current = '';
-    setAssessment(null); setAssessedSelection(''); setReport(null); setRequirements(empty()); setReportDatasets(empty()); setPending('');
+    setAssessment(null); setReport(null); setRequirements(empty()); setReportDatasets(empty());
+    setReviewId(''); setDecision('accept'); setReason(''); setNotice(''); setReviewError('');
     setSelected(value => ({ ...value, [item.datasetId]: item.attemptId }));
   };
   const moreExecutionItems = async (collection: 'steps' | 'datasets', cursor: string) => {
@@ -228,7 +240,7 @@ function ResultCenterView({ projectId, executionId, onOpenSource, client, native
   return <div className="result-center">
     <div className="detail-title"><h3>执行结果中心</h3><code>{executionId}</code></div>
     {!nativeCall && <p className="hint">只读查看已保存执行、批次与报告；此页不启动执行、不生成验收报告或保存人工判定。来源引用保留；已授权项目回放的连接可在资料工作区查看离线 DOM 并查验节点。</p>}
-    {error && <p className="error-inline" role="alert">{error}</p>}{notice && <p className="notice" role="status">{notice}</p>}
+    {error && <p className="error-inline" role="alert">{error}</p>}
     {!execution ? <div><p>执行身份或结果读取失败，未将它当作空执行。</p><Button disabled={!readable || !client.canRead()} onClick={() => setRetry(value => value + 1)}>重新读取执行结果</Button></div> : <>
       <div className="result-summary"><div><span>执行</span><StatusBadge value={execution.status} /></div><div><span>资料版本</span><code>{execution.binding?.materialRevisionId || '未绑定'}</code></div>
         <div><span>代码 / 输入</span><code>{execution.binding?.codeFingerprint?.slice(0, 12) || '—'} / {execution.binding?.inputFingerprint?.slice(0, 12) || '—'}</code></div>
@@ -252,7 +264,9 @@ function ResultCenterView({ projectId, executionId, onOpenSource, client, native
         <p className="hint">机器总评只汇总已配置检查。格式、来源内容、脚本声明、人工判定和版本分别记录；批次提交完整不能证明自然语言“全部订单”。候选资料版本不表示人已批准。</p>
         <div className="result-data"><h4>已保存报告</h4>{savedReports.items.map(item => <Button key={item.reportId} className={reportRef.current === item.reportId ? 'selected' : ''} onClick={() => void openSavedReport(item.reportId)}>{item.reportId.slice(0, 16)} · {item.overall || '待读取'}</Button>)}
           {savedReports.nextCursor && <Button onClick={() => void moreSavedReports(savedReports.nextCursor!)}>后续报告</Button>}</div>
-        {assessment && <p>报告 <code>{assessment.reportId}</code></p>}
+        {assessment && <div className="report-context" aria-label="当前查看的报告"><strong>当前查看报告</strong><code>{assessment.reportId}</code>
+          {report ? <><span>固定资料版本 <code>{report.binding?.materialRevisionId || execution.binding?.materialRevisionId || '未提供'}</code></span><div aria-label="本报告数据集范围"><strong>本报告的数据集与 attempt</strong>{reportDatasets.items.length ? reportDatasets.items.map((item, index) => <p key={index}><code>{item.identity?.datasetId || '未提供'} / {item.identity?.attemptId || '未提供'}</code></p>) : <p>报告未列出数据集范围</p>}{reportDatasets.nextCursor && <p>仍有后续范围，请在数据集验收摘要中继续读取</p>}</div></> : <span role="status">正在读取报告…</span>}
+          <p className="hint">此处显示已保存报告的范围；上方选择仅用于下一次验收。</p></div>}
         {report && <><div className="result-summary"><div><span>已配置检查总评</span><StatusBadge value={report.overall} /></div><div><span>批次与分页检查</span><StatusBadge value={report.coverage} /></div><div><span>资料</span>{report.materialStatus || 'candidate'}</div><div><span>版本</span><StatusBadge value={report.version?.verdict || 'inconclusive'} /></div></div>
           {report.reasons?.map((reason: string, index: number) => <p key={index} className="notice">{reason}</p>)}
           <div className="result-requirements">{requirements.items.map(item => <article key={item.requirementId} className="requirement-report"><div className="detail-title"><h3>{item.materialContext?.description || item.requirementId}</h3><StatusBadge value={item.verdict} /></div>
@@ -269,10 +283,11 @@ function ResultCenterView({ projectId, executionId, onOpenSource, client, native
             <details><summary>来源与脚本声明</summary><JsonView value={{ evidence: item.evidence, scriptAssertions: item.scriptAssertions, humanReviews: item.humanReviews }} /></details>
           </article>)}{requirements.nextCursor && <Button onClick={() => void moreReport('requirements', requirements.nextCursor!)}>后续需求</Button>}</div>
           <details><summary>数据集验收摘要</summary><JsonView value={reportDatasets.items} />{reportDatasets.nextCursor && <Button onClick={() => void moreReport('datasets', reportDatasets.nextCursor!)}>后续摘要</Button>}</details>
-          {nativeCall && <div className="human-review"><h3>人工判定</h3><p className="hint">判定追加到固定执行、资料版本和 attempt；不能覆盖机器失败。</p>
-            <div className="review-inputs"><label>需求<NativeSelect value={reviewId} onChange={event => setReviewId(event.target.value)}><option value="">选择需求</option>{requirements.items.map(item => <option key={item.requirementId} value={item.requirementId}>{item.requirementId}</option>)}</NativeSelect></label>
+          {nativeCall && <div className="human-review"><h3>人工判定</h3><p className="review-target" aria-label="人工判定目标">将追加到报告 <code>{assessment?.reportId}</code></p><p className="hint">判定追加到固定执行、资料版本和 attempt；不能覆盖机器失败。切换报告会清空尚未提交的判定。</p>
+            <fieldset className="review-form" disabled={pendingWrite.current?.reportId === assessment?.reportId}>
+            <div className="review-inputs"><label>需求<NativeSelect value={reviewId} onChange={event => setReviewId(event.target.value)}><option value="">选择需求</option>{requirements.items.map(item => <option key={item.requirementId} value={item.requirementId} title={item.requirementId}>{item.materialContext?.description || item.requirementId}</option>)}</NativeSelect></label>
               <label>判断<NativeSelect value={decision} onChange={event => setDecision(event.target.value as typeof decision)}><option value="accept">接受</option><option value="reject">拒绝</option><option value="exception">例外接受</option></NativeSelect></label></div>
-            <label>理由<Textarea value={reason} onChange={event => setReason(event.target.value)} /></label><Button disabled={!reviewId || !reason.trim() || !!pending} onClick={() => void review()}>保存人工判定</Button></div>}
+            <label>理由<Textarea value={reason} onChange={event => setReason(event.target.value)} /></label><Button disabled={!requirements.items.some(item => item.requirementId === reviewId) || !reason.trim() || !!pending} onClick={() => void review()}>保存人工判定</Button></fieldset>{reviewError && <p className="error-inline" role="alert">{reviewError}</p>}{notice && <p className="notice" role="status">{notice}</p>}</div>}
         </>}
       </section>
     </>}

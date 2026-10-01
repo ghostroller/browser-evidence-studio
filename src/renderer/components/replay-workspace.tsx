@@ -51,6 +51,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   const [waitingGapMs, setWaitingGapMs] = useState(0);
   const [seeking, setSeeking] = useState(false);
   const [error, setError] = useState('');
+  const [reload, setReload] = useState(0);
   const [scrubTime, setScrubTime] = useState<number | null>(null);
   const hostRef = useRef<Host | null>(null);
   const mounted = useRef(false);
@@ -139,6 +140,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
     const token = ++loadToken.current;
     streamsRef.current=[];foregroundRef.current=null;streamRef.current=null;positionsRef.current=[];nextOrdinalRef.current=undefined;
     setStreams([]); setForeground(null); setStream(null); setPositions([]); setStreamCursor(''); setError('');
+    setHost(null); setPosition(null); positionRef.current = null; setSeeking(false);
     void Promise.all([
       call('recordingForeground',{recordingId,limit:100}) as Promise<Foreground>,
       call('recordingStreams', { recordingId, limit: 50 }) as Promise<{items:Stream[];nextCursor?:string}>,
@@ -164,7 +166,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
     }).catch(failure => { if (token === loadToken.current) setError(String(failure)); });
     return () => { mounted.current = false; ++loadToken.current; ++seekToken.current; playRef.current = false; gapWait.current?.abort(); const current = hostRef.current;
       hostRef.current = null; if(pendingOpen.current){closeNative(pendingOpen.current);pendingOpen.current=null;} if (current) closeNative(current.replayId); };
-  }, [projectId, recordingId, call, loadPositions, firstBaseline, seek, closeNative]);
+  }, [projectId, recordingId, reload, call, loadPositions, firstBaseline, seek, closeNative]);
   const requestedKey = requestedPosition && `${requestedPosition.recordingId}/${requestedPosition.pageId}/${requestedPosition.documentId}/${requestedPosition.streamEpoch}/${requestedPosition.eventSeq}`;
   useEffect(() => {
     if (selecting || !requestedPosition || !streams.length || requestedHandled.current === requestedKey || same(positionRef.current, requestedPosition)) return;
@@ -333,7 +335,7 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
   return <div className="replay-workspace">
     <div className="replay-heading"><div><strong>历史回放</strong><span className="replay-readonly">只读 · 离线</span></div>
       <div className="replay-heading-actions">{selecting && <Button className="replay-cancel-selection" onClick={onCancelSelection}>取消选择（Esc）</Button>}
-        <Button disabled={!host || seeking || selecting} onClick={() => { gapWait.current?.abort();playRef.current = false; setPlaying(false); onClose(); }}>返回实时页面</Button>
+        <Button disabled={selecting} onClick={() => { gapWait.current?.abort();playRef.current = false; setPlaying(false); onClose(); }}>返回实时页面</Button>
       </div>
     </div>
     <div className="replay-controls" aria-label="回放控制">
@@ -349,11 +351,12 @@ export function ReplayWorkspace({ projectId, recordingId, requestedPosition, sel
       <Button disabled={!position || seeking || selecting} onClick={() => { const previous = [...positions].reverse().find(item => position && item.position.eventSeq < position.eventSeq); if (previous) void seek(previous.position); }}>上一步</Button>
       <Button disabled={!position || seeking || selecting} onClick={() => { const next = positions.find(item => position && item.position.eventSeq > position.eventSeq); if (next) void seek(next.position); else if (nextOrdinal !== undefined && stream) void loadPositions(stream, nextOrdinal); }}>下一步</Button></div>}
 
-    <div className="replay-health" role="status"><span>{seeking ? '正在定位' : selecting ? '选中历史元素后返回资料编辑' : waitingGapMs>0 ? `等待下一历史位置 · ${Math.round(waitingGapMs/1000)} 秒` : playing ? '播放中' : '已暂停'}</span>
+    <div className="replay-health" role="status"><span>{!host && error ? '回放未能打开' : !host && !seeking ? '正在读取历史页面' : seeking ? '正在定位' : selecting ? '选中历史元素后返回资料编辑' : waitingGapMs>0 ? `等待下一历史位置 · ${Math.round(waitingGapMs/1000)} 秒` : playing ? '播放中' : '已暂停'}</span>
       {host?.resources && <span className={host.resources.status === 'partial' ? 'replay-warning' : ''}>{resourceLabel}{(host.resources.unavailableCount??0)>0 ? ' · '+host.resources.unavailableCount+' 项' : ''}</span>}
-      {host?.state?.reliability !== 'reliable' && <span className="replay-warning">{host?.state?.reliability==='gap'?'结构有缺口，不能绑定元素':host?.status==='failed'?'回放不可用':'正在核对历史结构'}</span>}
+      {host?.state?.reliability !== 'reliable' && <span className="replay-warning">{host?.state?.reliability==='gap'?'结构有缺口，不能绑定元素':host?.status==='failed'||!host&&error?'回放不可用':'正在核对历史结构'}</span>}
     </div>
     {(error || host?.selectionError || host?.status==='failed'&&host.error) && <p className="error-inline" role="alert">{error || host?.selectionError || host?.error}</p>}
+    {!host && error && <Button disabled={selecting || seeking} onClick={() => setReload(value => value + 1)}>重新读取历史回放</Button>}
     <details className="replay-diagnostics"><summary>页面、事件与资源详情</summary><div className="replay-diagnostics-body">
       <div className="replay-stream-controls"><label>历史页面<NativeSelect aria-label="历史页面流" disabled={selecting} value={stream ? String(streams.indexOf(stream)) : ''} onChange={event => changeStream(Number(event.target.value))}>{streams.map((item, index) => <option key={streamId(item)} value={index}>{item.first.pageId.slice(0, 12)} · {item.first.documentId.slice(0, 12)} · {item.events} 事件</option>)}</NativeSelect></label>
     {streamCursor && <Button disabled={selecting} onClick={() => void call('recordingStreams', { recordingId, cursor: streamCursor, limit: 50 }).then((page: { items: Stream[]; nextCursor?: string }) => { streamsRef.current=[...streamsRef.current,...page.items];setStreams(streamsRef.current); setStreamCursor(page.nextCursor || ''); }).catch(failure => setError(String(failure)))}>更多页面流</Button>}

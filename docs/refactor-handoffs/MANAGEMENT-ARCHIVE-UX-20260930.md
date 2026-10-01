@@ -117,7 +117,7 @@ npm run typecheck
 npm test -- test/renderer test/unit/workspace-management.test.ts test/unit/workspace-catalog.test.ts test/unit/materials.test.ts test/unit/material-source-contracts.test.ts test/unit/material-enum-validation.test.ts test/unit/ui-preferences.test.ts test/unit/managed-browser-controls.test.ts test/unit/workbench-*.test.ts test/unit/browser-*-client.test.ts
 npm run build
 npm run build:node
-node test/desktop/launch.js --management-archive
+node test/desktop/launch.js --management-archive-journey
 node test/desktop/launch.js --workspace-layout
 npm run test:dual-host -- --chromium=/absolute/path/to/chromium
 ```

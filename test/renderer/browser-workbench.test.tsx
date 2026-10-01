@@ -10,7 +10,7 @@ import type { BrowserProjectMetadata, BrowserUpdateProject } from '@/contracts/b
 const ticket = 'a'.repeat(43), token = 'b'.repeat(43);
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); delete window.studio; document.documentElement.classList.remove('dark'); });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
-function fixture() {
+function fixture(onRendered?: () => void) {
   let project: BrowserProjectMetadata = { id: 'project', name: 'Orders', objective: 'Read amounts', revision: 1 };
   let controller!: ReadableStreamDefaultController<Uint8Array>;
   let update: ((input: BrowserUpdateProject) => Promise<Response>) | undefined;
@@ -27,7 +27,7 @@ function fixture() {
     throw new Error(`Not allowed: ${String(url)}`);
   });
   const client = new BrowserWorkbenchClient({ instanceId: 'instance', fetch: fetcher as typeof fetch, retryDelaysMs: [] });
-  const rendered = render(<SessionThemeProvider><App host="browser" client={client} /></SessionThemeProvider>);
+  const rendered = render(<React.Profiler id="browser-input-boundary" onRender={() => onRendered?.()}><SessionThemeProvider><App host="browser" client={client} /></SessionThemeProvider></React.Profiler>);
   const connect = async () => {
     fireEvent.change(screen.getByLabelText('一次性配对票据'), { target: { value: ticket } });
     fireEvent.click(screen.getByRole('button', { name: '连接合成项目' }));
@@ -109,4 +109,15 @@ test('revocation and unmount clear all authorized form data and abort the connec
   expect(screen.getByLabelText('一次性配对票据')).toBeTruthy();
   f.setRead(undefined); await f.connect(); f.rendered.unmount(); expect(f.client.getSnapshot()).toEqual({ status: 'disconnected', state: null, error: '' });
   expect(f.fetcher.mock.calls.filter(([url]) => url === '/workbench/events').every(([, init]) => init!.signal!.aborted)).toBe(true);
+});
+
+
+test('first enabled browser metadata input survives the paired project projection', async () => {
+  let injected = false;
+  const f = fixture(() => { const input = screen.queryByLabelText('项目名称') as HTMLInputElement | null; if (!injected && input && !input.disabled) { injected = true; fireEvent.change(input, { target: { value: 'First browser input' } }); } });
+  await f.connect(); await act(async () => {}); expect(injected).toBe(true);
+  expect((screen.getByLabelText('项目名称') as HTMLInputElement).value).toBe('First browser input');
+  fireEvent.click(screen.getByRole('button', { name: '保存项目修改' })); await screen.findByText('项目名称和简介已保存。');
+  expect(f.writes()).toHaveLength(1); expect(f.writes()[0].body).toMatchObject({ projectId: 'project', expectedRevision: 1, name: 'First browser input', objective: 'Read amounts' });
+  f.client.disconnect();
 });

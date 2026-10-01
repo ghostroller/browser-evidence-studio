@@ -103,7 +103,7 @@ else app.whenReady().then(async()=>{
   window.window.on('close',event=>{event.preventDefault();void shutdown('window-close');});
   if(process.env.BES_TEST){
     const phase=process.env.BES_TEST_PHASE||'main';
-    const allowedPhases=['management-archive-journey','workspace-browser','workspace-layout','product-journey','product-reopen','native-input','main','refactor-s0','refactor-replay','refactor-recording-record','refactor-recording-offline','refactor-recovery','refactor-recovery-soak','refactor-recovery-verify','refactor-runner','refactor-system','refactor-handoff','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
+    const allowedPhases=['result-recovery-journey','management-archive-journey','workspace-browser','workspace-layout','product-journey','product-reopen','native-input','main','refactor-s0','refactor-replay','refactor-recording-record','refactor-recording-offline','refactor-recovery','refactor-recovery-soak','refactor-recovery-verify','refactor-runner','refactor-system','refactor-handoff','profile-restart','recovery-crash','recovery-verify','recovery-repeat','exit-window-close','exit-app-quit','startup-cold','startup-warm','startup-reload','startup-failed'];
     ensure(allowedPhases.includes(phase),'Unknown desktop test phase');
     const resultFile=phase==='main'?'test-result.json':`${phase}-result.json`;
     const identity:Record<string,unknown>={phase,processId:process.pid,startedAt:new Date().toISOString()};
@@ -142,6 +142,7 @@ else app.whenReady().then(async()=>{
         await shutdownTask;return;
       }
       if(phase==='product-journey'||phase==='product-reopen'){const {runProductJourney}=await import('../../test/desktop/product-journey');Object.assign(identity,await runProductJourney(studio,phase==='product-reopen'));}
+      else if(phase==='result-recovery-journey'){const {runResultRecoveryJourney}=await import('../../test/desktop/result-recovery-journey');Object.assign(identity,await runResultRecoveryJourney(studio));}
       else if(phase==='management-archive-journey'){const {runManagementArchiveJourney}=await import('../../test/desktop/management-archive-journey');Object.assign(identity,await runManagementArchiveJourney(studio));}
       else if(phase==='workspace-layout'){const {runWorkspaceLayoutScenarios}=await import('../../test/desktop/workspace-layout');Object.assign(identity,await runWorkspaceLayoutScenarios(studio));}
       else if(phase==='workspace-browser'){const {runWorkspaceBrowserScenarios}=await import('../../test/desktop/workspace-browser');Object.assign(identity,await runWorkspaceBrowserScenarios(studio));}

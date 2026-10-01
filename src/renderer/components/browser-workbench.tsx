@@ -1,7 +1,7 @@
 import { HostCapabilitiesSummary } from './host-capabilities';
 import { SharedWebReplay } from './shared-web-replay';
 import type { SelectionRequest, SelectionReceipt } from '../selection-session';
-import React, { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Moon, Sun } from 'lucide-react';
 import type { BrowserProjectMetadata, BrowserUpdateProject } from '@/contracts/browser-workbench';
 import { BrowserWorkbenchClient, BrowserWorkbenchClientError } from '../lib/browser-workbench-client';
@@ -72,7 +72,7 @@ function BrowserProjectEditor({ client, project, writable }: { client: BrowserWo
   const operations = useRef(new Map<string, string>());
   const dirty = name !== baseline.name || objective !== baseline.objective;
   const load = (value: BrowserProjectMetadata) => { setBaseline(value); setName(value.name); setObjective(value.objective); };
-  useEffect(() => { if (!dirty && !pending.current) load(project); }, [project.id, project.revision, project.name, project.objective]);
+  useLayoutEffect(() => { if (!dirty && !pending.current) load(project); }, [project.id, project.revision, project.name, project.objective]);
   useEffect(() => () => { ++generation.current; }, []);
   const save = async () => {
     if (pending.current || !writable) return;

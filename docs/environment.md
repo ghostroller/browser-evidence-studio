@@ -218,7 +218,8 @@ node test/dual-host/legacy-profile.mjs --output=/absolute/new/proof-directory
 ```sh
 npm run typecheck
 npm run build
-node test/desktop/launch.js --management-archive
+node test/desktop/launch.js --management-archive-journey
+node test/desktop/launch.js --result-recovery-journey
 ```
 
 此入口在既有BES_TEST隔离数据根运行真实生产界面，项目／环境／录制／副本都通过正常UI建立。内部可访问实际BrowserWindow以设置1100×760和1450×935，不新增生产RPC。一次性提交前拒绝／延迟属于明确测试故障注入，都会恢复原方法，不冒称自然故障。

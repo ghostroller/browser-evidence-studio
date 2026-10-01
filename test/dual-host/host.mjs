@@ -107,6 +107,14 @@ export async function pair(c){
   if(c.host==='node'){await click(c.ui,'生成工作台配对票据');ticket=await c.ui.$eval('[aria-label="工作台一次性票据"]',e=>e.value)}
   else{await select(c.ui,'配对权限范围','project-replay');await click(c.ui,'生成一次性配对票据');ticket=await c.ui.$eval('code[aria-label="一次性票据"]',e=>e.textContent)}
   assert(/^[A-Za-z0-9_-]{43}$/.test(ticket));await fill(c.web,'一次性配对票据',ticket);ticket='';await click(c.web,'连接合成项目');await hasText(c.web,'已连接');const capability=await c.web.$('[aria-label="宿主能力"]');assert(capability);c.report.browserCapabilityText=await capability.evaluate(e=>e.innerText);assert(c.report.browserCapabilityText.includes('当前网页不嵌入实时浏览器'));assert(c.report.browserCapabilityText.includes(c.host==='node'?'Node · 独立 Chromium':'Electron 伴随服务'));await capability.screenshot({path:c.root+'/browser-capabilities.png'});
+  // Drive the paired metadata form through the real transport on both hosts.
+  // Keep the source fixture's original name after proving durable readback.
+  const originalName=await c.web.$eval('[aria-label="项目名称"]',e=>e.value), renamed=originalName+' · 浏览器输入核对';
+  await fill(c.web,'项目名称',renamed);await click(c.web,'保存项目修改');await hasText(c.web,'项目名称和简介已保存。');
+  const changed=await until(async()=>(await readJson(c.launch.dataRoot+'/workspace.json')).projects.find(p=>p.id===c.projectId),p=>p?.name===renamed,'paired UI metadata persisted');
+  await fill(c.web,'项目名称',originalName);await click(c.web,'保存项目修改');
+  const restored=await until(async()=>(await readJson(c.launch.dataRoot+'/workspace.json')).projects.find(p=>p.id===c.projectId),p=>p?.name===originalName&&p.revision>changed.revision,'paired UI metadata original name restored');
+  c.report.browserMetadataReadback={projectId:c.projectId,renamed,restored:restored.name,revisions:[changed.revision,restored.revision],uiOnlyWrites:true};
 }
 
 export async function closeHost(c){

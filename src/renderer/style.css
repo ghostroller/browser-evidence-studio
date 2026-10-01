@@ -393,6 +393,10 @@
 .result-center h3 { margin: 4px 0 8px; font-size: 14px; }
 .result-center h4 { margin: 8px 0; font-size: 12px; }
 .result-center code { overflow-wrap: anywhere; }
+.report-context { display: grid; gap: 6px; margin: 12px 0; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--muted); }
+.report-context p, .review-target { margin: 0; }
+.report-context [aria-label="本报告数据集范围"] { display: grid; gap: 4px; }
+.review-target { overflow-wrap: anywhere; font-weight: 500; }
 .result-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; padding: 8px; background: var(--muted); }
 .result-summary > div { display: flex; align-items: center; gap: 5px; }
 .result-summary > div > span { color: var(--muted-foreground); }
@@ -442,7 +446,8 @@
 .dataset-report h3, .human-review h3 { margin-bottom: 8px; }
 .dataset-report details { margin-top: 8px; }
 .human-review > .hint { margin-bottom: 8px; }
-.human-review > label { margin: 8px 0; }
+.review-form { border: 0; margin: 0; padding: 0; min-width: 0; }
+.review-form > label { display: block; margin: 8px 0; }
 .review-inputs { display: flex; gap: 8px; flex-wrap: wrap; }
 .review-inputs > label { flex: 1; min-width: 180px; }
 .comparison { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }

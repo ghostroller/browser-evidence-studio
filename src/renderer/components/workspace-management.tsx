@@ -1,7 +1,7 @@
 import { profileCanOpen, profileProviderLabel, compatibleProfileProvider } from '@/contracts/host-capabilities';
 import { useWorkbenchClient } from '../lib/workbench-client';
 import type { WorkbenchInput, WorkbenchMethod } from '@/contracts/workbench';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ManagementDependencies, Profile, Project } from '@/main/services/workspace-management';
 import { Button } from './ui/button';
 import { ProjectMetadataForm } from './project-metadata-form';
@@ -50,8 +50,11 @@ export function WorkspaceManagementPanel({ state, projectId, onSelectProject, on
   const profileDirty = profileName !== (profileBaseline.current?.name ?? '') || entryUrl !== (profileBaseline.current?.entryUrl ?? '') || instructions !== (profileBaseline.current?.instructions ?? '') || checkSelector !== (profileBaseline.current?.checkSelector ?? '') || expectedOrigin !== (profileBaseline.current?.expectedOrigin ?? '');
   const loadProject = (value?: Project) => { projectBaseline.current = value; setProjectName(value?.name ?? ''); setObjective(value?.objective ?? ''); };
   const loadProfile = (value?: Profile) => { profileBaseline.current = value; setProfileName(value?.name ?? ''); setEntryUrl(value?.entryUrl ?? ''); setInstructions(value?.instructions ?? ''); setCheckSelector(value?.checkSelector ?? ''); setExpectedOrigin(value?.expectedOrigin ?? ''); };
-  useEffect(() => { if (selected && !project) return; if (projectBaseline.current?.id !== project?.id || !projectDirty) loadProject(project); }, [project?.id, project?.revision, project?.name, project?.objective]);
-  useEffect(() => { if (profileId && !profile) return; if (profileBaseline.current?.id !== profile?.id || !profileDirty) loadProfile(profile); }, [profile?.id, profile?.revision]);
+  // Project/profile projection must settle before the form can receive input.
+  // A passive effect from a clean render can otherwise overwrite the first
+  // keystroke after create/refresh with its captured stale dirty state.
+  useLayoutEffect(() => { if (selected && !project) return; if (projectBaseline.current?.id !== project?.id || !projectDirty) loadProject(project); }, [project?.id, project?.revision, project?.name, project?.objective]);
+  useLayoutEffect(() => { if (profileId && !profile) return; if (profileBaseline.current?.id !== profile?.id || !profileDirty) loadProfile(profile); }, [profile?.id, profile?.revision]);
   const choose = (action: () => void) => {
     if (busyRef.current) { setFailure('正在保存或检查，请等待完成后再离开。'); return; }
     if (projectDirty || profileDirty) { setFailure('有未保存的管理输入，请先保存或明确撤销输入，再切换对象。'); setNavigation(() => action); return; }

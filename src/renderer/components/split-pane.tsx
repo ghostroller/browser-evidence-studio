@@ -4,9 +4,9 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from './ui/resiz
 import { usePreferences } from './theme-provider';
 import { useBrowserLayout } from '../lib/browser-presentation';
 
-export function SplitPane({ name, first, second, initial, minFirst, minSecond, label, orientation = 'horizontal', focusFirst = false }: {
+export function SplitPane({ name, first, second, initial, minFirst, minSecond, label, orientation = 'horizontal', focusFirst = false, focusLayout = 'archive' }: {
   name: string; first: React.ReactNode; second: React.ReactNode; initial: number;
-  minFirst: string; minSecond: string; label: string; focusFirst?: boolean; orientation?: 'horizontal' | 'vertical';
+  minFirst: string; minSecond: string; label: string; focusFirst?: boolean; focusLayout?: 'archive' | 'implementation'; orientation?: 'horizontal' | 'vertical';
 }) {
   const { preferences, saveLayout } = usePreferences();
   const presentation = useBrowserLayout();
@@ -14,16 +14,22 @@ export function SplitPane({ name, first, second, initial, minFirst, minSecond, l
   const group = useRef<GroupImperativeHandle | null>(null);
   const priorLayout = useRef<Record<string, number> | null>(null);
   const left = `${name}-first`, right = `${name}-second`;
+  const focusedName = focusFirst ? `${name}-${focusLayout}` : '';
+  const appliedFocus = useRef('');
   useEffect(() => {
     if (!group.current) return;
-    if (focusFirst && !priorLayout.current) { priorLayout.current = group.current.getLayout(); const archive = preferences.layout[`${name}-archive`]; group.current.setLayout({ [left]: archive?.[0] ?? 66, [right]: archive?.[1] ?? 34 }); }
-    else if (!focusFirst && priorLayout.current) { group.current.setLayout(priorLayout.current); priorLayout.current = null; }
-  }, [focusFirst, left, right]);
+    if (focusedName && appliedFocus.current !== focusedName) {
+      if (!priorLayout.current) priorLayout.current = group.current.getLayout();
+      const focused = preferences.layout[focusedName];
+      group.current.setLayout({ [left]: focused?.[0] ?? 66, [right]: focused?.[1] ?? 34 });
+      appliedFocus.current = focusedName;
+    } else if (!focusedName && priorLayout.current) { group.current.setLayout(priorLayout.current); priorLayout.current = null; appliedFocus.current = ''; }
+  }, [focusedName, left, right]);
   return <ResizablePanelGroup groupRef={group} className="split-body" id={name} orientation={orientation}
     defaultLayout={{ [left]: defaults.current[0], [right]: defaults.current[1] }}
     resizeTargetMinimumSize={{ coarse: 20, fine: 8 }}
     onLayoutChanged={(layout, meta) => {
-      if (meta.isUserInteraction) saveLayout(focusFirst ? `${name}-archive` : name, [layout[left], layout[right]]);
+      if (meta.isUserInteraction) saveLayout(focusedName || name, [layout[left], layout[right]]);
       // The final browser measurement must precede restoring the native view.
       requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
     }}>

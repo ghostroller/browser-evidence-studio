@@ -66,3 +66,15 @@ test('a late failure from the previous project does not contaminate a new projec
  view.rerender(element('A'));await screen.findByDisplayValue('A');await act(async()=>reject(new Error('old session failed')));
  expect(screen.queryByText('Error: old session failed')).toBeNull();expect((screen.getByLabelText('录制名称') as HTMLInputElement).value).toBe('A');
 });
+
+
+test('the first input after authoritative recording metadata loads survives the next effect flush', async () => {
+  const f = fixture();
+  const input = await screen.findByDisplayValue('First recording') as HTMLInputElement;
+  expect(input.disabled).toBe(false);
+  fireEvent.change(input, { target: { value: 'First recording input' } });
+  expect(input.value).toBe('First recording input'); await act(async () => {}); expect(input.value).toBe('First recording input');
+  fireEvent.click(screen.getByRole('button', { name: '保存录制目录' })); await screen.findByText('录制目录已保存；原始录制保持不变。');
+  expect(f.call).toHaveBeenCalledWith('manageMaterialCatalog', expect.objectContaining({ projectId: 'project', kind: 'recordings', id: 'first-run', name: 'First recording input', expectedCatalogRevision: 0 }));
+  expect(f.catalog.recordings['first-run'].name).toBe('First recording input');
+});

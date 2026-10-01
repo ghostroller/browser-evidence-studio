@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { setTestWorkbenchClient, clearTestWorkbenchClient } from './workbench-test-client';
-import React, { useState, useRef } from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from './workbench-test-client';
+import React, { useState, useRef, useLayoutEffect } from 'react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from './workbench-test-client';
 import { afterEach, expect, test, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -109,9 +109,20 @@ test('IA14: creating another project starts blank, focuses its persisted identit
   fireEvent.click(screen.getByRole('button', { name: '创建项目' }));
   await screen.findByText('项目已创建，可继续修改资料或设为当前浏览项目。');
   const created = f.host.projects.find(item => item.name === 'New task typo')!; expect(created).toBeTruthy(); expect(f.onSelect).not.toHaveBeenCalled();
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: 'New task typo' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByLabelText('项目与环境管理').getAttribute('aria-busy')).toBe('false');
+    expect((screen.getByLabelText('项目名称') as HTMLInputElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: '保存项目修改' }) as HTMLButtonElement).disabled).toBe(false);
+  });
   fireEvent.change(screen.getByLabelText('项目名称'), { target: { value: 'New task' } });
+  expect((screen.getByLabelText('项目名称') as HTMLInputElement).value).toBe('New task');
+  await act(async () => {});
+  expect((screen.getByLabelText('项目名称') as HTMLInputElement).value).toBe('New task');
   fireEvent.click(screen.getByRole('button', { name: '保存项目修改' }));
+  expect(f.call).toHaveBeenCalledWith('updateProject', expect.objectContaining({ projectId: created.id, expectedRevision: 1, name: 'New task' }));
   await waitFor(() => expect(f.host.projects.find(item => item.id === created.id)?.name).toBe('New task'));
+  expect(JSON.parse(await readFile(path.join(f.root, 'workspace.json'), 'utf8')).projects.find((item: any) => item.id === created.id).name).toBe('New task');
   fireEvent.click(screen.getByRole('button', { name: '设为当前浏览项目' }));
   await waitFor(() => expect(f.onSelect).toHaveBeenCalledWith(created.id));
   expect((await f.service.managementDependencies({ projectId: created.id })).canDelete).toBe(false);
@@ -221,4 +232,24 @@ test('selecting a management project reveals its row without hijacking typing or
  expect(scroll.mock.instances.some(value=>(value as Element)?.classList.contains('management-project-row'))).toBe(true);
  const selected=scroll.mock.calls.length;fireEvent.change(screen.getByLabelText('项目名称'),{target:{value:'Invoices updated'}});expect(scroll.mock.calls).toHaveLength(selected);fireEvent.click(screen.getByRole('button',{name:'保存项目修改'}));await screen.findByText('项目名称和简介已保存。');expect(scroll.mock.calls).toHaveLength(selected);
  } finally {cleanup();if(descriptor)Object.defineProperty(HTMLElement.prototype,'scrollIntoView',descriptor);else delete (HTMLElement.prototype as any).scrollIntoView;}
+});
+
+
+test('a management input at the first committed form boundary survives projection hydration', async () => {
+  const f = await fixture();
+  function FirstInput() {
+    useLayoutEffect(() => {
+      const input = screen.getByLabelText('项目名称') as HTMLInputElement;
+      expect(input.disabled).toBe(false);
+      fireEvent.change(input, { target: { value: 'First committed input' } });
+    }, []);
+    return <f.Harness/>;
+  }
+  render(<FirstInput/>);
+  await act(async () => {});
+  expect((screen.getByLabelText('项目名称') as HTMLInputElement).value).toBe('First committed input');
+  fireEvent.click(screen.getByRole('button', { name: '保存项目修改' }));
+  expect(f.call).toHaveBeenCalledWith('updateProject', expect.objectContaining({ projectId: f.a.id, expectedRevision: 1, name: 'First committed input' }));
+  await waitFor(() => expect(f.host.projects.find(item => item.id === f.a.id)?.name).toBe('First committed input'));
+  expect(JSON.parse(await readFile(path.join(f.root, 'workspace.json'), 'utf8')).projects.find((item: any) => item.id === f.a.id).name).toBe('First committed input');
 });

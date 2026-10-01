@@ -1,5 +1,5 @@
 import { useWorkbenchClient, scopedWorkbenchCall } from '../lib/workbench-client';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Film, Play, RefreshCw, ArrowLeft } from 'lucide-react';
 import type { MaterialCatalog } from '@/contracts/workspace';
 import type { RecordingUsageResult } from '@/contracts/workbench-project';
@@ -45,7 +45,8 @@ export function RecordingArchive({ projectId, runs, onReplay, onDiagnostic, onRe
   useEffect(() => {
     if (!initialSelected.current && catalog && runs.length) { initialSelected.current = true; setSelected(runs.find(value => !catalog.recordings[value.id]?.hidden)?.id || ''); }
   }, [catalog, runs, selected]);
-  useEffect(() => {
+  // A stale clean projection must not replace the first editable input.
+  useLayoutEffect(() => {
     if (lastSelection.current !== selected || !dirty) { const next = { name: entry?.name || '', note: entry?.note || '' }; setName(next.name); setNote(next.note); setBaseline(next); }
     if (lastSelection.current !== selected) { setUsage(null); if (selected && !region.current?.closest('[hidden]')) { const anchor = region.current?.closest('.archive-center')?.querySelector<HTMLElement>('[data-archive-context-anchor]') || region.current; anchor?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' }); } }
     lastSelection.current = selected;
